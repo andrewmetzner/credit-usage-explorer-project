@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+{% block title %}Summary - Credit Usage Explorer{% endblock %}
+
+{% block extra_head %}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+{% endblock %}
+
+{% block body %}
+<div class="container py-4" style="max-width: 1280px;">
+
+  <!-- Page Header -->
+  <div class="mb-4">
+    <h1 class="page-title">Summary</h1>
+    <p class="page-subtitle">
+      Dataset: <strong>{{ data_source.filename or 'No file' }}</strong>
+      &nbsp;&middot;&nbsp; {{ '{:,}'.format(data_source.rows) }} records
+      {% if metrics.date_min %}
+        &nbsp;&middot;&nbsp; {{ metrics.date_min }} &rarr; {{ metrics.date_max }}
+      {% endif %}
+    </p>
+  </div>
+
+  <!-- Key Metrics -->
+  <div class="dash-metric-row">
+    <div class="dash-metric">
+      <div class="dash-metric-label">Total Credits</div>
+      <div class="dash-metric-value">{{ '{:,.0f}'.format(metrics.total_credits) }}</div>
+    </div>
+    <div class="dash-metric">
+      <div class="dash-metric-label">Unique Users</div>
+      <div class="dash-metric-value">{{ '{:,}'.format(metrics.unique_users) }}</div>
+    </div>
+    <div class="dash-metric">
+      <div class="dash-metric-label">Active (last 7d)</div>
+      <div class="dash-metric-value">{{ '{:,}'.format(metrics.active_users_recent) }}</div>
+      <div class="dash-metric-sub">users with credits &gt; 0</div>
+    </div>
+    <div class="dash-metric">
+      <div class="dash-metric-label">Records</div>
+      <div class="dash-metric-value">{{ '{:,}'.format(metrics.total_records) }}</div>
+    </div>
+    <div class="dash-metric">
+      <div class="dash-metric-label">Usage Types</div>
+      <div class="dash-metric-value">{{ metrics.usage_types }}</div>
+    </div>
+    <div class="dash-metric">
+      <div class="dash-metric-label">Avg Credits/User</div>
+      <div class="dash-metric-value">{{ '{:,.0f}'.format(metrics.total_credits / metrics.unique_users) if metrics.unique_users else '--' }}</div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-8">
+
+      <!-- Weekly Trend Chart -->
+      <div class="dash-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Weekly Credit Burn</span>
+          <div class="d-flex gap-1 align-items-center">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"  onclick="window.summaryWeeklyChart && window.summaryWeeklyChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"  onclick="window.summaryWeeklyChart && window.summaryWeeklyChart.openFullscreen()">&#9974;</button>
+          </div>
+        </div>
+        <div class="dash-section-body">
+          <canvas id="weeklyChart" height="80"></canvas>
+        </div>
+      </div>
+
+      <!-- Active Users Per Week Chart -->
+      <div class="dash-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Active Users / Week</span>
+          <div class="d-flex gap-1 align-items-center">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"  onclick="window.summaryActiveUsersChart && window.summaryActiveUsersChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"  onclick="window.summaryActiveUsersChart && window.summaryActiveUsersChart.openFullscreen()">&#9974;</button>
+          </div>
+        </div>
+        <div class="dash-section-body">
+          <canvas id="activeUsersChart" height="80"></canvas>
+        </div>
+      </div>
+
+      <!-- Outlier Finder -->
+      <div class="dash-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Outlier Finder</span>
+          {% if outlier_count > 0 %}
+          <span class="outlier-badge" style="font-size:.75rem;">{{ outlier_count }} flagged</span>
+          {% endif %}
+        </div>
+
+        <!-- Filter controls -->
+        <form method="get" action="{{ url_for('main.summary_page') }}" class="dash-section-body pb-0">
+          <div class="row g-2 align-items-end mb-3">
+            <div class="col-sm-3">
+              <label class="form-label">Min credits (last N days)</label>
+              <input class="form-control form-control-sm" type="number" name="credit_threshold"
+                     value="{{ credit_threshold }}" min="0" step="1" placeholder="100">
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label">Lookback (days)</label>
+              <input class="form-control form-control-sm" type="number" name="lookback_days"
+                     value="{{ lookback_days }}" min="1" max="365" step="1" placeholder="7">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">Model</label>
+              <select class="form-select form-select-sm" name="model_filter">
+                <option value="">All models</option>
+                {% for m in all_models_list %}
+                <option value="{{ m }}" {% if model_filter == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-sm-2">
+              <button class="btn btn-primary btn-sm w-100" type="submit">Apply</button>
+            </div>
+          </div>
+        </form>
+
+        {% if outlier_users %}
+        <div style="overflow-x:auto;">
+          <table class="lb-table">
+            <thead>
+              <tr>
+                <th style="width:40px">#</th>
+                <th>User</th>
+                <th>Email</th>
+                <th>Top Model</th>
+                <th class="text-end">Records</th>
+                <th class="text-end">Credits (last {{ lookback_days }}d)</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in outlier_users %}
+              {% set view_url = url_for('analytics.user_summary',
+                  name=u.get('name',''),
+                  email=u.get('email',''),
+                  date_field='date_partition',
+                  start_date=lookback_start_date,
+                  end_date=lookback_end_date,
+                  active_tab='records',
+                  fs='1'
+                ) %}
+              <tr class="{% if loop.index == 1 %}rank-1{% elif loop.index == 2 %}rank-2{% elif loop.index == 3 %}rank-3{% endif %}"
+                  style="cursor:pointer;" data-href="{{ view_url }}" onclick="window.location=this.dataset.href">
+                <td class="rank">{{ loop.index }}</td>
+                <td>{{ u.get('name') or u.get('email') or '&mdash;' }}</td>
+                <td style="font-size:.75rem; color:#8a92a0;">{{ u.get('email','&mdash;') }}</td>
+                <td style="font-size:.75rem; color:#555c6b;">{{ u.get('usage_type_model') or '&mdash;' }}</td>
+                <td class="text-end" style="font-size:.78rem; color:#8a92a0;">{{ '{:,}'.format(u.recent_records | int) }}</td>
+                <td class="credits text-end">{{ '{:,.0f}'.format(u.recent_credits) }}</td>
+                <td><a class="drill-link" href="{{ view_url }}" onclick="event.stopPropagation()">View &rarr;</a></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="dash-section-body text-muted small">
+          No users spent more than {{ '{:,.0f}'.format(credit_threshold) }} credits
+          in the last {{ lookback_days }} day{{ 's' if lookback_days != 1 }}.
+        </div>
+        {% endif %}
+      </div>
+
+    </div>
+
+    <div class="col-lg-4">
+
+      <!-- Upload Data Sheet -->
+      <div class="dash-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Data Sheet</span>
+        </div>
+        <div class="dash-section-body">
+          <p class="text-muted small mb-3">
+            Upload a new usage data sheet to replace the current dataset for all pages.
+            Accepts <code>.xlsx</code>, <code>.xls</code>, or <code>.csv</code>.
+          </p>
+          <form id="upload-form" method="post" action="{{ url_for('main.upload_data') }}" enctype="multipart/form-data">
+            <label class="dash-upload-label mb-2 w-100" for="data-file-input">
+              <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+                <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
+              </svg>
+              <span id="upload-file-label">Choose file&hellip;</span>
+              <input id="data-file-input" type="file" name="file" accept=".xlsx,.xls,.csv"
+                     onchange="document.getElementById('upload-file-label').textContent = this.files[0]?.name || 'Choose file…'">
+            </label>
+            <button id="upload-btn" class="btn btn-primary btn-sm w-100" type="submit">Upload</button>
+          </form>
+          <!-- Loading overlay shown while upload processes -->
+          <div id="upload-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:9999; align-items:center; justify-content:center; flex-direction:column; gap:1rem;">
+            <div class="spinner-border text-light" style="width:3rem; height:3rem;" role="status"></div>
+            <span style="color:#fff; font-size:.95rem; font-weight:600;">Uploading &amp; loading data&hellip;</span>
+          </div>
+          <script>
+            document.getElementById('upload-form').addEventListener('submit', function(e) {
+              if (!document.getElementById('data-file-input').files.length) return;
+              const overlay = document.getElementById('upload-overlay');
+              overlay.style.display = 'flex';
+            });
+          </script>
+        </div>
+      </div>
+
+      <!-- Forecast Snapshot -->
+      <div class="dash-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Forecast Snapshot</span>
+          <a class="drill-link" href="{{ url_for('forecast.forecast_page') }}">View &rarr;</a>
+        </div>
+        <div class="dash-section-body">
+          {% if forecast_snapshot %}
+            {% set ps = forecast_snapshot.pacing_status %}
+            {% set fs = forecast_snapshot.forecast_status %}
+            <div class="mb-3">
+              <div class="small text-muted mb-1">Pacing status</div>
+              <span class="pacing-pill {{ ps }}">{{ ps | fmt_status }}</span>
+            </div>
+            <div class="mb-3">
+              <div class="small text-muted mb-1">Forecast status</div>
+              <span class="pacing-pill {{ fs }}">{{ fs | fmt_status }}</span>
+            </div>
+            <table class="settings-table">
+              <tr>
+                <td>Credits remaining</td>
+                <td class="text-end fw-semibold">{{ '{:,.0f}'.format(forecast_snapshot.credits_remaining) }}</td>
+              </tr>
+              <tr>
+                <td>Credits used</td>
+                <td class="text-end">{{ '{:.1%}'.format(forecast_snapshot.percent_credits_used) }}</td>
+              </tr>
+              <tr>
+                <td>Contract elapsed</td>
+                <td class="text-end">{{ '{:.1%}'.format(forecast_snapshot.percent_contract_elapsed) }}</td>
+              </tr>
+              <tr>
+                <td>Weeks remaining</td>
+                <td class="text-end">{{ '{:.1f}'.format(forecast_snapshot.weeks_remaining) }}</td>
+              </tr>
+              <tr>
+                <td>Forecast weekly burn</td>
+                <td class="text-end">{{ '{:,.0f}'.format(forecast_snapshot.forecast_weekly_burn) }}</td>
+              </tr>
+              <tr>
+                <td>Projected end balance</td>
+                <td class="text-end {{ 'text-danger' if forecast_snapshot.forecast_contract_end_balance < 0 else 'text-success' }}">
+                  {{ '{:,.0f}'.format(forecast_snapshot.forecast_contract_end_balance) }}
+                </td>
+              </tr>
+            </table>
+          {% else %}
+            <p class="text-muted small mb-2">No forecast data loaded.</p>
+            <p class="small mb-3">
+              Upload historical and weekly data files in
+              <a href="{{ url_for('settings.settings_page') }}">Settings</a>
+              to enable forecasting.
+            </p>
+            <div class="d-flex gap-2 align-items-center small">
+              <span class="status-dot {% if pipeline_status.has_historical %}green{% else %}gray{% endif %}"></span>
+              Historical:
+              {% if pipeline_status.has_historical %}{{ pipeline_status.historical_weeks }}w loaded{% else %}not uploaded{% endif %}
+            </div>
+            <div class="d-flex gap-2 align-items-center small mt-1">
+              <span class="status-dot {% if pipeline_status.has_operational %}green{% else %}gray{% endif %}"></span>
+              Operational:
+              {% if pipeline_status.has_operational %}{{ pipeline_status.operational_weeks }}w loaded{% else %}not uploaded{% endif %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Weekly trend chart
+  const raw = {{ weekly_trend | safe }};
+  if (raw.length > 0) {
+    window.summaryWeeklyChart = new BNLChart('weeklyChart', {
+      type: 'bar',
+      data: {
+        labels: raw.map(d => d.week),
+        datasets: [{
+          label: 'Credits used',
+          data: raw.map(d => d.total_credits),
+          backgroundColor: 'rgba(13,110,253,0.65)',
+          borderColor: 'rgba(13,110,253,1)',
+          borderWidth: 1,
+          borderRadius: 3,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString() } },
+          x: { ticks: { maxRotation: 45, font: { size: 10 } } }
+        }
+      }
+    }, { exportName: 'Weekly Credit Burn' });
+  } else {
+    document.getElementById('weeklyChart').closest('.dash-section-body').innerHTML =
+      '<p class="text-muted small mb-0">No date data available to plot.</p>';
+  }
+
+  // Active Users per Week chart
+  (function () {
+    const auData = {{ active_users_data | safe }};
+    const canvas = document.getElementById('activeUsersChart');
+    if (!canvas) return;
+    if (!auData || !auData.length) {
+      canvas.closest('.dash-section-body').innerHTML =
+        '<p class="text-muted small mb-0">No active user data available.</p>';
+      return;
+    }
+    const labels   = auData.map(d => d.week_start);
+    const values   = auData.map(d => d.active_users);
+    const ic       = auData.map(d => d.in_contract);
+    const bgColors = ic.map(v => v ? 'rgba(111,66,193,0.7)' : 'rgba(108,117,125,0.35)');
+    window.summaryActiveUsersChart = new BNLChart('activeUsersChart', {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Active users',
+          data: values,
+          backgroundColor: bgColors,
+          borderRadius: 3,
+        }],
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            title: items => 'Week of ' + items[0].label,
+            label: ctx => `  Active users: ${ctx.parsed.y}`,
+            footer: items => ic[items[0].dataIndex] ? 'In contract period' : 'Pre-contract',
+          }},
+        },
+        scales: {
+          y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 10 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          x: { ticks: { maxRotation: 45, maxTicksLimit: 16, font: { size: 10 } }, grid: { display: false } },
+        },
+      },
+    }, { exportName: 'Active Users per Week' });
+  })();
+
+</script>
+{% endblock %}

@@ -1,0 +1,483 @@
+﻿{% extends "base.html" %}
+{% block title %}Settings - Credit Usage Explorer{% endblock %}
+
+{% block body %}
+    <div class="container py-4" style="max-width: 1100px;">
+
+      <div class="mb-4">
+        <h1 class="page-title">Settings</h1>
+        <p class="page-subtitle">Manage data pipeline, contract configuration, and tier policy.</p>
+      </div>
+
+      {# Pipeline Status #}
+      <div class="settings-section">
+        <h5>Pipeline Status</h5>
+
+        {% if not pipeline_status.has_historical and not pipeline_status.has_operational %}
+        <div class="alert alert-info mb-3" role="alert">
+          No data has been uploaded yet. Upload a historical Excel file and/or weekly CSV files below to enable forecasting.
+        </div>
+        {% endif %}
+
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="status-dot {% if pipeline_status.has_historical %}green{% else %}gray{% endif %}"></span>
+              <strong>Historical data</strong>
+              {% if pipeline_status.has_historical %}
+              <form method="post" action="{{ url_for('settings.delete_historical') }}" class="d-inline" onsubmit="return confirm('Delete all historical data?');">
+                <button class="btn btn-danger btn-sm py-0 px-2" type="submit">Delete</button>
+              </form>
+              {% endif %}
+            </div>
+            <div class="text-muted small ps-3">
+              {% if pipeline_status.has_historical %}
+                {{ pipeline_status.historical_weeks }} week{{ 's' if pipeline_status.historical_weeks != 1 else '' }} loaded
+              {% else %}
+                Not uploaded
+              {% endif %}
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="status-dot {% if pipeline_status.has_operational %}green{% else %}gray{% endif %}"></span>
+              <strong>Operational (weekly) data</strong>
+            </div>
+            <div class="text-muted small ps-3">
+              {% if pipeline_status.has_operational %}
+                {{ pipeline_status.operational_weeks }} week{{ 's' if pipeline_status.operational_weeks != 1 else '' }} loaded
+              {% else %}
+                Not uploaded
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# Ingested Weekly Weeks #}
+      {% if ingested_weeks %}
+      <div class="settings-section">
+        <h5>Ingested Weekly Data</h5>
+        <table class="settings-table">
+          <thead>
+            <tr>
+              <th>Week Start</th>
+              <th>Week End</th>
+              <th>Source File</th>
+              <th class="text-end">Credits</th>
+              <th class="text-end">Users</th>
+              <th class="text-end">Credit-Active</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for week in ingested_weeks %}
+            <tr>
+              <td>{{ week.week_start }}</td>
+              <td>{{ week.week_end }}</td>
+              <td style=”font-size:.78rem; color:#8a92a0;”>{{ week.source_file or '&mdash;' }}</td>
+              <td class="text-end">{{ '{:,.2f}'.format(week.total_credits_used) }}</td>
+              <td class="text-end">{{ week.unique_users }}</td>
+              <td class="text-end">{{ week.credit_active_users }}</td>
+              <td class="text-end">
+                <form method="post" action="{{ url_for('settings.delete_week', week_start_str=week.week_start) }}" onsubmit="return confirm('Delete week {{ week.week_start }}?');">
+                  <button class="btn btn-danger btn-sm py-0 px-2" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      {# Upload History #}
+      {% if upload_history %}
+      <div class="settings-section">
+        <h5>Upload History</h5>
+        <table class="settings-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Type</th>
+              <th>File</th>
+              <th class="text-end">Credits</th>
+              <th class="text-end">Rows</th>
+              <th class="text-end">Users</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in upload_history %}
+            <tr>
+              <td style="white-space:nowrap; font-size:.78rem; color:#8a92a0;">{{ u.ts | replace('T', ' ') | replace('Z', ' UTC') }}</td>
+              <td>
+                <span class="badge {% if u.type == 'historical' %}bg-secondary{% else %}bg-primary{% endif %}" style="font-size:.68rem;">{{ u.type }}</span>
+              </td>
+              <td style="font-size:.78rem; color:#8a92a0; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ u.filename }}">{{ u.filename }}</td>
+              <td class="text-end">{{ '{:,.0f}'.format(u.stats.total_credits | float) if u.stats.total_credits is defined else '—' }}</td>
+              <td class="text-end">{{ '{:,}'.format(u.stats.rows | int) if u.stats.rows is defined else '—' }}</td>
+              <td class="text-end">{{ '{:,}'.format(u.stats.users | int) if u.stats.users is defined else ('{:,}'.format(u.stats.unique_users | int) if u.stats.unique_users is defined else '—') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      {# Advanced Forecasting Data (optional) #}
+      <div class="settings-section">
+        <h5>Advanced Forecasting Data <span style="font-weight:400; font-size:.8rem; color:#8a92a0; text-transform:none; letter-spacing:0;">(optional)</span></h5>
+        <div class="alert alert-info py-2 px-3 mb-3" style="font-size:.82rem;">
+          The <a href=”{{ url_for('main.summary_page') }}”>Summary page</a> upload is all you need &mdash;
+          forecasting runs automatically from your data sheet.
+          The uploads below are only needed if you have <strong>OpenAI weekly user-export files</strong>
+          (the detailed per-user CSV/Excel reports from the platform), which improve forecast accuracy
+          by providing richer weekly breakdowns.
+        </div>
+
+        <div class="accordion" id="advancedUploads">
+
+          <div class="accordion-item border-0" style="background:transparent;">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-2 px-0 bg-transparent shadow-none"
+                      style="font-size:.84rem; font-weight:600; color:#1a1d23;"
+                      type="button" data-bs-toggle="collapse" data-bs-target="#collapseHistorical">
+                Historical weekly export (Excel)
+              </button>
+            </h2>
+            <div id="collapseHistorical" class="accordion-collapse collapse" data-bs-parent="#advancedUploads">
+              <div class="accordion-body px-0 pt-2 pb-0">
+                <p class="text-muted small mb-2">
+                  Excel file with a sheet named <code>weekly_user_export</code>. Required columns:
+                  <code>period_start</code>, <code>period_end</code>, <code>email</code>, <code>messages</code>, <code>credits_used</code>.
+                </p>
+                <form method="post" action="{{ url_for('settings.upload_historical') }}" enctype="multipart/form-data">
+                  <div class="row g-2 align-items-end">
+                    <div class="col-md-8">
+                      <input class="form-control form-control-sm" type="file" name="file" accept=".xlsx,.xls,.csv" required>
+                    </div>
+                    <div class="col-md-4">
+                      <button class="btn btn-outline-primary btn-sm w-100" type="submit">Upload &amp; Ingest</button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <div class="accordion-item border-0 mt-1" style="background:transparent;">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-2 px-0 bg-transparent shadow-none"
+                      style="font-size:.84rem; font-weight:600; color:#1a1d23;"
+                      type="button" data-bs-toggle="collapse" data-bs-target="#collapseWeekly">
+                Weekly operational export (CSV)
+              </button>
+            </h2>
+            <div id="collapseWeekly" class="accordion-collapse collapse" data-bs-parent="#advancedUploads">
+              <div class="accordion-body px-0 pt-2 pb-0">
+                <p class="text-muted small mb-2">
+                  Weekly user export CSV from the OpenAI/ChatGPT platform.
+                  Week dates are auto-inferred from filenames matching <code>YYYY-MM-DD - YYYY-MM-DD</code>.
+                </p>
+                <form method="post" action="{{ url_for('settings.upload_weekly') }}" enctype="multipart/form-data">
+                  <div class="row g-2 align-items-end mb-2">
+                    <div class="col-md-8">
+                      <input class="form-control form-control-sm" type="file" name="file" accept=".csv" required>
+                    </div>
+                  </div>
+                  <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                      <label class="form-label">Week start <span class="text-muted">(optional)</span></label>
+                      <input class="form-control form-control-sm" type="date" name="week_start">
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Week end <span class="text-muted">(optional)</span></label>
+                      <input class="form-control form-control-sm" type="date" name="week_end">
+                    </div>
+                    <div class="col-md-2">
+                      <button class="btn btn-outline-primary btn-sm w-100" type="submit">Upload &amp; Ingest</button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      {# Contract and Forecast Settings #}
+      {% set c = saved_contract.contract %}
+      {% set p = saved_contract.pricing %}
+      {% set f = saved_contract.forecast %}
+      <div class="settings-section">
+        <h5>Contract &amp; Forecast Settings</h5>
+        <form id="config-save-form" method="post" action="{{ url_for('forecast.save_forecast_config') }}">
+
+          <p class="text-uppercase fw-bold text-muted mb-1" style="font-size:.63rem; letter-spacing:.08em;">Contract</p>
+          <div class="row g-3 mb-3">
+            <div class="col-md-3">
+              <label class="form-label">Contract start</label>
+              <input class="form-control form-control-sm" type="date" name="contract_start_date" value="{{ c.contract_start_date }}" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Contract end</label>
+              <input class="form-control form-control-sm" type="date" name="contract_end_date" value="{{ c.contract_end_date }}" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Purchased credits</label>
+              <input class="form-control form-control-sm" type="number" name="purchased_credits" value="{{ c.purchased_credits }}" min="0" required>
+            </div>
+            <div class="col-md-3 d-flex align-items-end pb-1">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="rollover_allowed" id="rollover_allowed" {% if c.rollover_allowed %}checked{% endif %}>
+                <label class="form-check-label" for="rollover_allowed">Rollover allowed</label>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-uppercase fw-bold text-muted mb-1 mt-1" style="font-size:.63rem; letter-spacing:.08em;">Pricing</p>
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <label class="form-label">Current price per credit ($)</label>
+              <input class="form-control form-control-sm" type="number" step="0.0001" name="current_price_per_credit" value="{{ p.current_price_per_credit }}" min="0">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Next contract price per credit ($)</label>
+              <input class="form-control form-control-sm" type="number" step="0.0001" name="next_contract_price_per_credit" value="{{ p.next_contract_price_per_credit }}" min="0">
+            </div>
+          </div>
+
+          <hr class="my-3">
+          <p class="text-uppercase fw-bold text-muted mb-2" style="font-size:.63rem; letter-spacing:.08em;">Forecast</p>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-3">
+              <label class="form-label d-flex align-items-center gap-1">
+                Forecast mode
+                <span tabindex="0" data-bs-toggle="tooltip" title="Auto selects weights by how many operational weeks exist. Manual uses the weights you set below." style="cursor:default; color:#6c757d; font-size:.8rem;">ⓘ</span>
+              </label>
+              <select id="forecast-mode-select" class="form-select form-select-sm" name="forecast_mode">
+                <option value="auto" {% if f.mode == 'auto' %}selected{% endif %}>auto</option>
+                <option value="manual" {% if f.mode == 'manual' %}selected{% endif %}>manual</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Snapshot auto-save</label>
+              <select class="form-select form-select-sm" name="snapshot_auto_save">
+                {% set cur = f.get('snapshot_auto_save', 'daily') %}
+                <option value="daily"     {% if cur == 'daily'     %}selected{% endif %}>Daily (on page visit)</option>
+                <option value="on_upload" {% if cur == 'on_upload' %}selected{% endif %}>On data upload</option>
+                <option value="both"      {% if cur == 'both'      %}selected{% endif %}>Both</option>
+                <option value="manual"    {% if cur == 'manual'    %}selected{% endif %}>Manual only</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Recent avg window (weeks)</label>
+              <input class="form-control form-control-sm" type="number" name="recent_average_window_weeks" value="{{ f.recent_average_window_weeks }}" min="1">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Min weeks for recent avg</label>
+              <input class="form-control form-control-sm" type="number" name="minimum_weeks_for_recent_average" value="{{ f.minimum_weeks_for_recent_average }}" min="1">
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-3 d-flex align-items-end pb-1">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="normalize_weights" id="normalize_weights" {% if f.normalize_weights %}checked{% endif %}>
+                <label class="form-check-label" for="normalize_weights">Normalize weights</label>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label d-flex align-items-center gap-1">
+                Monte Carlo simulations
+                <span tabindex="0" data-bs-toggle="tooltip" title="Number of simulation runs for Monte Carlo confidence bands. Higher = more accurate but slower. Range: 500–20000." style="cursor:default; color:#6c757d; font-size:.8rem;">ⓘ</span>
+              </label>
+              <input class="form-control form-control-sm" type="number" name="monte_carlo_runs"
+                     value="{{ f.get('monte_carlo_runs', 10000) }}" min="100" max="20000" step="1">
+            </div>
+          </div>
+
+          <div id="manual-weights-section">
+            <div class="d-flex align-items-center gap-3 mb-1">
+              <label class="form-label fw-semibold mb-0">Manual forecast weights</label>
+              <small class="text-muted">sum: <span id="weight-sum-val" class="fw-semibold">—</span></small>
+              <small id="weight-sum-warn" class="text-warning d-none">⚠ should total 1.0 (or enable Normalize)</small>
+            </div>
+            <div class="row g-3 mb-3">
+              <div class="col-md-3">
+                <label class="form-label">Historical weight</label>
+                <input class="form-control form-control-sm weight-input" type="number" step="0.01" name="historical_weight" value="{{ f.get('historical_weight', '') }}" min="0" max="1">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">Recent average weight</label>
+                <input class="form-control form-control-sm weight-input" type="number" step="0.01" name="recent_average_weight" value="{{ f.get('recent_average_weight', '') }}" min="0" max="1">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">Latest week weight</label>
+                <input class="form-control form-control-sm weight-input" type="number" step="0.01" name="latest_week_weight" value="{{ f.get('latest_week_weight', '') }}" min="0" max="1">
+              </div>
+            </div>
+          </div>
+
+          <button class="btn btn-primary btn-sm" type="submit">Save Config</button>
+        </form>
+      </div>
+
+      {# Snapshot Settings #}
+      <div class="settings-section">
+        <h5>Snapshot Settings</h5>
+        <p class="text-muted small mb-3">
+          Save a labeled forecast snapshot at any time.
+          {% if forecast_history_count %}{{ forecast_history_count }} snapshot{{ 's' if forecast_history_count != 1 }} saved &mdash; view on the <a href="{{ url_for('forecast.forecast_page') }}">Forecast page</a>.{% else %}No snapshots saved yet.{% endif %}
+        </p>
+        <form method="post" action="{{ url_for('forecast.save_forecast_snapshot') }}" class="d-flex align-items-end gap-2">
+          <input type="hidden" name="next_page" value="settings">
+          <div>
+            <label class="form-label mb-1">Label <span class="text-muted">(optional)</span></label>
+            <input type="text" name="snapshot_label" class="form-control form-control-sm" style="min-width:240px;" placeholder="e.g. Post-Q2 review">
+          </div>
+          <button class="btn btn-outline-primary btn-sm" type="submit">Save Snapshot Now</button>
+        </form>
+      </div>
+
+      {# Tier Policy #}
+      <div class="settings-section">
+
+        <h5>Tier Policy</h5>
+        <form method="post" action="{{ url_for('settings.update_tiers') }}">
+          <div class="table-responsive mb-3">
+            <table class="settings-table" id="tier-table">
+              <thead>
+                <tr>
+                  <th>Tier Name</th>
+                  <th>Weekly Credit Cap</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for tier_name, tier_cfg in tiers.tiers.items() %}
+                <tr>
+                  <td><input class="form-control form-control-sm" type="text" name="tier_name[]" value="{{ tier_name }}" required></td>
+                  <td><input class="form-control form-control-sm" type="number" name="tier_cap[]" value="{{ tier_cfg.weekly_credit_cap }}" min="0" required></td>
+                  <td><button type="button" class="btn btn-outline-danger btn-sm py-0 px-2" onclick="removeRow(this)">&#x2715;</button></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="mb-3">
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addTierRow()">+ Add tier</button>
+          </div>
+          <button class="btn btn-primary btn-sm" type="submit">Save tier policy</button>
+        </form>
+      </div>
+
+      {# Danger Zone #}
+      <div class="settings-section" style="border-color:#f5c6cb;">
+        <h5 style="color:#dc3545;">Danger Zone</h5>
+        <p class="text-muted small mb-3">
+          Permanently deletes all uploaded data files, pipeline outputs, and forecast snapshots.
+          Contract and tier settings are preserved. The app will revert to the default demo data.
+        </p>
+        <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#clearDataModal">
+          Clear All Data
+        </button>
+      </div>
+
+    </div>
+
+    <!-- Clear All Data confirmation modal -->
+    <div class="modal fade" id="clearDataModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title text-danger">Clear All Data?</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p>This will permanently delete:</p>
+            <ul class="small mb-2">
+              <li>Your uploaded data sheet</li>
+              <li>All ingested historical &amp; weekly pipeline files</li>
+              <li>All forecast snapshots &amp; summaries</li>
+            </ul>
+            <p class="mb-0 text-muted small">Contract dates, pricing, and tier settings are <strong>not</strong> affected.</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+            <form method="post" action="{{ url_for('settings.clear_all_data') }}" style="display:inline;">
+              <button type="submit" class="btn btn-danger btn-sm">Yes, clear everything</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      // Forecast mode - show/hide manual weights
+      (function () {
+        const modeSelect = document.getElementById('forecast-mode-select');
+        const manualSec  = document.getElementById('manual-weights-section');
+        function applyMode() {
+          if (!modeSelect || !manualSec) return;
+          manualSec.style.display = modeSelect.value === 'manual' ? '' : 'none';
+        }
+        if (modeSelect) modeSelect.addEventListener('change', applyMode);
+        applyMode();
+
+        function updateWeightSum() {
+          const inputs = document.querySelectorAll('.weight-input');
+          let sum = 0, any = false;
+          inputs.forEach(el => { if (el.value !== '') { sum += parseFloat(el.value || 0); any = true; } });
+          const disp = document.getElementById('weight-sum-val');
+          const warn = document.getElementById('weight-sum-warn');
+          if (!disp) return;
+          if (!any) { disp.textContent = '—'; disp.className = 'fw-semibold text-muted'; if (warn) warn.classList.add('d-none'); return; }
+          disp.textContent = sum.toFixed(2);
+          const ok = Math.abs(sum - 1.0) < 0.005;
+          disp.className = 'fw-semibold ' + (ok ? 'text-success' : 'text-warning');
+          if (warn) warn.classList.toggle('d-none', ok);
+        }
+        document.querySelectorAll('.weight-input').forEach(el => el.addEventListener('input', updateWeightSum));
+        updateWeightSum();
+
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+          new bootstrap.Tooltip(el, { trigger: 'hover focus', placement: 'top' });
+        });
+      })();
+
+      function removeRow(btn) {
+        btn.closest('tr').remove();
+      }
+
+      function addWeightRow() {
+        const tbody = document.querySelector('#weight-schedule-table tbody');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><input class="form-control form-control-sm" type="number" name="ws_min[]" value="0" min="0" required></td>
+          <td><input class="form-control form-control-sm" type="number" name="ws_max[]" value="" min="0" placeholder="inf"></td>
+          <td><input class="form-control form-control-sm" type="number" step="0.01" name="ws_hist[]" value="" min="0" max="1"></td>
+          <td><input class="form-control form-control-sm" type="number" step="0.01" name="ws_recent[]" value="" min="0" max="1"></td>
+          <td><input class="form-control form-control-sm" type="number" step="0.01" name="ws_latest[]" value="" min="0" max="1"></td>
+          <td><button type="button" class="btn btn-outline-danger btn-sm py-0 px-2" onclick="removeRow(this)">&#x2715;</button></td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      function addTierRow() {
+        const tbody = document.querySelector('#tier-table tbody');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><input class="form-control form-control-sm" type="text" name="tier_name[]" value="" required></td>
+          <td><input class="form-control form-control-sm" type="number" name="tier_cap[]" value="0" min="0" required></td>
+          <td><button type="button" class="btn btn-outline-danger btn-sm py-0 px-2" onclick="removeRow(this)">&#x2715;</button></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    </script>
+{% endblock %}
+

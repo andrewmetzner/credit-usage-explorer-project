@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}Records - Credit Usage Explorer{% endblock %}
+
+{% block body %}
+    <div class="container py-4" style="max-width: 1280px;">
+
+      <!-- HEADER -->
+      <div class="mb-4">
+        <h1 class="page-title">Records</h1>
+        <p class="page-subtitle">Search and audit raw credit usage records.</p>
+      </div>
+
+      <!-- SEARCH -->
+      <form method="get" action="{{ url_for('main.records_page') }}">
+        <div class="filter-card">
+          <div class="section-label">Record Search</div>
+
+          <!-- Row 1: text search + dates -->
+          <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+              <label class="form-label">Search field</label>
+              <select class="form-select form-select-sm" name="search_field">
+                <option value="any" {% if search_field == 'any' %}selected{% endif %}>Any text field</option>
+                {% for col in headers %}
+                <option value="{{ col }}" {% if search_field == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Search value</label>
+              <input
+                class="form-control form-control-sm"
+                name="search_query"
+                value="{{ search_query }}"
+                placeholder="Name, email, model, usage type, ID, etc."
+              >
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">Start date</label>
+              <input class="form-control form-control-sm" type="date" name="start_date" value="{{ start_date }}">
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">End date</label>
+              <input class="form-control form-control-sm" type="date" name="end_date" value="{{ end_date }}">
+            </div>
+
+            <div class="col-md-1">
+              <button class="btn btn-primary btn-sm w-100">Search</button>
+            </div>
+          </div>
+
+          <!-- Row 2: credits filter -->
+          <div class="row g-2 align-items-end credits-filter-row">
+            <div class="col-md-2">
+              <label class="form-label">Min credits</label>
+              <input
+                class="form-control form-control-sm"
+                type="number"
+                step="any"
+                name="min_credits"
+                value="{{ min_credits }}"
+                placeholder="e.g. 10"
+              >
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">Max credits</label>
+              <input
+                class="form-control form-control-sm"
+                type="number"
+                step="any"
+                name="max_credits"
+                value="{{ max_credits }}"
+                placeholder="e.g. 500"
+              >
+            </div>
+
+            <div class="col-md-3 d-flex align-items-end pb-1">
+              <div class="form-check mb-0">
+                <input
+                  class="form-check-input"
+                  type="checkbox"
+                  name="zero_credits"
+                  value="1"
+                  id="zero_credits"
+                  {% if zero_credits == '1' %}checked{% endif %}
+                  onchange="this.form.submit()"
+                >
+                <label class="form-check-label" for="zero_credits">Zero credits only</label>
+              </div>
+            </div>
+
+            <div class="col d-flex align-items-end justify-content-end">
+              <div class="muted-help me-3">
+                Use <strong>Tiers</strong> for rankings · <strong>Users</strong> for people-first analysis.
+              </div>
+              <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('main.records_page') }}">Clear</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- DISPLAY COLUMNS -->
+        <div class="columns-card">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="section-label mb-0">Display Columns</div>
+            <div class="muted-help">{{ display_columns | length }} selected</div>
+          </div>
+
+          <div class="column-grid">
+            <div class="row g-1">
+              {% for col in headers %}
+              {% set display_name = col %}
+
+              {% if col == 'usage_type' %}{% set display_name = 'Raw usage type' %}
+              {% elif col == 'usage_type_parsed_type' %}{% set display_name = 'Usage Type' %}
+              {% elif col == 'usage_type_model' %}{% set display_name = 'Model' %}
+              {% elif col == 'usage_type_io' %}{% set display_name = 'IO' %}
+              {% elif col == 'usage_type_medium' %}{% set display_name = 'Medium' %}
+              {% elif col == 'usage_type_date' %}{% set display_name = 'Usage Date' %}
+              {% elif col == 'usage_credits' %}{% set display_name = 'Credits' %}
+              {% elif col == 'usage_quantity' %}{% set display_name = 'Quantity' %}
+              {% elif col == 'usage_units' %}{% set display_name = 'Units' %}
+              {% elif col == 'date_partition' %}{% set display_name = 'Date' %}
+              {% endif %}
+
+              <div class="col-md-3 col-lg-2">
+                <div class="form-check">
+                  <input
+                    class="form-check-input"
+                    type="checkbox"
+                    name="selected_fields"
+                    value="{{ col }}"
+                    id="col_{{ loop.index }}"
+                    {% if col in selected_fields %}checked{% endif %}
+                    onchange="this.form.submit()"
+                  >
+                  <label class="form-check-label" for="col_{{ loop.index }}">
+                    {{ display_name }}
+                  </label>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <!-- RESULTS -->
+      <div class="results-card">
+        <div class="results-header">
+          <div>
+            <span class="title">Results</span>
+            {% if search_query %}
+            <span class="field-badge ms-2">{{ search_field }}</span>
+            {% endif %}
+            {% if min_credits or max_credits %}
+            <span class="field-badge ms-2">credits: {{ min_credits or '0' }}–{{ max_credits or '∞' }}</span>
+            {% endif %}
+            {% if zero_credits == '1' %}
+            <span class="field-badge ms-2">zero credits</span>
+            {% endif %}
+          </div>
+          <span class="count">{{ '{:,}'.format(row_count) }} records</span>
+        </div>
+
+        <div class="table-scroll">
+          <table class="table table-sm table-hover records-table">
+            <thead>
+              <tr>
+                {% for col in display_columns %}
+                {% set display_name = col %}
+
+                {% if col == 'usage_type' %}{% set display_name = 'Raw usage type' %}
+                {% elif col == 'usage_type_parsed_type' %}{% set display_name = 'Usage Type' %}
+                {% elif col == 'usage_type_model' %}{% set display_name = 'Model' %}
+                {% elif col == 'usage_type_io' %}{% set display_name = 'IO' %}
+                {% elif col == 'usage_type_medium' %}{% set display_name = 'Medium' %}
+                {% elif col == 'usage_type_date' %}{% set display_name = 'Usage Date' %}
+                {% elif col == 'usage_credits' %}{% set display_name = 'Credits' %}
+                {% elif col == 'usage_quantity' %}{% set display_name = 'Quantity' %}
+                {% elif col == 'usage_units' %}{% set display_name = 'Units' %}
+                {% elif col == 'date_partition' %}{% set display_name = 'Date' %}
+                {% endif %}
+
+                <th>{{ display_name }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+
+            <tbody>
+              {% for row in rows %}
+              <tr>
+                {% for col in display_columns %}
+                <td title="{{ row[col] }}">{{ row[col] }}</td>
+                {% endfor %}
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="{{ display_columns|length or 1 }}" class="text-center text-muted py-4">
+                  No records found
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      document.querySelectorAll('input[type="date"], select[name="search_field"]').forEach(el => {
+        el.addEventListener('change', () => el.closest('form').submit());
+      });
+    </script>
+{% endblock %}

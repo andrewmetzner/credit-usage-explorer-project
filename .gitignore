@@ -1,0 +1,47 @@
+data/current_data.csv
+data/current_data.xlsx
+data/historical/
+data/uploads/
+data/processed/
+
+config/data_path.txt
+config/contract_config.yaml
+config/tier_policy_config.yaml
+
+#py
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Environment variable files
+.env
+.env.*
+!.env.example
+
+# editors tools
+vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# logs 
+*.log
+*.tmp
+*.bak

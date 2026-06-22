@@ -1,0 +1,13 @@
+
+DONE
+- record uploads (upload_history.json log, shown as table in settings)
+- better optimized UI of snapshots (compare panel moved below table, larger chart, Select All button, auto-scroll to burndown on first select)
+- delete data sheets individually (settings page delete buttons)
+- go to forecasting of previous data (👁 view button on snapshot rows)
+- daily granularity toggle on burndown chart
+- color pickers for chart lines (localStorage persistence)
+- MC bands in snapshot comparison overlay
+- bug: USERS search filters not applying
+- bug: MC chart truncated when credits available updated
+- bug: exclude partial week had no effect when pipeline historical data exists
+- bug: excluding partial week shifted forecast start date back 1 week (as_of fix)

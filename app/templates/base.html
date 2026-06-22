@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Credit Usage Explorer{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/bnl.css') }}" rel="stylesheet">
+    {% block extra_head %}{% endblock %}
+  </head>
+  <body>
+
+    <!-- ── Persistent top navbar ── -->
+    <nav class="app-nav">
+      <!-- <div class="app-nav-inner">
+        <a class="app-brand" href="{{ url_for('main.summary_page') }}">_</a> -->
+        <div class="app-nav-links">
+          <a class="app-nav-link {% if request.endpoint == 'main.summary_page' %}active{% endif %}"
+             href="{{ url_for('main.summary_page') }}">Summary</a>
+          <a class="app-nav-link {% if request.endpoint == 'main.records_page' %}active{% endif %}"
+             href="{{ url_for('main.records_page') }}">Records</a>
+          <a class="app-nav-link {% if request.endpoint == 'analytics.tiers_page' %}active{% endif %}"
+             href="{{ url_for('analytics.tiers_page') }}">Tiers</a>
+          <a class="app-nav-link {% if request.endpoint in ('analytics.user_cards_page', 'analytics.user_summary') %}active{% endif %}"
+             href="{{ url_for('analytics.user_cards_page') }}">Users</a>
+          <a class="app-nav-link {% if request.endpoint == 'forecast.forecast_page' %}active{% endif %}"
+             href="{{ url_for('forecast.forecast_page') }}">Forecast</a>
+          <a class="app-nav-link {% if request.endpoint and request.endpoint.startswith('settings.') %}active{% endif %}"
+             href="{{ url_for('settings.settings_page') }}">Settings</a>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ── Flash messages ── -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-container">
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show mb-2" role="alert">
+              {{ message }}
+              <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <!-- ── Page content ── -->
+    {% block body %}{% endblock %}
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

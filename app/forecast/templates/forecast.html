@@ -1,0 +1,1603 @@
+{% extends "base.html" %}
+{% block title %}Forecast - Credit Usage Explorer{% endblock %}
+
+{% block extra_head %}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+    <style>
+      .label-empty { color: #adb5bd; font-style: italic; }
+
+      .kpi-strip {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: .75rem;
+        margin-bottom: 1.25rem;
+      }
+      .kpi-card {
+        background: #fff;
+        border: 1px solid #e3e6ea;
+        border-radius: 10px;
+        padding: .75rem 1rem;
+      }
+      .kpi-label {
+        font-size: .68rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        color: #8a92a0;
+        margin-bottom: .2rem;
+      }
+      .kpi-value {
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: #1a1d23;
+        line-height: 1.2;
+      }
+      .kpi-sub {
+        font-size: .72rem;
+        color: #8a92a0;
+        margin-top: .1rem;
+      }
+
+      .section-label {
+        font-size: .7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .09em;
+        color: #8a92a0;
+        margin-bottom: .6rem;
+      }
+
+      .chart-card {
+        background: #fff;
+        border: 1px solid #e3e6ea;
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+      }
+      .chart-card-title {
+        font-size: .85rem;
+        font-weight: 700;
+        color: #1a1d23;
+        margin-bottom: .1rem;
+      }
+      .chart-card-sub {
+        font-size: .66rem;
+        color: #adb5bd;
+        margin-bottom: .6rem;
+      }
+      .chart-toolbar {
+        display: flex;
+        gap: .3rem;
+        align-items: center;
+      }
+    </style>
+{% endblock %}
+
+{% block body %}
+<div class="container py-4">
+
+  <!-- Page Header -->
+  <div class="mb-3">
+    <h1 class="page-title">Forecast</h1>
+    <p class="page-subtitle">Contract status and credit-burn projections.</p>
+  </div>
+
+  {% if no_data %}
+  <!-- NO DATA STATE -->
+  <div class="card mb-4">
+    <div class="card-body text-center py-5">
+      <h4 class="mb-3">No forecast data available</h4>
+      <p class="text-muted mb-4">
+        Upload your data sheet on the
+        <a href="{{ url_for('main.summary_page') }}">Summary page</a>
+        — forecasting runs automatically from it.
+      </p>
+      {% if pipeline_status %}
+      <div class="d-inline-flex gap-4 text-start">
+        <div>
+          <span class="status-dot {% if pipeline_status.has_historical %}green{% else %}gray{% endif %}"></span>
+          Historical: {% if pipeline_status.has_historical %}{{ pipeline_status.historical_weeks }} weeks loaded{% else %}Not uploaded{% endif %}
+        </div>
+        <div>
+          <span class="status-dot {% if pipeline_status.has_operational %}green{% else %}gray{% endif %}"></span>
+          Operational: {% if pipeline_status.has_operational %}{{ pipeline_status.operational_weeks }} weeks loaded{% else %}Not uploaded{% endif %}
+        </div>
+      </div>
+      {% endif %}
+      <div class="mt-4">
+        <a class="btn btn-primary" href="{{ url_for('settings.settings_page') }}">Go to Settings</a>
+      </div>
+    </div>
+  </div>
+
+  {% else %}
+
+  {% set cs = contract_status %}
+  {% set fc = forecast %}
+  {% set pacing_colors = {
+    'ON_PACE': 'success',
+    'UNDERUSING': 'warning',
+    'ELEVATED_BURN': 'warning',
+    'OVERBURNING': 'danger'
+  } %}
+  {% set forecast_colors = {
+    'ON_TARGET': 'success',
+    'EXHAUSTION_RISK': 'danger',
+    'MODERATE_UNDERUSE': 'warning',
+    'HIGH_UNDERUSE': 'info'
+  } %}
+
+  <!-- KPI Strip -->
+  <div class="kpi-strip">
+
+    <div class="kpi-card">
+      <div class="kpi-label">Pacing</div>
+      <div class="kpi-value">
+        <span class="badge bg-{{ pacing_colors.get(cs.pacing_status, 'secondary') }}" style="font-size:.8rem;">
+          {{ cs.pacing_status | fmt_status }}
+        </span>
+      </div>
+      <div class="kpi-sub">ratio {{ "{:.2f}".format(cs.burn_pace_ratio) }}</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Forecast</div>
+      <div class="kpi-value">
+        <span class="badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}" style="font-size:.8rem;">
+          {{ fc.forecast_status | fmt_status }}
+        </span>
+      </div>
+      <div class="kpi-sub">{{ fc.forecast_exhaustion_date or 'no exhaustion' }}</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Credits Remaining</div>
+      <div class="kpi-value">{{ "{:,.0f}".format(cs.credits_remaining) }}</div>
+      <div class="kpi-sub">of {{ "{:,.0f}".format(cs.purchased_credits) }} purchased</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Forecast Weekly Burn</div>
+      <div class="kpi-value">{{ "{:,.0f}".format(fc.forecast_weekly_burn) }}</div>
+      <div class="kpi-sub">{{ "{:,.0f}".format(fc.forecast_monthly_burn) }} / month</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">End Balance</div>
+      <div class="kpi-value {{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">
+        {{ "{:+,.0f}".format(fc.forecast_contract_end_balance) }}
+      </div>
+      <div class="kpi-sub">{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }} used by end</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">Contract Period</div>
+      <div class="kpi-value" style="font-size:.70rem;"><u>Start</u>: {{ cs.contract_start_date }}</div>
+      <div class="kpi-value" style="font-size:.70rem;"><u>End</u>: {{ cs.contract_end_date }}</div>
+      <div class="kpi-sub">{{ cs.weeks_remaining | round(1) }}w left</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-label">MC Risk</div>
+      <div class="kpi-value" id="mc-kpi-prob" style="color:#adb5bd;">—</div>
+      <div class="kpi-sub" id="mc-kpi-sub"></div>
+    </div>
+
+  </div>
+
+  <!-- Credit Usage Progress Bar -->
+  {% set pct_used = [cs.percent_credits_used * 100, 100] | min %}
+  {% set pct_forecast = [(fc.forecast_percent_credits_used_by_contract_end * 100 - pct_used), 0] | max %}
+  {% set bar_color = 'danger' if fc.forecast_status == 'EXHAUSTION_RISK' else ('warning' if fc.forecast_status in ['MODERATE_UNDERUSE', 'HIGH_UNDERUSE'] else 'success') %}
+  <div class="mb-4">
+    <div class="d-flex justify-content-between small text-muted mb-1">
+      <span>0%</span>
+      <span>Credit usage vs. purchased ({{ "{:,.0f}".format(cs.purchased_credits) }})</span>
+      <span>100%</span>
+    </div>
+    <div class="progress" style="height: 22px; border-radius: 8px;">
+      <div class="progress-bar bg-primary" style="width: {{ pct_used | round(1) }}%; border-radius: 8px 0 0 8px;"
+           title="Used: {{ '{:.1%}'.format(cs.percent_credits_used) }}">
+        {{ "{:.1%}".format(cs.percent_credits_used) }}
+      </div>
+      <div class="progress-bar bg-{{ bar_color }} opacity-50"
+           style="width: {{ [pct_forecast, 100 - pct_used] | min | round(1) }}%"
+           title="Forecast additional usage"></div>
+    </div>
+    <div class="d-flex gap-3 mt-1 small text-muted">
+      <span><span class="badge bg-primary">&nbsp;</span> Used to date</span>
+      <span><span class="badge bg-{{ bar_color }} opacity-75">&nbsp;</span> Forecast remaining usage</span>
+      <span class="ms-auto d-flex align-items-center gap-1">
+        <label class="form-check-label d-flex align-items-center gap-1 mb-0" style="cursor:pointer; font-size:.75rem;">
+          <input type="checkbox" class="form-check-input mb-0" id="exclude-partial-chk"
+                 {% if exclude_partial %}checked{% endif %}
+                 onchange="applyExcludePartial(this.checked)">
+          Exclude partial week
+        </label>
+      </span>
+    </div>
+
+  </div>
+
+  <!-- Burndown Chart -->
+  <div class="section-label" id="burndown-chart-section">Charts</div>
+
+  <!-- Custom Burn Window panel (toggled by gear in chart toolbar) -->
+  <div id="acc-data-window" class="collapse {% if data_from or data_to %}show{% endif %} mb-2">
+    <div class="card card-body py-3 px-3 {% if data_from or data_to %}border-primary{% endif %}" style="border-radius:10px; background:#f8f9fb;">
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <span style="font-size:.8rem; font-weight:600;">Custom Burn Window</span>
+        {% if data_from or data_to %}
+        <span class="badge bg-primary" style="font-size:.68rem;">{{ data_from or '…' }} → {{ data_to or '…' }}</span>
+        {% else %}
+        <span class="text-muted" style="font-size:.75rem;">limit which weeks drive the burn rate forecast</span>
+        {% endif %}
+      </div>
+      <div class="d-flex flex-wrap align-items-end gap-2">
+        <div>
+          <label class="form-label mb-1" style="font-size:.75rem;">From</label>
+          <input type="date" id="data-from" class="form-control form-control-sm" style="width:155px;" value="{{ data_from or '' }}">
+        </div>
+        <div>
+          <label class="form-label mb-1" style="font-size:.75rem;">To</label>
+          <input type="date" id="data-to" class="form-control form-control-sm" style="width:155px;" value="{{ data_to or '' }}">
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="applyDataWindow()">Apply</button>
+        {% if data_from or data_to %}
+        <a class="btn btn-outline-secondary btn-sm"
+           href="{{ url_for('forecast.forecast_page') }}?exclude_partial={{ '1' if exclude_partial else '0' }}">Clear</a>
+        {% endif %}
+        {% if data_from or data_to %}
+        <div class="ms-auto d-flex align-items-end gap-2">
+          <form method="post" action="{{ url_for('forecast.save_forecast_snapshot') }}" class="d-flex align-items-end gap-2">
+            <input type="hidden" name="next_page" value="forecast">
+            <input type="hidden" name="data_from" value="{{ data_from or '' }}">
+            <input type="hidden" name="data_to"   value="{{ data_to or '' }}">
+            <input type="text" name="snapshot_label" class="form-control form-control-sm" style="width:220px;"
+                   placeholder="Snapshot label"
+                   value="{% if data_from and data_to %}{{ data_from }} – {{ data_to }}{% elif data_from %}From {{ data_from }}{% else %}To {{ data_to }}{% endif %}">
+            <button type="submit" class="btn btn-primary btn-sm">Save Snapshot</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="chart-card mb-3">
+    <div class="d-flex justify-content-between align-items-start mb-1">
+      <div>
+        <div class="chart-card-title">Credit Burndown</div>
+        <div class="chart-card-sub">Actual &amp; projected remaining &nbsp;·&nbsp; Ctrl+scroll to zoom &nbsp;·&nbsp; drag to pan</div>
+      </div>
+      <div class="chart-toolbar">
+        <div class="btn-group btn-group-sm me-1" role="group" title="Projection granularity">
+          <button id="gran-weekly" class="btn btn-outline-secondary py-0 px-2 active" onclick="setBurndownGranularity('weekly')">Weekly</button>
+          <button id="gran-daily"  class="btn btn-outline-secondary py-0 px-2"        onclick="setBurndownGranularity('daily')">Daily</button>
+        </div>
+        <div class="btn-group btn-group-sm" role="group">
+          <button class="btn btn-outline-secondary py-0 px-2" title="Zoom in"  onclick="window.burndownChart && window.burndownChart.zoom(1.25)">+</button>
+          <button class="btn btn-outline-secondary py-0 px-2" title="Zoom out" onclick="window.burndownChart && window.burndownChart.zoom(0.8)">&minus;</button>
+          <button class="btn btn-outline-secondary py-0 px-2" title="Reset"    onclick="window.burndownChart && window.burndownChart.resetZoom()">&#8635;</button>
+        </div>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"  onclick="window.burndownChart && window.burndownChart.exportPNG()">&#8681;</button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"  onclick="window.burndownChart && window.burndownChart.openFullscreen()">&#9974;</button>
+        <button type="button" title="Custom burn window"
+                onclick="var el=document.getElementById('acc-data-window'); var bsEl=bootstrap.Collapse.getOrCreateInstance(el); bsEl.toggle(); el.addEventListener('shown.bs.collapse',()=>el.scrollIntoView({behavior:'smooth',block:'nearest'}),{once:true});"
+                class="btn btn-outline-secondary btn-sm py-0 px-2 {% if data_from or data_to %}active{% endif %}"
+                title="Custom burn window">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492M5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0"/>
+            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.474l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <!-- Model overlay selector -->
+    <div class="d-flex align-items-center flex-wrap gap-3 mb-2" style="font-size:.75rem;">
+      <span style="font-weight:600; color:#6c757d;">Overlay:</span>
+      <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
+        <input type="checkbox" id="model-det" checked onchange="toggleForecastModel('deterministic', this.checked)">
+        <span style="color:#dc3545;">&#8212; Base Forecast</span>
+      </label>
+      <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
+        <input type="checkbox" id="model-mc" onchange="toggleForecastModel('monte_carlo', this.checked)">
+        <span style="color:#fd7e14;">&#9646; Monte Carlo</span>
+        <span class="text-muted ms-1" style="font-size:.7rem;">({{ "{:,}".format(saved_contract.get('forecast', {}).get('monte_carlo_runs', 10000) | int) }} runs)</span>
+      </label>
+      <span id="mc-band-controls" class="d-flex align-items-center gap-2" style="display:none;">
+        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
+          <input type="checkbox" id="mc-show-p90" checked onchange="toggleMcBand('p90', this.checked)">
+          <span style="font-size:.7rem; color:#fd7e14;">P90</span>
+        </label>
+        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
+          <input type="checkbox" id="mc-show-p50" checked onchange="toggleMcBand('p50', this.checked)">
+          <span style="font-size:.7rem; color:#fd7e14;">P50</span>
+        </label>
+        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
+          <input type="checkbox" id="mc-show-p10" checked onchange="toggleMcBand('p10', this.checked)">
+          <span style="font-size:.7rem; color:#fd7e14;">P10</span>
+        </label>
+      </span>
+      <span id="mc-status" class="text-muted" style="display:none; font-size:.7rem;"></span>
+      <span class="ms-auto d-flex align-items-center gap-2" style="font-size:.7rem; color:#6c757d;">
+        <span style="font-weight:600;">Colors:</span>
+        <label class="d-flex align-items-center gap-1 mb-0" title="Actual remaining line color">
+          <input type="color" id="color-actual" style="width:20px;height:20px;padding:1px;border:1px solid #dee2e6;border-radius:3px;cursor:pointer;" onchange="setBurndownColor('actual', this.value)">
+          <span>Actual</span>
+        </label>
+        <label class="d-flex align-items-center gap-1 mb-0" title="Projected remaining line color">
+          <input type="color" id="color-proj" style="width:20px;height:20px;padding:1px;border:1px solid #dee2e6;border-radius:3px;cursor:pointer;" onchange="setBurndownColor('proj', this.value)">
+          <span>Projected</span>
+        </label>
+        <label class="d-flex align-items-center gap-1 mb-0" title="Weekly burn bar color">
+          <input type="color" id="color-weekly" style="width:20px;height:20px;padding:1px;border:1px solid #dee2e6;border-radius:3px;cursor:pointer;" onchange="setBurndownColor('weekly', this.value)">
+          <span>Weekly</span>
+        </label>
+        <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.68rem;" onclick="resetChartColors()" title="Reset to defaults">reset</button>
+      </span>
+    </div>
+    <div style="position:relative; height: 300px;">
+      <canvas id="burndownChart" style="cursor:crosshair;"></canvas>
+    </div>
+  </div>
+
+  <!-- Weekly Burn and Active Users -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-6">
+      <div class="chart-card h-100">
+        <div class="d-flex justify-content-between align-items-start mb-1">
+          <div>
+            <div class="chart-card-title">Weekly Credit Burn</div>
+            <div class="chart-card-sub">Ctrl+scroll to zoom &nbsp;·&nbsp; drag to pan</div>
+          </div>
+          <div class="chart-toolbar">
+            <div class="btn-group btn-group-sm" role="group">
+              <button class="btn btn-outline-secondary py-0 px-2" title="Zoom in"  onclick="window.weeklyChart && window.weeklyChart.zoom(1.25)">+</button>
+              <button class="btn btn-outline-secondary py-0 px-2" title="Zoom out" onclick="window.weeklyChart && window.weeklyChart.zoom(0.8)">&minus;</button>
+              <button class="btn btn-outline-secondary py-0 px-2" title="Reset"    onclick="window.weeklyChart && window.weeklyChart.resetZoom()">&#8635;</button>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG" onclick="window.weeklyChart && window.weeklyChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen" onclick="window.weeklyChart && window.weeklyChart.openFullscreen()">&#9974;</button>
+          </div>
+        </div>
+        <div style="position:relative; height: 240px;">
+          <canvas id="weeklyChart" style="cursor:crosshair;"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="chart-card h-100">
+        <div class="d-flex justify-content-between align-items-start mb-1">
+          <div>
+            <div class="chart-card-title">Active Users / Week</div>
+            <div class="chart-card-sub">Users with credit activity per week</div>
+          </div>
+          <div class="chart-toolbar">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG" onclick="window.activeUsersChart && window.activeUsersChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen" onclick="window.activeUsersChart && window.activeUsersChart.openFullscreen()">&#9974;</button>
+          </div>
+        </div>
+        <div style="position:relative; height: 240px;">
+          <canvas id="activeUsersChart" style="cursor:crosshair;"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Details Accordion -->
+  <div class="section-label">Details</div>
+  <div class="accordion mb-4" id="detailsAccordion">
+
+    <!-- Contract & Pacing -->
+    <div class="accordion-item" style="border-radius:10px; overflow:hidden; margin-bottom:.5rem; border:1px solid #e3e6ea;">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#acc-contract"
+                style="font-size:.85rem; font-weight:600; background:#f8f9fb;">
+          Contract &amp; Pacing
+          <span class="ms-2 badge bg-{{ pacing_colors.get(cs.pacing_status, 'secondary') }}" style="font-size:.72rem;">{{ cs.pacing_status | fmt_status }}</span>
+        </button>
+      </h2>
+      <div id="acc-contract" class="accordion-collapse collapse">
+        <div class="accordion-body py-3">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <p class="text-muted small mb-1 fw-semibold">Period</p>
+              <p class="mb-1">{{ cs.contract_start_date }} → {{ cs.contract_end_date }}</p>
+              <p class="text-muted small mb-0">Latest data: {{ cs.latest_usage_date }}</p>
+            </div>
+            <div class="col-md-4">
+              <p class="text-muted small mb-1 fw-semibold">Credits</p>
+              <table class="table table-sm mb-0">
+                <tr><td>Purchased</td><td class="text-end fw-semibold">{{ "{:,.0f}".format(cs.purchased_credits) }}</td></tr>
+                <tr><td>Used</td><td class="text-end">{{ "{:,.0f}".format(cs.total_credits_used) }}</td></tr>
+                <tr><td>Remaining</td><td class="text-end text-success fw-semibold">{{ "{:,.0f}".format(cs.credits_remaining) }}</td></tr>
+              </table>
+            </div>
+            <div class="col-md-4">
+              <p class="text-muted small mb-1 fw-semibold">Timeline</p>
+              <table class="table table-sm mb-0">
+                <tr><td>Total days</td><td class="text-end">{{ cs.total_contract_days }}</td></tr>
+                <tr><td>Elapsed</td><td class="text-end">{{ cs.elapsed_days }}</td></tr>
+                <tr><td>Remaining</td><td class="text-end">{{ cs.remaining_days }}</td></tr>
+                <tr><td>Weeks left</td><td class="text-end">{{ "{:.1f}".format(cs.weeks_remaining) }}</td></tr>
+              </table>
+            </div>
+          </div>
+          <div class="row g-3 mt-1">
+            <div class="col-md-6">
+              <p class="text-muted small mb-1 fw-semibold">Pacing</p>
+              <table class="table table-sm mb-0">
+                <tr><td>Contract elapsed</td><td class="text-end">{{ "{:.1%}".format(cs.percent_contract_elapsed) }}</td></tr>
+                <tr><td>Credits used</td><td class="text-end">{{ "{:.1%}".format(cs.percent_credits_used) }}</td></tr>
+                <tr><td>Burn pace ratio</td><td class="text-end">{{ "{:.2f}".format(cs.burn_pace_ratio) }}</td></tr>
+              </table>
+            </div>
+            <div class="col-md-6">
+              <p class="text-muted small mb-1 fw-semibold">Value</p>
+              <table class="table table-sm mb-0">
+                <tr><td>Price per credit</td><td class="text-end">${{ "{:.4f}".format(cs.price_per_credit) }}</td></tr>
+                <tr><td>Est. value used</td><td class="text-end">${{ "{:,.2f}".format(cs.projected_cost_used) }}</td></tr>
+                <tr><td>Est. value remaining</td><td class="text-end">${{ "{:,.2f}".format(cs.projected_value_remaining) }}</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Forecast Projection -->
+    <div class="accordion-item" style="border-radius:10px; overflow:hidden; margin-bottom:.5rem; border:1px solid #e3e6ea;">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#acc-forecast"
+                style="font-size:.85rem; font-weight:600; background:#f8f9fb;">
+          Forecast Projection
+          <span class="ms-2 badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}" style="font-size:.72rem;">{{ fc.forecast_status | fmt_status }}</span>
+        </button>
+      </h2>
+      <div id="acc-forecast" class="accordion-collapse collapse">
+        <div class="accordion-body py-3">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <p class="text-muted small mb-1 fw-semibold">Burn Rate Components</p>
+              <table class="table table-sm">
+                <tr>
+                  <td>Historical avg</td>
+                  <td class="text-end">{{ "{:,.0f}".format(fc.historical_avg_burn) }}</td>
+                  <td class="text-end text-muted small">{{ "{:.0%}".format(fc.historical_weight_used) }}</td>
+                </tr>
+                <tr>
+                  <td>Latest week</td>
+                  <td class="text-end">{{ "{:,.0f}".format(fc.latest_week_burn) if fc.latest_week_burn is not none else "—" }}</td>
+                  <td class="text-end text-muted small">{{ "{:.0%}".format(fc.latest_week_weight_used) }}</td>
+                </tr>
+                <tr>
+                  <td>Recent avg ({{ fc.operational_weeks }}w)</td>
+                  <td class="text-end">{{ "{:,.0f}".format(fc.recent_average_burn) if fc.recent_average_burn is not none else "—" }}</td>
+                  <td class="text-end text-muted small">{{ "{:.0%}".format(fc.recent_average_weight_used) }}</td>
+                </tr>
+              </table>
+            </div>
+            <div class="col-md-6">
+              <p class="text-muted small mb-1 fw-semibold">Projections</p>
+              <table class="table table-sm">
+                <tr><td>Forecast weekly burn</td><td class="text-end fw-semibold">{{ "{:,.0f}".format(fc.forecast_weekly_burn) }}</td></tr>
+                <tr><td>Forecast monthly burn</td><td class="text-end">{{ "{:,.0f}".format(fc.forecast_monthly_burn) }}</td></tr>
+                <tr><td>Weeks until exhaustion</td><td class="text-end">{{ "{:.1f}".format(fc.weeks_until_exhaustion) if fc.weeks_until_exhaustion is not none else "N/A" }}</td></tr>
+                <tr><td>Exhaustion date</td><td class="text-end">{{ fc.forecast_exhaustion_date or "N/A" }}</td></tr>
+                <tr><td>End balance</td><td class="text-end {{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">{{ "{:,.0f}".format(fc.forecast_contract_end_balance) }}</td></tr>
+                <tr><td>% used by end</td><td class="text-end">{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }}</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Monte Carlo Simulation -->
+    <div class="accordion-item" style="border-radius:10px; overflow:hidden; margin-bottom:.5rem; border:1px solid #e3e6ea;">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#acc-mc"
+                style="font-size:.85rem; font-weight:600; background:#f8f9fb;">
+          Monte Carlo Simulation
+          <span class="ms-2 badge" id="mc-acc-badge" style="font-size:.72rem; display:none;"></span>
+        </button>
+      </h2>
+      <div id="acc-mc" class="accordion-collapse collapse">
+        <div class="accordion-body py-3" id="mc-acc-body">
+          <div class="text-muted small">Loading simulation data&hellip;</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cumulative Burn chart -->
+    <div class="accordion-item" style="border-radius:10px; overflow:hidden; margin-bottom:.5rem; border:1px solid #e3e6ea;">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#acc-cumulative"
+                style="font-size:.85rem; font-weight:600; background:#f8f9fb;">
+          Cumulative Credit Burn
+        </button>
+      </h2>
+      <div id="acc-cumulative" class="accordion-collapse collapse">
+        <div class="accordion-body">
+          <div class="d-flex justify-content-end mb-1 gap-1">
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG" onclick="window.cumulativeChart && window.cumulativeChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen" onclick="window.cumulativeChart && window.cumulativeChart.openFullscreen()">&#9974;</button>
+          </div>
+          <div style="position:relative; height:240px;">
+            <canvas id="cumulativeChart" style="cursor:crosshair;"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Snapshot History -->
+  {% if forecast_history %}
+  <div class="section-label">Snapshot History</div>
+  <div class="dash-section mb-4">
+    <div class="dash-section-header">
+      <span class="dash-section-title">History</span>
+      <span style="font-size:.72rem; color:#8a92a0;">
+        {{ forecast_history | length }} snapshot{{ 's' if forecast_history | length != 1 }}
+        &nbsp;·&nbsp; <span id="compare-hint" style="color:#0d6efd; display:none;">select 2+ rows to overlay on burndown chart</span>
+      </span>
+      <span class="ms-auto d-flex gap-2">
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;" onclick="selectAllSnaps()">Select All</button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;" onclick="clearComparison()">Clear</button>
+      </span>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="lb-table" id="history-table">
+        <thead>
+          <tr>
+            <th style="width:32px;"></th>
+            <th style="width:28px;" title="Snapshot color"></th>
+            <th>Date</th>
+            <th>Label</th>
+            <th>Pacing</th>
+            <th>Forecast</th>
+            <th class="text-end">Weekly Burn</th>
+            <th class="text-end">Credits Remaining</th>
+            <th class="text-end">End Balance</th>
+            <th>Exhaustion</th>
+            <th class="text-end">MC Risk</th>
+            <th style="width:60px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in forecast_history %}
+          <tr class="history-row" data-snap='{{ h | tojson }}' onclick="toggleRow(this)" style="cursor:pointer;">
+            <td><input type="checkbox" class="form-check-input history-cb" onclick="event.stopPropagation();toggleRow(this.closest('tr'))"></td>
+            <td onclick="event.stopPropagation()">
+              <input type="color" class="snap-color-input"
+                     value="{{ h.color or '#adb5bd' }}"
+                     data-ts="{{ h.snapshot_ts or '' }}"
+                     data-date="{{ h.snapshot_date }}"
+                     data-label="{{ h.label or '' }}"
+                     onchange="setSnapColor(this)"
+                     title="Set snapshot color"
+                     style="width:22px; height:22px; padding:1px 2px; border:1px solid #dee2e6; border-radius:4px; cursor:pointer;">
+            </td>
+            <td style="font-size:.8rem; white-space:nowrap;">{{ h.snapshot_date }}</td>
+            <td class="snapshot-label-cell" style="max-width:180px;"
+                data-ts="{{ h.snapshot_ts or '' }}" data-date="{{ h.snapshot_date }}" data-old-label="{{ h.label or '' }}"
+                title="Double-click to rename" onclick="event.stopPropagation()">
+              <span class="label-display {% if not h.label %}label-empty{% endif %}" style="font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; cursor:text; min-height:1.4em;">{{ h.label or 'Add label…' }}</span>
+              <input class="label-edit form-control form-control-sm py-0" style="display:none; font-size:.78rem;" value="{{ h.label or '' }}">
+            </td>
+            <td><span class="pacing-pill {{ h.pacing_status }}">{{ h.pacing_status | fmt_status }}</span></td>
+            <td><span class="pacing-pill {{ h.forecast_status }}">{{ h.forecast_status | fmt_status }}</span></td>
+            <td class="text-end">{{ '{:,.0f}'.format(h.forecast_weekly_burn | float) if h.forecast_weekly_burn else '—' }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(h.credits_remaining | float) if h.credits_remaining else '—' }}</td>
+            <td class="text-end {{ 'text-danger' if h.forecast_contract_end_balance and h.forecast_contract_end_balance | float < 0 else 'text-success' }}">
+              {{ '{:,.0f}'.format(h.forecast_contract_end_balance | float) if h.forecast_contract_end_balance else '—' }}
+            </td>
+            <td style="font-size:.8rem;">{{ h.forecast_exhaustion_date or '—' }}</td>
+            <td class="text-end" style="font-size:.8rem;">
+              {%- if h.mc_exhaustion_prob -%}
+                <span class="{{ 'text-danger' if h.mc_exhaustion_prob | float > 0.5 else ('text-warning' if h.mc_exhaustion_prob | float > 0.1 else 'text-success') }}">
+                  {{ '{:.0%}'.format(h.mc_exhaustion_prob | float) }}
+                </span>
+              {%- else -%}—{%- endif -%}
+            </td>
+            <td onclick="event.stopPropagation()" class="text-nowrap">
+              <a class="btn btn-link btn-sm p-0 text-primary me-1"
+                 onclick="viewSnapForecast(this.closest('tr'), event)"
+                 title="View forecast at this snapshot"
+                 style="cursor:pointer; font-size:.78rem;">&#x1F441;</a>
+              <button type="button" class="btn btn-link btn-sm p-0 text-danger"
+                      data-ts="{{ h.snapshot_ts or '' }}"
+                      data-date="{{ h.snapshot_date }}"
+                      data-label="{{ h.label or '' }}"
+                      onclick="deleteSnapshot(this, event)"
+                      title="Delete snapshot">&#x1F5D1;</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div id="compare-panel" style="display:none; padding:1rem 1.25rem; background:#f8f9fb; border-top:1px solid #e3e6ea; border-radius:0 0 8px 8px;">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span style="font-size:.78rem; font-weight:700; color:#1a1d23;">Comparing <span id="compare-count">0</span> snapshots — overlays shown on burndown chart above</span>
+        <button class="btn btn-outline-secondary btn-sm py-0" onclick="clearComparison()">Clear</button>
+      </div>
+      <div id="compare-grid" class="row g-2 mb-3"></div>
+      <div id="compare-chart-wrap" style="display:none;">
+        <div style="font-size:.65rem; font-weight:700; color:#8a92a0; letter-spacing:.06em; margin-bottom:.5rem;">SNAPSHOT COMPARISON</div>
+        <canvas id="compare-chart" height="240"></canvas>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% endif %}
+
+</div><!-- /container -->
+{% endblock %}
+
+{% block scripts %}
+{% if forecast_history %}
+<script>
+  const selectedSnaps  = new Map();
+  const seriesCache    = new Map();
+  const SNAP_COLORS    = ['#20c997','#6f42c1','#d63384','#ffc107','#0dcaf0','#198754'];
+  const CURRENT_REMAINING = {{ contract_status.credits_remaining }};
+  let compareChart     = null;
+
+  function fmtN(v) { const n = parseFloat(v); return isNaN(n) ? '—' : Math.round(n).toLocaleString(); }
+  function fmtPct(v) { const n = parseFloat(v); return isNaN(n) ? '—' : Math.round(n * 100) + '%'; }
+  function truncLabel(s, max) { max = max || 12; return s && s.length > max ? s.slice(0, max) + '…' : (s || ''); }
+
+  function snapRemainingAt(h, dateStr) {
+    const snap   = new Date(h.snapshot_date);
+    const target = new Date(dateStr);
+    const weeks  = (target - snap) / (7 * 24 * 3600 * 1000);
+    if (weeks < 0) return null;
+    return Math.max(parseFloat(h.credits_remaining || 0) - parseFloat(h.forecast_weekly_burn || 0) * weeks, 0);
+  }
+
+  async function fetchSnapSeries(snap) {
+    const ts = snap.snapshot_ts;
+    if (!ts || seriesCache.has(ts)) { updateBurndownOverlays(); return; }
+    try {
+      const resp = await fetch('{{ url_for("forecast.get_snapshot_series") }}?ts=' + encodeURIComponent(ts));
+      if (!resp.ok) return;
+      seriesCache.set(ts, await resp.json());
+      updateBurndownOverlays();
+      renderComparePanel();
+    } catch (_) {}
+  }
+
+  function interpSeriesData(pts, allLabels, dateKey, valKey) {
+    if (!pts || !pts.length) return allLabels.map(() => null);
+    const start = pts[0][dateKey], end = pts[pts.length - 1][dateKey];
+    return allLabels.map(l => {
+      if (l < start || l > end) return null;
+      const idx = pts.findIndex(p => p[dateKey] > l);
+      if (idx === -1) return pts[pts.length - 1][valKey];
+      if (idx === 0)  return pts[0][valKey];
+      const a = pts[idx - 1], b = pts[idx];
+      const t = (new Date(l) - new Date(a[dateKey])) / (new Date(b[dateKey]) - new Date(a[dateKey]));
+      return a[valKey] + t * (b[valKey] - a[valKey]);
+    });
+  }
+
+  function updateBurndownOverlays() {
+    const bc = window.burndownChart;
+    if (!bc) return;
+    bc.data.datasets = bc.data.datasets.filter(d => !d._snapOverlay);
+    const snaps = [...selectedSnaps.values()];
+    let maxRemaining = window.burndownMaxY || 0;
+    const allLabels  = window.burndownLabels || [];
+
+    snaps.forEach((h, i) => {
+      maxRemaining = Math.max(maxRemaining, parseFloat(h.credits_remaining || 0));
+      const color     = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
+      const snapLabel = h.label ? truncLabel(h.label) : h.snapshot_date;
+      const series    = seriesCache.get(h.snapshot_ts);
+      const fb        = series && series.forecast_burndown && series.forecast_burndown.length
+        ? series.forecast_burndown : null;
+
+      if (fb) {
+        // Dashed line: the archived forecast from this snapshot's last data date forward.
+        const forecastData = interpSeriesData(fb, allLabels, 'date', 'remaining');
+        const startIdx = forecastData.findIndex(v => v !== null);
+        bc.data.datasets.push({
+          label: snapLabel + ' · forecast',
+          data: forecastData,
+          borderColor: color, borderDash: [5, 4], borderWidth: 2,
+          backgroundColor: 'transparent', fill: false, tension: 0.05,
+          pointRadius: forecastData.map((v, j) => j === startIdx ? 7 : 0),
+          pointBackgroundColor: color,
+          spanGaps: false, _snapOverlay: true,
+        });
+
+        // MC bands from snapshot — if available
+        const mc = series && series.mc;
+        if (mc && mc.p50 && mc.p50.length) {
+          const p10d = interpSeriesData(mc.p10 || [], allLabels, 'date', 'value');
+          const p50d = interpSeriesData(mc.p50,       allLabels, 'date', 'value');
+          const p90d = interpSeriesData(mc.p90 || [], allLabels, 'date', 'value');
+          const alpha = hexToRgba(color, 0.12);
+          bc.data.datasets.push({
+            label: snapLabel + ' · MC P90', data: p90d,
+            borderColor: hexToRgba(color, 0.45), borderWidth: 1, borderDash: [2, 3],
+            backgroundColor: alpha, fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
+          });
+          bc.data.datasets.push({
+            label: snapLabel + ' · MC P50', data: p50d,
+            borderColor: hexToRgba(color, 0.7), borderWidth: 1.5, borderDash: [4, 3],
+            backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
+          });
+          bc.data.datasets.push({
+            label: snapLabel + ' · MC P10', data: p10d,
+            borderColor: hexToRgba(color, 0.45), borderWidth: 1, borderDash: [2, 3],
+            backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
+          });
+        }
+      } else {
+        // Fallback: no series data yet — draw straight linear projection from snapshot date
+        const data     = allLabels.map(l => snapRemainingAt(h, l));
+        const firstIdx = data.findIndex(v => v !== null);
+        bc.data.datasets.push({
+          label: snapLabel + ' · forecast', data,
+          borderColor: color, borderDash: [4, 3], borderWidth: 2,
+          backgroundColor: 'transparent', fill: false, tension: 0.05,
+          pointRadius:          data.map((v, j) => j === firstIdx ? 7 : 0),
+          pointBackgroundColor: data.map((v, j) => j === firstIdx ? color : 'transparent'),
+          spanGaps: false, _snapOverlay: true,
+        });
+      }
+    });
+
+    bc.update();
+  }
+
+  function forecastAccuracyHtml(h) {
+    const series = seriesCache.get(h.snapshot_ts);
+    if (!series || !series.forecast_burndown || !series.forecast_burndown.length) return '';
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (h.snapshot_date >= todayStr) return '';
+
+    const fb  = series.forecast_burndown;
+    let predictedNow;
+    const idx = fb.findIndex(p => p.date >= todayStr);
+    if (idx === -1) {
+      predictedNow = fb[fb.length - 1].remaining;
+    } else if (idx === 0) {
+      predictedNow = fb[0].remaining;
+    } else {
+      const a = fb[idx - 1], b = fb[idx];
+      const t = (new Date(todayStr) - new Date(a.date)) / (new Date(b.date) - new Date(a.date));
+      predictedNow = a.remaining + t * (b.remaining - a.remaining);
+    }
+
+    const error    = predictedNow - CURRENT_REMAINING;
+    const errorPct = CURRENT_REMAINING > 0 ? error / CURRENT_REMAINING * 100 : 0;
+    const sign     = error >= 0 ? '+' : '';
+    const cls      = Math.abs(errorPct) < 5 ? 'text-success' : Math.abs(errorPct) < 15 ? 'text-warning' : 'text-danger';
+    const note     = error > 0 ? 'forecast overestimated remaining' : 'forecast underestimated remaining';
+
+    return `<div style="margin-top:.5rem;padding-top:.5rem;border-top:1px solid #eee;">
+      <div style="font-size:.65rem;font-weight:700;color:#8a92a0;letter-spacing:.06em;margin-bottom:.25rem;">FORECAST ACCURACY TODAY</div>
+      <div class="d-flex justify-content-between"><span class="text-muted">Predicted now</span><strong>${fmtN(predictedNow)}</strong></div>
+      <div class="d-flex justify-content-between mt-1"><span class="text-muted">Actual now</span><strong>${fmtN(CURRENT_REMAINING)}</strong></div>
+      <div class="d-flex justify-content-between mt-1"><span class="text-muted">Error</span><strong class="${cls}">${sign}${fmtN(error)} (${sign}${Math.round(errorPct)}%)</strong></div>
+      <div style="font-size:.65rem;color:#8a92a0;margin-top:.2rem;">${note}</div>
+    </div>`;
+  }
+
+  function updateCompareChart(snaps) {
+    const wrap = document.getElementById('compare-chart-wrap');
+    if (snaps.length < 2) { wrap.style.display = 'none'; if (compareChart) { compareChart.destroy(); compareChart = null; } return; }
+    wrap.style.display = '';
+    const labels   = snaps.map(h => h.label ? truncLabel(h.label) : h.snapshot_date);
+    const burnData = snaps.map(h => parseFloat(h.forecast_weekly_burn || 0));
+    const remData  = snaps.map(h => parseFloat(h.credits_remaining || 0));
+    const balData  = snaps.map(h => parseFloat(h.forecast_contract_end_balance || 0));
+    const datasets = [
+      { label: 'Weekly Burn',       data: burnData, backgroundColor: 'rgba(13,110,253,0.7)' },
+      { label: 'Credits Remaining', data: remData,  backgroundColor: 'rgba(108,117,125,0.5)' },
+      { label: 'End Balance',       data: balData,  backgroundColor: balData.map(v => v < 0 ? 'rgba(220,53,69,0.7)' : 'rgba(25,135,84,0.7)') },
+    ];
+    if (compareChart) { compareChart.destroy(); compareChart = null; }
+    compareChart = new Chart(document.getElementById('compare-chart'), {
+      type: 'bar', data: { labels, datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: true, position: 'top', labels: { font: { size: 11 }, boxWidth: 12 } },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${Math.round(ctx.raw ?? 0).toLocaleString()}` } },
+        },
+        scales: {
+          y: { ticks: { callback: v => v.toLocaleString(), font: { size: 10 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          x: { ticks: { font: { size: 10 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  function renderComparePanel() {
+    const panel = document.getElementById('compare-panel');
+    const grid  = document.getElementById('compare-grid');
+    const hint  = document.getElementById('compare-hint');
+    const count = document.getElementById('compare-count');
+    const snaps = [...selectedSnaps.values()];
+    const n     = snaps.length;
+    hint.style.display  = n === 0 ? 'none' : '';
+    panel.style.display = n >= 2  ? '' : 'none';
+    updateBurndownOverlays();
+    if (n < 2) { updateCompareChart([]); return; }
+    count.textContent = n;
+    grid.innerHTML = snaps.map((h, i) => {
+      const color = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
+      return `<div class="col-sm-6 col-lg-3">
+        <div style="background:#fff;border:2px solid ${color};border-radius:8px;padding:.75rem .9rem;font-size:.78rem;">
+          <div style="font-weight:700;color:#1a1d23;margin-bottom:.1rem;">${h.snapshot_date}</div>
+          ${h.label ? `<div style="font-size:.72rem;color:#6c757d;margin-bottom:.35rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${h.label}">${h.label}</div>` : '<div style="margin-bottom:.35rem;"></div>'}
+          <div class="d-flex justify-content-between"><span class="text-muted">Pacing</span><span class="pacing-pill ${h.pacing_status}" style="font-size:.68rem;padding:.1rem .4rem;">${(h.pacing_status||'').replace(/_/g,' ')}</span></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">Forecast</span><span class="pacing-pill ${h.forecast_status}" style="font-size:.68rem;padding:.1rem .4rem;">${(h.forecast_status||'').replace(/_/g,' ')}</span></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">Weekly burn</span><strong>${fmtN(h.forecast_weekly_burn)}</strong></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">Remaining</span><strong>${fmtN(h.credits_remaining)}</strong></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">End balance</span><strong class="${parseFloat(h.forecast_contract_end_balance||0)<0?'text-danger':'text-success'}">${fmtN(h.forecast_contract_end_balance)}</strong></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">Exhaustion</span><strong>${h.forecast_exhaustion_date||'—'}</strong></div>
+          ${h.mc_exhaustion_prob ? `<div class="d-flex justify-content-between mt-1"><span class="text-muted">MC Risk</span><strong class="${parseFloat(h.mc_exhaustion_prob)>0.5?'text-danger':parseFloat(h.mc_exhaustion_prob)>0.1?'text-warning':'text-success'}">${fmtPct(h.mc_exhaustion_prob)}</strong></div>` : ''}
+          ${forecastAccuracyHtml(h)}
+        </div></div>`;
+    }).join('');
+    updateCompareChart(snaps);
+  }
+
+  function snapKey(snap) { return snap.snapshot_ts || (snap.snapshot_date + '|' + (snap.label || '')); }
+
+  function setSnapColor(input) {
+    const color = input.value;
+    const row = input.closest('tr');
+    if (row) {
+      try {
+        const snap = JSON.parse(row.dataset.snap || '{}');
+        snap.color = color;
+        row.dataset.snap = JSON.stringify(snap);
+        const key = snapKey(snap);
+        if (selectedSnaps.has(key)) {
+          selectedSnaps.set(key, snap);
+          renderComparePanel();
+        }
+      } catch (_) {}
+    }
+    fetch('{{ url_for("forecast.set_snapshot_color") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        snapshot_ts: input.dataset.ts,
+        snapshot_date: input.dataset.date,
+        label: input.dataset.label,
+        color,
+      }),
+    });
+  }
+
+  function toggleRow(tr) {
+    const snap = JSON.parse(tr.dataset.snap);
+    const cb   = tr.querySelector('.history-cb');
+    const key  = snapKey(snap);
+    if (selectedSnaps.has(key)) {
+      selectedSnaps.delete(key);
+      tr.style.background = '';
+      if (cb) cb.checked = false;
+    } else {
+      const wasEmpty = selectedSnaps.size === 0;
+      selectedSnaps.set(key, snap);
+      tr.style.background = SNAP_COLORS[(selectedSnaps.size - 1) % SNAP_COLORS.length] + '22';
+      if (cb) cb.checked = true;
+      fetchSnapSeries(snap);
+      if (wasEmpty) {
+        const target = document.getElementById('burndown-chart-section');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+    renderComparePanel();
+  }
+
+  function clearComparison() {
+    selectedSnaps.clear();
+    document.querySelectorAll('.history-row').forEach(r => {
+      r.style.background = '';
+      const cb = r.querySelector('.history-cb');
+      if (cb) cb.checked = false;
+    });
+    renderComparePanel();
+  }
+
+  function selectAllSnaps() {
+    document.querySelectorAll('.history-row').forEach(tr => {
+      const snap = (() => { try { return JSON.parse(tr.dataset.snap); } catch(_){return null;} })();
+      if (!snap) return;
+      const key = snapKey(snap);
+      if (!selectedSnaps.has(key)) toggleRow(tr);
+    });
+  }
+
+  function viewSnapForecast(tr, e) {
+    e.stopPropagation();
+    try {
+      const snap = JSON.parse(tr.dataset.snap || '{}');
+      const p = new URLSearchParams(window.location.search);
+      if (snap.contract_start_date) p.set('contract_start_date', String(snap.contract_start_date).slice(0, 10));
+      if (snap.contract_end_date)   p.set('contract_end_date',   String(snap.contract_end_date).slice(0, 10));
+      if (snap.purchased_credits)   p.set('purchased_credits',   snap.purchased_credits);
+      window.location.href = '{{ url_for("forecast.forecast_page") }}?' + p.toString();
+    } catch (_) {}
+  }
+
+  function deleteSnapshot(btn, e) {
+    e.stopPropagation();
+    if (!confirm('Delete this snapshot?')) return;
+    fetch('{{ url_for("forecast.delete_forecast_snapshot") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ snapshot_ts: btn.dataset.ts, snapshot_date: btn.dataset.date, label: btn.dataset.label }),
+    }).then(r => {
+      if (r.status === 204) {
+        const row = btn.closest('tr');
+        const key = btn.dataset.ts || (btn.dataset.date + '|' + btn.dataset.label);
+        selectedSnaps.delete(key);
+        seriesCache.delete(btn.dataset.ts);
+        row.remove();
+        renderComparePanel();
+      } else { r.text().then(msg => alert('Delete failed: ' + (msg || r.status))); }
+    }).catch(() => alert('Delete request failed.'));
+  }
+
+  // Restore snapshot selections that were active before an exclude-partial page reload
+  (function () {
+    const saved = sessionStorage.getItem('forecast-snap-keys');
+    if (!saved) return;
+    sessionStorage.removeItem('forecast-snap-keys');
+    let keys;
+    try { keys = JSON.parse(saved); } catch (_) { return; }
+    if (!keys.length) return;
+    document.querySelectorAll('.history-row').forEach(tr => {
+      try {
+        const snap = JSON.parse(tr.dataset.snap);
+        if (keys.includes(snapKey(snap))) toggleRow(tr);
+      } catch (_) {}
+    });
+  })();
+</script>
+{% endif %}
+
+{% if not no_data %}
+<script>
+  // Chart color helpers
+  const CHART_COLOR_DEFAULTS = { actual: '#0d6efd', proj: '#dc3545', weekly: '#0d6efd' };
+  function getChartColor(key) {
+    return localStorage.getItem('fc-color-' + key) || CHART_COLOR_DEFAULTS[key];
+  }
+  function setChartColor(key, val) { localStorage.setItem('fc-color-' + key, val); }
+  function resetChartColors() {
+    Object.keys(CHART_COLOR_DEFAULTS).forEach(k => localStorage.removeItem('fc-color-' + k));
+    Object.keys(CHART_COLOR_DEFAULTS).forEach(k => {
+      const el = document.getElementById('color-' + k);
+      if (el) el.value = CHART_COLOR_DEFAULTS[k];
+    });
+    applyAllChartColors();
+  }
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+  function applyAllChartColors() {
+    const bc = window.burndownChart;
+    if (bc) {
+      bc.data.datasets.forEach(ds => {
+        if (!ds._mcOverlay && !ds._snapOverlay) {
+          if (ds.label === 'Actual remaining') {
+            ds.borderColor = getChartColor('actual');
+            ds.backgroundColor = hexToRgba(getChartColor('actual'), 0.07);
+          } else if (ds.label === 'Projected remaining') {
+            ds.borderColor = getChartColor('proj');
+          }
+        }
+      });
+      bc.update('none');
+    }
+    const wc = window.weeklyChart;
+    if (wc) {
+      const wCol = getChartColor('weekly');
+      wc.data.datasets[0].backgroundColor = wc.data.datasets[0].backgroundColor.map((c, i) =>
+        window._weeklyInContract && window._weeklyInContract[i] ? hexToRgba(wCol, 0.72) : c
+      );
+      wc.data.datasets[0].borderColor = wc.data.datasets[0].borderColor.map((c, i) =>
+        window._weeklyInContract && window._weeklyInContract[i] ? wCol : c
+      );
+      wc.update('none');
+    }
+  }
+  window.setBurndownColor = function(key, val) {
+    setChartColor(key, val);
+    applyAllChartColors();
+  };
+  // Init color pickers from stored values
+  (function() {
+    ['actual','proj','weekly'].forEach(k => {
+      const el = document.getElementById('color-' + k);
+      if (el) el.value = getChartColor(k);
+    });
+  })();
+
+  // Burndown Chart
+  (function () {
+    const rawData    = {{ weekly_chart_data | safe }};
+    const purchased  = {{ contract_status.purchased_credits }};
+    const remaining  = {{ forecast.credits_remaining }};
+    const weeklyBurn = {{ forecast.forecast_weekly_burn }};
+    const weeksLeft  = {{ forecast.weeks_remaining }};
+    const latestDate = '{{ contract_status.latest_usage_date }}';
+
+    const inContractRaw = rawData.filter(w => w.in_contract).sort((a,b) => a.week_start < b.week_start ? -1 : 1);
+    let r = purchased;
+    const actualPts = inContractRaw.map(w => {
+      r = Math.max(r - w.total_credits_used, 0);
+      const d = new Date((w.week_end || w.week_start) + 'T12:00:00');
+      d.setDate(d.getDate() + 1);
+      return [d.toISOString().slice(0, 10), r];
+    });
+    actualPts.push([latestDate, remaining]);
+
+    function buildProjPts(granularity) {
+      const pts = [[latestDate, remaining]];
+      const base = new Date(latestDate);
+      if (granularity === 'daily') {
+        const totalDays = Math.min(Math.ceil(weeksLeft * 7) + 1, 420);
+        const dailyBurn = weeklyBurn / 7;
+        for (let i = 1; i <= totalDays; i++) {
+          const d = new Date(base);
+          d.setDate(d.getDate() + i);
+          const rem = Math.max(remaining - dailyBurn * i, 0);
+          pts.push([d.toISOString().slice(0, 10), rem]);
+        }
+      } else {
+        for (let i = 1; i <= Math.min(Math.ceil(weeksLeft) + 1, 60); i++) {
+          const d = new Date(base);
+          d.setDate(d.getDate() + i * 7);
+          const rem = Math.max(remaining - weeklyBurn * i, 0);
+          pts.push([d.toISOString().slice(0, 10), rem]);
+        }
+      }
+      return pts;
+    }
+
+    let currentGranularity = localStorage.getItem('fc-gran') || 'weekly';
+    let projPts = buildProjPts(currentGranularity);
+
+    const lookup = (pts, lbl) => { const p = pts.find(x => x[0] === lbl); return p != null ? p[1] : null; };
+
+    function buildAllLabels(ppts) {
+      return [...new Set([...actualPts, ...ppts].map(p => p[0]))].sort();
+    }
+
+    let allLabels = buildAllLabels(projPts);
+    window.burndownLabels = allLabels;
+    window.burndownMaxY   = purchased;
+
+    window.burndownChart = new BNLChart('burndownChart', {
+      type: 'line',
+      data: {
+        labels: allLabels,
+        datasets: [
+          {
+            label: 'Actual remaining',
+            data: allLabels.map(l => lookup(actualPts, l)),
+            borderColor: getChartColor('actual'), backgroundColor: hexToRgba(getChartColor('actual'), 0.07),
+            fill: true, tension: 0.1, pointRadius: 3, pointHoverRadius: 6, spanGaps: false,
+          },
+          {
+            label: 'Projected remaining',
+            data: allLabels.map(l => lookup(projPts, l)),
+            borderColor: getChartColor('proj'), borderDash: [5, 4], backgroundColor: 'transparent',
+            tension: 0.05, pointRadius: 2, pointHoverRadius: 5, spanGaps: false,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: true, position: 'top', labels: { font: { size: 11 }, boxWidth: 14, usePointStyle: true, pointStyleWidth: 10 } },
+          tooltip: {
+            itemSort: (a, b) => (b.raw ?? -Infinity) - (a.raw ?? -Infinity),
+            callbacks: { label: ctx => `  ${ctx.dataset.label}: ${Math.round(ctx.raw ?? 0).toLocaleString()} credits` },
+          },
+          zoom: {
+            zoom: { wheel: { enabled: true, modifierKey: 'ctrl' }, pinch: { enabled: true }, mode: 'xy' },
+            pan:  { enabled: true, mode: 'xy' },
+            limits: { y: { min: 0 } },
+          },
+        },
+        scales: {
+          y: {
+            beginAtZero: true, suggestedMax: purchased,
+            ticks: { callback: v => v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'k' : v, font: { size: 10 } },
+            grid: { color: 'rgba(0,0,0,.05)' },
+          },
+          x: { ticks: { maxRotation: 40, maxTicksLimit: 14, font: { size: 10 } }, grid: { display: false } },
+        },
+      },
+    }, { exportName: 'Credit Burndown' });
+
+    window.setBurndownGranularity = function(gran) {
+      if (gran === currentGranularity) return;
+      currentGranularity = gran;
+      localStorage.setItem('fc-gran', gran);
+      projPts = buildProjPts(gran);
+      allLabels = buildAllLabels(projPts);
+      window.burndownLabels = allLabels;
+      const bc = window.burndownChart;
+      if (!bc) return;
+      // Rebuild all non-overlay datasets
+      bc.data.labels = allLabels;
+      bc.data.datasets.forEach(ds => {
+        if (ds._mcOverlay || ds._snapOverlay) return;
+        if (ds.label === 'Actual remaining')    ds.data = allLabels.map(l => lookup(actualPts, l));
+        if (ds.label === 'Projected remaining') ds.data = allLabels.map(l => lookup(projPts, l));
+      });
+      bc.update();
+      // Refresh overlays with new label set
+      if (typeof updateBurndownOverlays === 'function') updateBurndownOverlays();
+      if (typeof window.refreshMcBands    === 'function') window.refreshMcBands();
+
+      // Update toggle button states
+      document.getElementById('gran-weekly').classList.toggle('active', gran === 'weekly');
+      document.getElementById('gran-daily').classList.toggle('active', gran === 'daily');
+    };
+
+    // Apply saved granularity on load
+    if (currentGranularity === 'daily') {
+      document.getElementById('gran-weekly').classList.remove('active');
+      document.getElementById('gran-daily').classList.add('active');
+    }
+  })();
+
+  // Prediction Model Overlays
+  (function () {
+    const MC_RUNS = {{ saved_contract.get('forecast', {}).get('monte_carlo_runs', 10000) | int }};
+    let mcCache  = null;
+    let mcLoading = null;
+    let detDataset = null;
+
+    window.toggleForecastModel = function (modelId, enabled) {
+      localStorage.setItem('forecast-model-' + modelId, enabled ? '1' : '0');
+      if (modelId === 'deterministic') {
+        const bc = window.burndownChart;
+        if (!bc) return;
+        if (enabled) {
+          if (detDataset) { bc.data.datasets.splice(1, 0, detDataset); detDataset = null; }
+        } else {
+          detDataset = bc.data.datasets.splice(1, 1)[0] || null;
+        }
+        bc.update();
+      } else if (modelId === 'monte_carlo') {
+        if (enabled) loadMcOverlay(); else removeMcOverlay();
+      }
+    };
+
+    function getMcData() {
+      if (mcCache) return Promise.resolve(mcCache);
+      if (!mcLoading) {
+        const params = new URLSearchParams(window.location.search);
+        params.set('model', 'monte_carlo');
+        params.set('runs', MC_RUNS);
+        mcLoading = fetch('/forecast/model-data?' + params.toString())
+          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(data => { mcCache = data; mcLoading = null; return data; })
+          .catch(e => { mcLoading = null; throw e; });
+      }
+      return mcLoading;
+    }
+
+    async function loadMcOverlay() {
+      const bc = window.burndownChart;
+      if (!bc) return;
+      const status = document.getElementById('mc-status');
+      if (status && !mcCache) { status.textContent = 'loading…'; status.style.display = ''; }
+      try {
+        const data = await getMcData();
+        applyMcToChart(data);
+        const ctrl = document.getElementById('mc-band-controls');
+        if (ctrl) ctrl.style.display = '';
+        if (status) {
+          const ep = data.metadata && data.metadata.exhaustion_probability != null
+            ? Math.round(data.metadata.exhaustion_probability * 100) + '% exhaustion risk  ·  '
+              + (data.metadata.runs || 0).toLocaleString() + ' runs'
+            : '';
+          status.textContent = ep;
+          status.style.display = ep ? '' : 'none';
+        }
+      } catch (e) {
+        console.error('MC fetch failed:', e);
+        if (status) { status.textContent = 'load failed'; status.style.display = ''; }
+        const cb = document.getElementById('model-mc');
+        if (cb) cb.checked = false;
+      }
+    }
+
+    window.toggleMcBand = function (band, visible) {
+      localStorage.setItem('forecast-mc-' + band, visible ? '1' : '0');
+      applyMcBands(visible ? 'show' : 'default');
+    };
+
+    function updateMcStats(data) {
+      const ep     = data.metadata && data.metadata.exhaustion_probability != null ? data.metadata.exhaustion_probability : null;
+      const runs   = (data.metadata && data.metadata.runs) || 0;
+      const p10End = data.p10     && data.p10.length     ? data.p10[data.p10.length - 1].value         : null;
+      const p50End = data.burndown && data.burndown.length ? data.burndown[data.burndown.length - 1].value : null;
+      const p90End = data.p90     && data.p90.length     ? data.p90[data.p90.length - 1].value         : null;
+
+      const riskCls = ep === null ? '' : ep > 0.5 ? 'text-danger' : ep > 0.1 ? 'text-warning' : 'text-success';
+      const balCls  = v => v !== null && v < 0 ? 'text-danger' : v !== null ? 'text-success' : '';
+      const fmtBal  = v => v !== null ? Math.round(v).toLocaleString() : '—';
+
+      const probEl = document.getElementById('mc-kpi-prob');
+      const subEl  = document.getElementById('mc-kpi-sub');
+      if (probEl) {
+        if (ep !== null) {
+          probEl.innerHTML = `<span class="${riskCls}">${Math.round(ep * 100)}%</span>`;
+          if (subEl) subEl.textContent = `P50 end: ${p50End !== null ? Math.round(p50End).toLocaleString() : '—'}`;
+        } else {
+          probEl.textContent = '—';
+        }
+      }
+
+      const badge = document.getElementById('mc-acc-badge');
+      if (badge && ep !== null) {
+        badge.textContent = Math.round(ep * 100) + '% risk';
+        badge.className   = `ms-2 badge bg-${ep > 0.5 ? 'danger' : ep > 0.1 ? 'warning' : 'success'}`;
+        badge.style.display = '';
+      }
+
+      const body = document.getElementById('mc-acc-body');
+      if (body) {
+        const interp = ep === null ? '' : ep > 0.5
+          ? 'High risk — credits likely exhausted before contract end at current burn rate.'
+          : ep > 0.1
+          ? 'Moderate risk — some probability of exhaustion; monitor burn rate closely.'
+          : 'Low risk — credits expected to last through contract end in most scenarios.';
+        body.innerHTML = `
+          <div class="row g-3">
+            <div class="col-md-5">
+              <p class="text-muted small mb-1 fw-semibold">Simulation Summary</p>
+              <table class="table table-sm mb-2">
+                <tr><td>Exhaustion probability</td><td class="text-end fw-semibold ${riskCls}">${ep !== null ? Math.round(ep * 100) + '%' : '—'}</td></tr>
+                <tr><td>Simulation runs</td><td class="text-end">${runs.toLocaleString()}</td></tr>
+              </table>
+              ${interp ? `<p class="mb-0 small ${riskCls}">${interp}</p>` : ''}
+            </div>
+            <div class="col-md-7">
+              <p class="text-muted small mb-1 fw-semibold">End Balance Distribution</p>
+              <table class="table table-sm mb-0">
+                <thead><tr><th>Percentile</th><th class="text-end">End Balance</th><th class="text-muted text-end" style="font-size:.7rem;">Interpretation</th></tr></thead>
+                <tbody>
+                  <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end ${balCls(p10End)}">${fmtBal(p10End)}</td><td class="text-muted text-end small">90% of runs end higher</td></tr>
+                  <tr><td>P50 <span class="text-muted small">(median)</span></td><td class="text-end ${balCls(p50End)}">${fmtBal(p50End)}</td><td class="text-muted text-end small">most likely outcome</td></tr>
+                  <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end ${balCls(p90End)}">${fmtBal(p90End)}</td><td class="text-muted text-end small">10% of runs end higher</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>`;
+      }
+    }
+
+    function applyMcToChart(_data) {
+      applyMcBands('show');
+    }
+
+    function applyMcBands(mode) {
+      const bc = window.burndownChart;
+      if (!bc || !mcCache) return;
+      bc.data.datasets = bc.data.datasets.filter(d => !d._mcOverlay);
+
+      const data      = mcCache;
+      const allLabels = bc.data.labels;
+
+      // Linearly interpolate weekly MC points onto allLabels so daily granularity works correctly.
+      function interpMc(pts) {
+        if (!pts || !pts.length) return allLabels.map(() => null);
+        const start = pts[0].date, end = pts[pts.length - 1].date;
+        return allLabels.map(l => {
+          if (l < start || l > end) return null;
+          const idx = pts.findIndex(p => p.date > l);
+          if (idx === -1) return pts[pts.length - 1].value;
+          if (idx === 0)  return pts[0].value;
+          const a = pts[idx - 1], b = pts[idx];
+          const t = (new Date(l) - new Date(a.date)) / (new Date(b.date) - new Date(a.date));
+          return a.value + t * (b.value - a.value);
+        });
+      }
+
+      const p90data = interpMc(data.p90);
+      const p50data = interpMc(data.burndown);
+      const p10data = interpMc(data.p10);
+
+      const showP90 = localStorage.getItem('forecast-mc-p90') !== '0';
+      const showP10 = localStorage.getItem('forecast-mc-p10') !== '0';
+      const showP50 = localStorage.getItem('forecast-mc-p50') !== '0';
+
+      // Dataset order P90 → P50 → P10 so the tooltip reads top-to-bottom.
+      // P90's fill jumps over P50 (when present) to reach P10 for the shaded band.
+      const p90Fill = !showP10 ? false : showP50 ? '+2' : '+1';
+
+      if (showP90) {
+        bc.data.datasets.push({
+          label: 'MC P90 (optimistic)',
+          data: p90data,
+          borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
+          backgroundColor: showP10 ? 'rgba(253,126,20,0.18)' : 'transparent',
+          fill: p90Fill,
+          pointRadius: 0, tension: 0.1, spanGaps: false,
+          _mcOverlay: true, _mcBand: 'p90',
+        });
+      }
+      if (showP50) {
+        bc.data.datasets.push({
+          label: 'MC P50 (median)',
+          data: p50data,
+          borderColor: '#fd7e14', borderWidth: 2.5, borderDash: [6, 3],
+          backgroundColor: 'transparent', fill: false,
+          pointRadius: 0, pointHoverRadius: 4, tension: 0.1, spanGaps: false,
+          _mcOverlay: true, _mcBand: 'p50',
+        });
+      }
+      if (showP10) {
+        bc.data.datasets.push({
+          label: 'MC P10 (pessimistic)',
+          data: p10data,
+          borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
+          backgroundColor: 'transparent', fill: false,
+          pointRadius: 0, tension: 0.1, spanGaps: false,
+          _mcOverlay: true, _mcBand: 'p10',
+        });
+      }
+
+      // Sync sub-checkboxes to stored state
+      ['p90', 'p50', 'p10'].forEach(band => {
+        if (localStorage.getItem('forecast-mc-' + band) === '0') {
+          const cb = document.getElementById('mc-show-' + band);
+          if (cb) cb.checked = false;
+        }
+      });
+
+      bc.chart.update(mode || 'default');
+    }
+
+    window.refreshMcBands = function() { if (mcCache) applyMcBands('none'); };
+
+    function removeMcOverlay() {
+      const bc = window.burndownChart;
+      if (!bc) return;
+      bc.data.datasets = bc.data.datasets.filter(d => !d._mcOverlay);
+      bc.update();
+      const ctrl = document.getElementById('mc-band-controls');
+      if (ctrl) ctrl.style.display = 'none';
+      mcCache = null;
+    }
+
+    // Restore checkbox states after page reload
+    const savedDet = localStorage.getItem('forecast-model-deterministic');
+    const savedMc  = localStorage.getItem('forecast-model-monte_carlo');
+    if (savedDet === '0') {
+      const cb = document.getElementById('model-det');
+      if (cb) { cb.checked = false; window.toggleForecastModel('deterministic', false); }
+    }
+    if (savedMc === '1') {
+      const cb = document.getElementById('model-mc');
+      if (cb) { cb.checked = true; window.toggleForecastModel('monte_carlo', true); }
+    }
+
+    // Auto-load MC stats on page load (also serves chart overlay if it was restored)
+    getMcData().then(updateMcStats).catch(() => {
+      const probEl = document.getElementById('mc-kpi-prob');
+      if (probEl) probEl.textContent = '—';
+      const body = document.getElementById('mc-acc-body');
+      if (body) body.innerHTML = '<div class="text-muted small">Simulation data unavailable.</div>';
+    });
+  })();
+
+  // Weekly Chart
+  (function () {
+    const rawData    = {{ weekly_chart_data | safe }};
+    const labels     = rawData.map(d => d.week_start);
+    const credits    = rawData.map(d => d.total_credits_used);
+    const inContract = rawData.map(d => d.in_contract);
+    window._weeklyInContract = inContract;
+    const wCol = getChartColor('weekly');
+    const bgColors   = inContract.map(ic => ic ? hexToRgba(wCol, 0.72) : 'rgba(108,117,125,0.35)');
+    const bdColors   = inContract.map(ic => ic ? wCol                   : 'rgba(108,117,125,0.7)');
+
+    window.weeklyChart = new BNLChart('weeklyChart', {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Credits used', data: credits, backgroundColor: bgColors, borderColor: bdColors, borderWidth: 1, borderRadius: 4 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => 'Week of ' + items[0].label,
+              label: ctx => `  ${ctx.parsed.y.toLocaleString()} credits`,
+              footer: items => inContract[items[0].dataIndex] ? 'In contract period' : 'Pre-contract',
+            },
+            footerColor: ctx => inContract[ctx[0]?.dataIndex] ? '#6ea8fe' : '#adb5bd',
+          },
+          zoom: {
+            zoom: { wheel: { enabled: true, modifierKey: 'ctrl' }, pinch: { enabled: true }, mode: 'x' },
+            pan:  { enabled: true, mode: 'x' },
+          },
+        },
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v, font: { size: 10 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          x: { ticks: { maxRotation: 40, font: { size: 10 }, maxTicksLimit: 20 }, grid: { display: false } },
+        },
+      },
+    }, { exportName: 'Weekly Credit Burn' });
+
+    const firstContractIdx = inContract.indexOf(true);
+    if (firstContractIdx > 0 && labels.length > firstContractIdx + 4) {
+      try { window.weeklyChart.chart.zoomScale('x', { min: labels[Math.max(0, firstContractIdx - 1)], max: labels[labels.length - 1] }, 'none'); } catch (_) {}
+    }
+  })();
+
+  // Active Users Chart
+  (function () {
+    const auData = {{ active_users_data | safe }};
+    if (!auData.length) return;
+    const labels   = auData.map(d => d.week_start);
+    const values   = auData.map(d => d.active_users);
+    const ic       = auData.map(d => d.in_contract);
+    window.activeUsersChart = new BNLChart('activeUsersChart', {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Active users', data: values, backgroundColor: ic.map(v => v ? 'rgba(111,66,193,0.7)' : 'rgba(108,117,125,0.35)'), borderRadius: 4 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            title: items => 'Week of ' + items[0].label,
+            label: ctx => `  Active users: ${ctx.parsed.y}`,
+            footer: items => ic[items[0].dataIndex] ? 'In contract period' : 'Pre-contract',
+          }},
+        },
+        scales: {
+          y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 10 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          x: { ticks: { maxRotation: 40, maxTicksLimit: 16, font: { size: 10 } }, grid: { display: false } },
+        },
+      },
+    }, { exportName: 'Active Users per Week' });
+  })();
+
+  // Cumulative Burn Chart
+  (function () {
+    const cumData = {{ cumulative_chart_data | safe }};
+    if (!cumData.length) return;
+    const labels  = cumData.map(d => d.week_start);
+    const values  = cumData.map(d => d.cumulative);
+    const ic      = cumData.map(d => d.in_contract);
+    window.cumulativeChart = new BNLChart('cumulativeChart', {
+      type: 'line',
+      data: { labels, datasets: [{
+        label: 'Cumulative credits used', data: values,
+        borderColor: '#198754', backgroundColor: 'rgba(25,135,84,0.08)',
+        fill: true, tension: 0.1, pointRadius: 2, pointHoverRadius: 5,
+        pointBackgroundColor: ic.map(v => v ? '#198754' : '#6c757d'),
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => `  Cumulative: ${Math.round(ctx.raw).toLocaleString()} credits` } },
+        },
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'k' : v, font: { size: 10 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          x: { ticks: { maxRotation: 40, maxTicksLimit: 16, font: { size: 10 } }, grid: { display: false } },
+        },
+      },
+    }, { exportName: 'Cumulative Credit Burn' });
+  })();
+</script>
+{% endif %}
+
+<script>
+// Exclude Partial Week
+(function () {
+  const y = sessionStorage.getItem('forecast-scroll');
+  if (y !== null) { sessionStorage.removeItem('forecast-scroll'); window.scrollTo(0, parseInt(y, 10)); }
+})();
+function applyExcludePartial(checked) {
+  sessionStorage.setItem('forecast-scroll', window.scrollY);
+  if (typeof selectedSnaps !== 'undefined' && selectedSnaps.size > 0) {
+    sessionStorage.setItem('forecast-snap-keys', JSON.stringify([...selectedSnaps.keys()]));
+  } else {
+    sessionStorage.removeItem('forecast-snap-keys');
+  }
+  document.cookie = 'forecast_excl_partial=' + (checked ? '1' : '0') + '; path=/; max-age=31536000; SameSite=Lax';
+  const url = new URL(window.location.href);
+  url.searchParams.set('exclude_partial', checked ? '1' : '0');
+  window.location.href = url.toString();
+}
+
+function applyDataWindow() {
+  const from = document.getElementById('data-from').value;
+  const to   = document.getElementById('data-to').value;
+  const url  = new URL(window.location.href);
+  if (from) url.searchParams.set('data_from', from);
+  else      url.searchParams.delete('data_from');
+  if (to)   url.searchParams.set('data_to', to);
+  else      url.searchParams.delete('data_to');
+  window.location.href = url.toString();
+}
+
+// Inline Snapshot Label Rename
+document.querySelectorAll('.snapshot-label-cell').forEach(cell => {
+  const display = cell.querySelector('.label-display');
+  const input   = cell.querySelector('.label-edit');
+  if (!display || !input) return;
+
+  cell.addEventListener('dblclick', () => {
+    display.style.display = 'none';
+    input.style.display   = '';
+    input.focus(); input.select();
+  });
+
+  function commitRename() {
+    const newLabel = input.value.trim();
+    const oldLabel = cell.dataset.oldLabel;
+    const snapTs   = cell.dataset.ts;
+    const snapDate = cell.dataset.date;
+    if (newLabel === oldLabel) { cancelRename(); return; }
+    fetch('{{ url_for("forecast.rename_forecast_snapshot") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ snapshot_ts: snapTs, snapshot_date: snapDate, old_label: oldLabel, new_label: newLabel }),
+    }).then(r => {
+      if (r.status === 204) {
+        display.textContent = newLabel || 'Add label…';
+        display.title = newLabel;
+        if (newLabel) display.classList.remove('label-empty'); else display.classList.add('label-empty');
+        cell.dataset.oldLabel = newLabel;
+        input.value = newLabel;
+        const row = cell.closest('tr');
+        if (row) { try { const snap = JSON.parse(row.dataset.snap || '{}'); snap.label = newLabel; row.dataset.snap = JSON.stringify(snap); } catch (_) {} }
+      } else { r.text().then(msg => alert('Rename failed: ' + (msg || r.status))); }
+      cancelRename();
+    }).catch(() => { alert('Rename request failed.'); cancelRename(); });
+  }
+
+  function cancelRename() {
+    input.style.display = 'none'; display.style.display = '';
+    input.value = cell.dataset.oldLabel;
+    display.textContent = cell.dataset.oldLabel || 'Add label…';
+    if (cell.dataset.oldLabel) display.classList.remove('label-empty'); else display.classList.add('label-empty');
+  }
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commitRename(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancelRename(); }
+  });
+  input.addEventListener('blur', commitRename);
+});
+</script>
+{% endblock %}

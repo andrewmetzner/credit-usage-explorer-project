@@ -1,0 +1,211 @@
+﻿{% extends "base.html" %}
+{% block title %}Users - Credit Usage Explorer{% endblock %}
+
+{% block body %}
+    <div class="container py-4" style="max-width: 1280px;">
+
+      <!-- HEADER -->
+      <div class="mb-4">
+        <h1 class="page-title">Users</h1>
+        <p class="page-subtitle">Search for users and view aggregated credit usage.</p>
+      </div>
+
+      <!-- FILTERS -->
+      <form method="get" action="{{ url_for('analytics.user_cards_page') }}">
+        <div class="filter-card">
+          <div class="section-label">User Search</div>
+
+          <!-- Row 1: name / email / date field / top-n / search button -->
+          <div class="row g-2 align-items-end">
+            <div class="col-md-4">
+              <label class="form-label">Name contains</label>
+              <input
+                class="form-control form-control-sm"
+                name="name_query"
+                value="{{ name_query }}"
+                placeholder="Partial name"
+              >
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Email contains</label>
+              <input
+                class="form-control form-control-sm"
+                name="email_query"
+                value="{{ email_query }}"
+                placeholder="Email or domain"
+              >
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">Date field</label>
+              <select class="form-select form-select-sm" name="date_field">
+                <option value="" {% if not date_field %}selected{% endif %}>None</option>
+                {% for col in headers %}
+                <option value="{{ col }}" {% if date_field == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-1">
+              <label class="form-label">Top</label>
+              <input
+                class="form-control form-control-sm"
+                name="top_n"
+                value="{{ top_n }}"
+                type="number"
+                min="1"
+                max="200"
+              >
+            </div>
+
+            <div class="col-md-1">
+              <label class="form-label">&nbsp;</label>
+              <button class="btn btn-primary btn-sm w-100">Search</button>
+            </div>
+          </div>
+
+          <!-- Row 2: dates + clear -->
+          <div class="row g-2 align-items-end mt-2">
+            <div class="col-md-2">
+              <label class="form-label">Start date</label>
+              <input class="form-control form-control-sm" type="date" name="start_date" value="{{ start_date }}">
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">End date</label>
+              <input class="form-control form-control-sm" type="date" name="end_date" value="{{ end_date }}">
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">&nbsp;</label>
+              <a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('analytics.user_cards_page') }}">
+                Clear
+              </a>
+            </div>
+          </div>
+
+          <!-- Row 3: credits filter -->
+          <div class="row g-2 align-items-end credits-filter-row">
+            <div class="col-md-2">
+              <label class="form-label">Min credits</label>
+              <input
+                class="form-control form-control-sm"
+                type="number"
+                step="any"
+                name="min_credits"
+                value="{{ min_credits }}"
+                placeholder="e.g. 10"
+              >
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">Max credits</label>
+              <input
+                class="form-control form-control-sm"
+                type="number"
+                step="any"
+                name="max_credits"
+                value="{{ max_credits }}"
+                placeholder="e.g. 500"
+              >
+            </div>
+
+            <div class="col-md-3 d-flex align-items-end pb-1">
+              <div class="form-check mb-0">
+                <input
+                  class="form-check-input"
+                  type="checkbox"
+                  name="zero_credits"
+                  value="1"
+                  id="zero_credits_cards"
+                  {% if zero_credits == '1' %}checked{% endif %}
+                  onchange="this.closest('form').submit()"
+                >
+                <label class="form-check-label" for="zero_credits_cards">Zero credits only</label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <!-- RESULT COUNT -->
+      {% if users %}
+      <div class="result-count">
+        Showing {{ users | length }} user{{ 's' if users | length != 1 else '' }}
+        {% if min_credits or max_credits %} &middot; credits {{ min_credits or '0' }}&ndash;{{ max_credits or '&infin;' }}{% endif %}
+        {% if zero_credits == '1' %} &middot; zero credits only{% endif %}
+      </div>
+      {% endif %}
+
+      <!-- USERS -->
+      <div class="row g-3">
+        {% for u in users %}
+        <div class="col-md-4">
+          <a
+            class="user-card-link"
+            href="{{ url_for('analytics.user_summary',
+              name=u.name or '',
+              email=u.email or '',
+              date_field=date_field,
+              start_date=start_date,
+              end_date=end_date
+            ) }}"
+          >
+            <div class="user-card">
+              <div class="user-card-body">
+                <div class="user-name">{{ u.name or u.email or 'Unknown user' }}</div>
+
+                {% if u.email %}
+                <div class="user-email">{{ u.email }}</div>
+                {% endif %}
+
+                {% if start_date or end_date %}
+                <div class=”date-range”>
+                  {{ start_date or 'All time' }} &ndash; {{ end_date or 'All time' }}
+                </div>
+                {% endif %}
+
+                <div class="metric-row">
+                  <span class="metric-label">Records</span>
+                  <span class="metric-value">{{ '{:,}'.format(u.rows) }}</span>
+                </div>
+
+                <div class="metric-row">
+                  <span class="metric-label">Credits</span>
+                  <span class="metric-value">{{ '{:,.2f}'.format(u.total_credits) }}</span>
+                </div>
+
+                <div class="metric-row">
+                  <span class="metric-label">Tokens</span>
+                  <span class="metric-value">{{ '{:,.0f}'.format(u.total_tokens if u.total_tokens is defined else 0) }}</span>
+                </div>
+
+                {% if u.total_counts is defined and u.total_counts %}
+                <div class="metric-row">
+                  <span class="metric-label">Counts</span>
+                  <span class="metric-value">{{ '{:,.0f}'.format(u.total_counts) }}</span>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </a>
+        </div>
+        {% else %}
+        <div class="col-12">
+          <div class="empty-state">No users found</div>
+        </div>
+        {% endfor %}
+      </div>
+
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      document.querySelectorAll('input[type="date"], select[name="date_field"]').forEach(el => {
+        el.addEventListener('change', () => el.closest('form').submit());
+      });
+    </script>
+{% endblock %}
+

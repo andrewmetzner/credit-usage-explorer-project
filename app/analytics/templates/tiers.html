@@ -1,0 +1,513 @@
+{% extends "base.html" %}
+{% block title %}Tiers - Credit Usage Explorer{% endblock %}
+
+{% block body %}
+    <div class="container py-4" style="max-width: 1280px;">
+
+      <!-- HEADER -->
+      <div class="mb-4">
+        <h1 class="page-title">Tiers</h1>
+        <p class="page-subtitle">Leaderboards by user, model, usage type, spend event, and time period.</p>
+      </div>
+
+      <!-- FILTER BAR -->
+      <form method="get" action="{{ url_for('analytics.tiers_page') }}" id="filter-form">
+        <input type="hidden" name="active_tab" value="{{ active_tab }}">
+
+        <div class="filter-bar">
+          <div class="row g-2 align-items-end">
+            <div class="col-md-2">
+              <label class="form-label">Usage type</label>
+              <select class="form-select form-select-sm" name="usage_type_filter">
+                <option value="" {% if not usage_type_filter %}selected{% endif %}>All types</option>
+                {% for t in all_usage_types %}
+                <option value="{{ t }}" {% if usage_type_filter == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-3">
+              <label class="form-label">Model</label>
+              <select class="form-select form-select-sm" name="model_filter">
+                <option value="" {% if not model_filter %}selected{% endif %}>All models</option>
+                {% for m in all_models %}
+                <option value="{{ m }}" {% if model_filter == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">Start date</label>
+              <input class="form-control form-control-sm" type="date" name="start_date" value="{{ start_date }}">
+            </div>
+
+            <div class="col-md-2">
+              <label class="form-label">End date</label>
+              <input class="form-control form-control-sm" type="date" name="end_date" value="{{ end_date }}">
+            </div>
+
+            <div class="col-md-1">
+              <label class="form-label">Top No.</label>
+              <input class="form-control form-control-sm" type="number" name="top_n" value="{{ top_n }}" min="5" max="200">
+            </div>
+
+            <div class="col-md-1">
+              <label class="form-label">&nbsp;</label>
+              <button class="btn btn-primary btn-sm w-100 d-block">Apply</button>
+            </div>
+
+            <div class="col-md-1">
+              <label class="form-label">&nbsp;</label>
+              <a class="btn btn-outline-secondary btn-sm w-100 d-block" href="{{ url_for('analytics.tiers_page') }}">Clear</a>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <!-- TABS -->
+      <div class="tier-tabs">
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=users"
+           class="tier-tab {% if active_tab == 'users' %}active{% endif %}">Users</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=users_by_type"
+           class="tier-tab {% if active_tab == 'users_by_type' %}active{% endif %}">By type</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=models"
+           class="tier-tab {% if active_tab == 'models' %}active{% endif %}">Models</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=usage_types"
+           class="tier-tab {% if active_tab == 'usage_types' %}active{% endif %}">Usage types</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=biggest_single"
+           class="tier-tab {% if active_tab == 'biggest_single' %}active{% endif %}">Credit per record</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=yearly"
+           class="tier-tab {% if active_tab == 'yearly' %}active{% endif %}">Yearly</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=monthly"
+           class="tier-tab {% if active_tab == 'monthly' %}active{% endif %}">Monthly</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=weekly"
+           class="tier-tab {% if active_tab == 'weekly' %}active{% endif %}">Weekly</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=daily"
+           class="tier-tab {% if active_tab == 'daily' %}active{% endif %}">Daily</a>
+      </div>
+
+      <!-- USERS TAB -->
+      <div class="tab-panel {% if active_tab == 'users' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Top {{ top_n }} users by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_users | length }} results</span>
+          </div>
+
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Tokens</th>
+                  <th></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for item in lb_users %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.name or '&mdash;' }}</td>
+                  <td style="color:#8a92a0; font-size:.78rem;">{{ item.email or '&mdash;' }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ '{:,.0f}'.format(item.total_tokens) }}</td>
+                  <td>
+                    <a class="drill-link" href="{{ url_for('analytics.user_summary',
+                        name=item.name or '',
+                        email=item.email or '',
+                        date_field='date_partition',
+                        start_date=start_date,
+                        end_date=end_date,
+                        active_tab='records',
+                        fs='1'
+                      ) }}">View &rarr;</a>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- USERS BY TYPE TAB -->
+      <div class="tab-panel {% if active_tab == 'users_by_type' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Top {{ top_n }} users by usage type</span>
+            <span class="count">{{ lb_users_by_type | length }} results</span>
+          </div>
+
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Name</th>
+                  <th>Usage Type</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for item in lb_users_by_type %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.name or item.email or '&mdash;' }}</td>
+                  <td><span class="badge-type {{ item.usage_type_parsed_type }}">{{ item.usage_type_parsed_type }}</span></td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>
+                    <a class="drill-link" href="{{ url_for('analytics.user_summary',
+                        name=item.name or '',
+                        email=item.email or '',
+                        date_field='date_partition',
+                        start_date=start_date,
+                        end_date=end_date,
+                        active_tab='records',
+                        filter_types=[item.usage_type_parsed_type],
+                        fs='1'
+                      ) }}">View &rarr;</a>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODELS TAB -->
+      <div class="tab-panel {% if active_tab == 'models' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Models ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}</span>
+            <span class="count">{{ lb_models | length }} results</span>
+          </div>
+
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Model</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                  <th></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for item in lb_models %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.usage_type_model }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                  <td>
+                    <a class="drill-link" href="{{ url_for('analytics.tiers_page',
+                        active_tab='users',
+                        model_filter=item.usage_type_model,
+                        usage_type_filter=usage_type_filter,
+                        start_date=start_date,
+                        end_date=end_date,
+                        top_n=top_n
+                      ) }}">Who uses this &rarr;</a>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- USAGE TYPES TAB -->
+      <div class="tab-panel {% if active_tab == 'usage_types' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Usage types ranked by credits{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_usage_types | length }} results</span>
+          </div>
+
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Usage Type</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                  <th></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for item in lb_usage_types %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td><span class="badge-type {{ item.usage_type_parsed_type }}">{{ item.usage_type_parsed_type }}</span></td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                  <td>
+                    <a class="drill-link" href="{{ url_for('analytics.tiers_page',
+                        active_tab='users',
+                        usage_type_filter=item.usage_type_parsed_type,
+                        model_filter=model_filter,
+                        start_date=start_date,
+                        end_date=end_date,
+                        top_n=top_n
+                      ) }}">Who uses this &rarr;</a>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- BIGGEST SINGLE TAB -->
+      <div class="tab-panel {% if active_tab == 'biggest_single' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Highest Single-Record Credit Spend{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_biggest_single | length }} results</span>
+          </div>
+
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Credits</th>
+                  <th>Type</th>
+                  <th>Model</th>
+                  <th>I/O</th>
+                  <th>Quantity</th>
+                  <th>Units</th>
+                  <th>Date</th>
+                  <th></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for item in lb_biggest_single %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.name or '&mdash;' }}</td>
+                  <td style="color:#8a92a0; font-size:.78rem;">{{ item.email or '&mdash;' }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.usage_credits) }}</td>
+                  <td>{{ item.usage_type_parsed_type or '&mdash;' }}</td>
+                  <td>{{ item.usage_type_model or '&mdash;' }}</td>
+                  <td>{{ item.usage_type_io or '&mdash;' }}</td>
+                  <td>{% if item.usage_quantity is defined and item.usage_quantity is not none %}{{ '{:,.0f}'.format(item.usage_quantity) }}{% else %}&mdash;{% endif %}</td>
+                  <td>{{ item.usage_units or '&mdash;' }}</td>
+                  <td>{{ item.date_partition or '&mdash;' }}</td>
+                  <td>
+                    <a class="drill-link" href="{{ url_for('analytics.user_summary',
+                        name=item.name or '',
+                        email=item.email or '',
+                        date_field='date_partition',
+                        start_date=start_date,
+                        end_date=end_date,
+                        active_tab='records',
+                        filter_types=[item.usage_type_parsed_type] if item.usage_type_parsed_type else [],
+                        filter_models=[item.usage_type_model] if item.usage_type_model else [],
+                        fs='1'
+                      ) }}">View &rarr;</a>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="11" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- YEARLY TAB -->
+      <div class="tab-panel {% if active_tab == 'yearly' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Years ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_yearly | length }} results</span>
+          </div>
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Year</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in lb_yearly %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.year }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- MONTHLY TAB -->
+      <div class="tab-panel {% if active_tab == 'monthly' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Months ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_monthly | length }} results</span>
+          </div>
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Month</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in lb_monthly %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.month }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- WEEKLY TAB -->
+      <div class="tab-panel {% if active_tab == 'weekly' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Weeks ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_weekly | length }} results</span>
+          </div>
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Week of</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in lb_weekly %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.week }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- DAILY TAB -->
+      <div class="tab-panel {% if active_tab == 'daily' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Days ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="count">{{ lb_daily | length }} results</span>
+          </div>
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th style="width:40px">#</th>
+                  <th>Date</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in lb_daily %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.date_partition }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      document.querySelectorAll('#filter-form select, #filter-form input[type="date"]').forEach(el => {
+        el.addEventListener('change', () => document.getElementById('filter-form').submit());
+      });
+    </script>
+{% endblock %}

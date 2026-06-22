@@ -1,0 +1,639 @@
+{% extends "base.html" %}
+{% block title %}User Summary - Credit Usage Explorer{% endblock %}
+{% block extra_head %}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+{% endblock %}
+
+{% block body %}
+    <div class="container py-4" style="max-width: 1280px;">
+
+      <!-- HEADER -->
+      <div class="mb-4">
+        <h1 class="page-title">User Summary</h1>
+        <p class="page-subtitle">Review usage totals, summaries, and raw records for one user.</p>
+      </div>
+
+      <!-- USER HERO -->
+      <div class="user-hero">
+        <div class="row g-4 align-items-start">
+
+          <!-- Left: identity + stat numbers -->
+          <div class="col-md-4">
+            <div class="user-name-hero">{{ name or email or 'User' }}</div>
+
+            {% if email and email != name %}
+            <div class="user-detail"><span class="label">Email:</span> {{ email }}</div>
+            {% endif %}
+            {% if account_id %}
+            <div class="user-detail"><span class="label">Account ID:</span> {{ account_id }}</div>
+            {% endif %}
+            {% if account_user_id %}
+            <div class="user-detail"><span class="label">Account User ID:</span> {{ account_user_id }}</div>
+            {% endif %}
+            {% if public_id %}
+            <div class="user-detail"><span class="label">Public ID:</span> {{ public_id }}</div>
+            {% endif %}
+
+            <div class="row g-2 mt-2">
+              <div class="col-6">
+                <div class="stat-card">
+                  <div class="stat-label">Records</div>
+                  <div class="stat-value" style="font-size:1.35rem;">{{ '{:,}'.format(rows) }}</div>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="stat-card">
+                  <div class="stat-label">Credits</div>
+                  <div class="stat-value" style="font-size:1.35rem;">{{ '{:,.0f}'.format(total_credits) }}</div>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="stat-card">
+                  <div class="stat-label">Tokens</div>
+                  <div class="stat-value" style="font-size:1.35rem;">{{ '{:,.0f}'.format(totals_by_unit.get('tokens', 0.0)) }}</div>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="stat-card">
+                  <div class="stat-label">Counts</div>
+                  <div class="stat-value" style="font-size:1.35rem;">{{ '{:,.0f}'.format(totals_by_unit.get('counts', 0.0)) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Middle: credits per week bar chart -->
+          <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <div class="hero-chart-label mb-0">Credits per week</div>
+              <div class="d-flex gap-1">
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" style="font-size:.7rem;" title="Export PNG"  onclick="window.userWeeklyBNL && window.userWeeklyBNL.exportPNG()">&#8681;</button>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" style="font-size:.7rem;" title="Fullscreen"  onclick="window.userWeeklyBNL && window.userWeeklyBNL.openFullscreen()">&#9974;</button>
+              </div>
+            </div>
+            <canvas id="userWeeklyChart" height="160"></canvas>
+          </div>
+
+          <!-- Right: credits by usage type donut -->
+          <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <div class="hero-chart-label mb-0">By usage type</div>
+              <div class="d-flex gap-1">
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" style="font-size:.7rem;" title="Export PNG"  onclick="window.userTypeBNL && window.userTypeBNL.exportPNG()">&#8681;</button>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-1" style="font-size:.7rem;" title="Fullscreen"  onclick="window.userTypeBNL && window.userTypeBNL.openFullscreen()">&#9974;</button>
+              </div>
+            </div>
+            <canvas id="userTypeChart" height="160"></canvas>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- TABS -->
+      <ul class="nav nav-tabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link {% if active_tab != 'records' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#overview" type="button" role="tab">
+            Overview
+          </button>
+        </li>
+
+        <li class="nav-item" role="presentation">
+          <button class="nav-link {% if active_tab == 'records' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#records" type="button" role="tab">
+            Records
+          </button>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+
+        <!-- OVERVIEW TAB -->
+        <div class="tab-pane fade {% if active_tab != 'records' %}show active{% endif %}" id="overview" role="tabpanel">
+          <div class="section-card">
+            <h5>Filters</h5>
+
+            <form method="get" action="{{ url_for('analytics.user_summary') }}">
+              <input type="hidden" name="name" value="{{ name }}">
+              <input type="hidden" name="email" value="{{ email }}">
+              <input type="hidden" name="date_field" value="date_partition">
+              <input type="hidden" name="fs" value="1">
+              <input type="hidden" name="mfs" value="1">
+
+              {% for field in selected_fields %}
+              <input type="hidden" name="selected_fields" value="{{ field }}">
+              {% endfor %}
+
+              <div class="row g-2 align-items-end mb-3">
+                <div class="col-md-4">
+                  <label class="form-label tight">Start</label>
+                  <input class="form-control form-control-sm" type="date" name="start_date" value="{{ start_date }}">
+                </div>
+
+                <div class="col-md-4">
+                  <label class="form-label tight">End</label>
+                  <input class="form-control form-control-sm" type="date" name="end_date" value="{{ end_date }}">
+                </div>
+
+                <div class="col-md-2">
+                  <label class="form-label tight">&nbsp;</label>
+                  <button type="submit" class="btn btn-primary btn-sm w-100 d-block">Apply</button>
+                </div>
+
+                <div class="col-md-2">
+                  <label class="form-label tight">&nbsp;</label>
+                  <a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('analytics.user_summary', name=name, email=email, date_field='date_partition') }}">
+                    Clear
+                  </a>
+                </div>
+              </div>
+
+              {% if user_models | length > 1 %}
+              <div class="mb-0">
+                <label class="form-label tight">Models</label>
+                <div class="d-flex flex-wrap gap-2">
+                  {% for model in user_models %}
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="filter_models" value="{{ model }}" id="ov_model_{{ loop.index }}" {% if model in filter_models %}checked{% endif %}>
+                    <label class="form-check-label" style="font-size:.75rem;" for="ov_model_{{ loop.index }}">{{ model }}</label>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+              {% elif user_models | length == 1 %}
+              <div class="mb-0">
+                <label class="form-label tight">Model</label>
+                <div><span class="filter-pill">{{ user_models[0] }}</span></div>
+              </div>
+              {% endif %}
+            </form>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="section-card h-100 mb-0">
+                <h5>Summary by Usage Type</h5>
+                <div style="max-height:300px; overflow:auto;">
+                  <table class="table table-sm records-table mb-0">
+                    <thead>
+                      <tr>
+                        <th>Usage Type</th>
+                        <th>Records</th>
+                        <th>Credits</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for s in summary_usage_type %}
+                      <tr>
+                        <td class="text-truncate" style="max-width:140px" title="{{ s.usage_type_parsed_type }}">{{ s.usage_type_parsed_type }}</td>
+                        <td>{{ s.rows }}</td>
+                        <td>{{ '{:,.2f}'.format(s.total_credits) }}</td>
+                      </tr>
+                      {% else %}
+                      <tr>
+                        <td colspan="3" class="text-center text-muted py-3" style="font-size:.85rem;">No data</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-md-6">
+              <div class="section-card h-100 mb-0">
+                <h5>Summary by Model</h5>
+                <div style="max-height:300px; overflow:auto;">
+                  <table class="table table-sm records-table mb-0">
+                    <thead>
+                      <tr>
+                        <th>Model</th>
+                        <th>Records</th>
+                        <th>Credits</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for s in summary_model %}
+                      <tr>
+                        <td class="text-truncate" style="max-width:140px" title="{{ s.usage_type_model }}">{{ s.usage_type_model }}</td>
+                        <td>{{ s.rows }}</td>
+                        <td>{{ '{:,.2f}'.format(s.total_credits) }}</td>
+                      </tr>
+                      {% else %}
+                      <tr>
+                        <td colspan="3" class="text-center text-muted py-3" style="font-size:.85rem;">No data</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-md-6">
+              <div class="section-card h-100 mb-0">
+                <h5>Summary by IO</h5>
+                <div style="max-height:300px; overflow:auto;">
+                  <table class="table table-sm records-table mb-0">
+                    <thead>
+                      <tr>
+                        <th>IO</th>
+                        <th>Records</th>
+                        <th>Credits</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for s in summary_io %}
+                      <tr>
+                        <td class="text-truncate" style="max-width:140px" title="{{ s.usage_type_io }}">{{ s.usage_type_io }}</td>
+                        <td>{{ s.rows }}</td>
+                        <td>{{ '{:,.2f}'.format(s.total_credits) }}</td>
+                      </tr>
+                      {% else %}
+                      <tr>
+                        <td colspan="3" class="text-center text-muted py-3" style="font-size:.85rem;">No data</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-md-6">
+              <div class="section-card h-100 mb-0">
+                <h5>Summary by Raw Usage Type</h5>
+                <div style="max-height:300px; overflow:auto;">
+                  <table class="table table-sm records-table mb-0">
+                    <thead>
+                      <tr>
+                        <th>Raw Usage Type</th>
+                        <th>Records</th>
+                        <th>Credits</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for s in summary_raw %}
+                      <tr>
+                        <td class="text-truncate" style="max-width:140px" title="{{ s.usage_type }}">{{ s.usage_type }}</td>
+                        <td>{{ s.rows }}</td>
+                        <td>{{ '{:,.2f}'.format(s.total_credits) }}</td>
+                      </tr>
+                      {% else %}
+                      <tr>
+                        <td colspan="3" class="text-center text-muted py-3" style="font-size:.85rem;">No data</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RECORDS TAB -->
+        <div class="tab-pane fade {% if active_tab == 'records' %}show active{% endif %}" id="records" role="tabpanel">
+          <div class="section-card">
+            <h5>Filters &amp; Display</h5>
+
+            <form method="get" action="{{ url_for('analytics.user_summary') }}" id="records-form">
+              <input type="hidden" name="name" value="{{ name }}">
+              <input type="hidden" name="email" value="{{ email }}">
+              <input type="hidden" name="date_field" value="date_partition">
+              <input type="hidden" name="active_tab" value="records">
+              <input type="hidden" name="fs" value="1">
+
+              <div class="row g-2 align-items-end mb-3">
+                <div class="col-md-5">
+                  <label class="form-label tight">Start date</label>
+                  <input class="form-control form-control-sm" type="date" name="start_date" value="{{ start_date }}">
+                </div>
+
+                <div class="col-md-5">
+                  <label class="form-label tight">End date</label>
+                  <input class="form-control form-control-sm" type="date" name="end_date" value="{{ end_date }}">
+                </div>
+
+                <div class="col-md-2">
+                  <a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('analytics.user_summary', name=name, email=email, date_field='date_partition', active_tab='records') }}">
+                    Clear
+                  </a>
+                </div>
+              </div>
+
+              {% if user_types | length > 1 %}
+              <div class="mb-3">
+                <label class="form-label tight">Usage Types</label>
+                <div class="d-flex flex-wrap gap-3">
+                  {% for t in user_types %}
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="filter_types" value="{{ t }}" id="type_{{ t }}" {% if t in filter_types %}checked{% endif %}>
+                    <label class="form-check-label" for="type_{{ t }}">{{ t }}</label>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+              {% elif user_types | length == 1 %}
+              <div class="mb-3">
+                <label class="form-label tight">Usage Type</label>
+                <div><span class="filter-pill">{{ user_types[0] }}</span></div>
+                <input type="hidden" name="filter_types" value="{{ user_types[0] }}">
+              </div>
+              {% endif %}
+
+              {% if user_models | length > 1 %}
+              <div class="mb-3">
+                <label class="form-label tight">Models</label>
+                <div class="d-flex flex-wrap gap-2">
+                  {% for model in user_models %}
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="filter_models" value="{{ model }}" id="rec_model_{{ loop.index }}" {% if model in filter_models %}checked{% endif %}>
+                    <label class="form-check-label" style="font-size:.75rem;" for="rec_model_{{ loop.index }}">{{ model }}</label>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+              {% elif user_models | length == 1 %}
+              <div class="mb-3">
+                <label class="form-label tight">Model</label>
+                <div><span class="filter-pill">{{ user_models[0] }}</span></div>
+                <input type="hidden" name="filter_models" value="{{ user_models[0] }}">
+              </div>
+              {% endif %}
+
+              <div class="mb-3">
+                <label class="form-label tight">Display columns</label>
+                <div class="d-flex flex-wrap gap-2">
+                  {% for col in display_headers %}
+                  {% set is_checked = col in selected_fields %}
+                  {% set display_name = col %}
+
+                  {% if col == 'usage_type' %}{% set display_name = 'Raw usage type' %}
+                  {% elif col == 'usage_type_parsed_type' %}{% set display_name = 'Usage Type' %}
+                  {% elif col == 'usage_type_model' %}{% set display_name = 'Model' %}
+                  {% elif col == 'usage_type_io' %}{% set display_name = 'IO' %}
+                  {% elif col == 'usage_type_medium' %}{% set display_name = 'Medium' %}
+                  {% elif col == 'usage_type_date' %}{% set display_name = 'Usage Date' %}
+                  {% elif col == 'usage_credits' %}{% set display_name = 'Credits' %}
+                  {% elif col == 'usage_quantity' %}{% set display_name = 'Quantity' %}
+                  {% elif col == 'usage_units' %}{% set display_name = 'Units' %}
+                  {% elif col == 'date_partition' %}{% set display_name = 'Date' %}
+                  {% endif %}
+
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="selected_fields" value="{{ col }}" id="col_{{ loop.index }}" {% if is_checked %}checked{% endif %}>
+                    <label class="form-check-label" style="font-size:.75rem;" for="col_{{ loop.index }}">{{ display_name }}</label>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <div class="section-card">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h5 class="mb-0">Records</h5>
+              <span class="badge bg-secondary" style="font-size:.75rem; font-weight:600;">{{ '{:,}'.format(rows) }}</span>
+            </div>
+
+            <div class="table-responsive" style="max-height:80vh; overflow:auto;">
+              <table class="table table-sm table-hover records-table mb-0">
+                <thead>
+                  <tr>
+                    {% for col in display_columns %}
+                    {% set display_name = col %}
+
+                    {% if col == 'usage_type' %}{% set display_name = 'Raw usage type' %}
+                    {% elif col == 'usage_type_parsed_type' %}{% set display_name = 'Usage Type' %}
+                    {% elif col == 'usage_type_model' %}{% set display_name = 'Model' %}
+                    {% elif col == 'usage_type_io' %}{% set display_name = 'IO' %}
+                    {% elif col == 'usage_type_medium' %}{% set display_name = 'Medium' %}
+                    {% elif col == 'usage_type_date' %}{% set display_name = 'Usage Date' %}
+                    {% elif col == 'usage_credits' %}{% set display_name = 'Credits' %}
+                    {% elif col == 'usage_quantity' %}{% set display_name = 'Quantity' %}
+                    {% elif col == 'usage_units' %}{% set display_name = 'Units' %}
+                    {% elif col == 'date_partition' %}{% set display_name = 'Date' %}
+                    {% endif %}
+
+                    <th data-col="{{ col }}" onclick="sortByCol(this)">
+                      {{ display_name }}
+                      <span class="sort-indicator">{% if sort_by == col %}{{ '&#8593;' if sort_order == 'asc' else '&#8595;' }}{% endif %}</span>
+                    </th>
+                    {% endfor %}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {% for r in rows_data %}
+                  <tr>
+                    {% for col in display_columns %}
+                    <td title="{{ r[col] }}">{{ r[col] }}</td>
+                    {% endfor %}
+                  </tr>
+                  {% else %}
+                  <tr>
+                    <td colspan="{{ display_columns|length or 1 }}" class="text-center text-muted py-4">No records</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      // Hero Charts
+
+      const CHART_COLORS = ['#0d6efd','#198754','#dc3545','#ffc107','#6f42c1','#0dcaf0','#fd7e14','#20c997','#adb5bd'];
+
+      // Weekly credits bar chart
+      (function () {
+        const weekly = {{ user_weekly_json | safe }};
+        const canvas = document.getElementById('userWeeklyChart');
+        if (!canvas) return;
+
+        if (weekly.length === 0) {
+          canvas.closest('.col-md-4').querySelector('.hero-chart-label').textContent = 'No date data';
+          canvas.style.display = 'none';
+          return;
+        }
+
+        window.userWeeklyBNL = new BNLChart('userWeeklyChart', {
+          type: 'bar',
+          data: {
+            labels: weekly.map(d => d.week),
+            datasets: [{
+              data: weekly.map(d => d.credits),
+              backgroundColor: 'rgba(13,110,253,0.65)',
+              borderRadius: 3,
+              borderSkipped: false,
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: {
+                beginAtZero: true,
+                ticks: {
+                  callback: v => v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v,
+                  font: { size: 9 }
+                },
+                grid: { color: 'rgba(0,0,0,.05)' }
+              },
+              x: { ticks: { maxRotation: 45, maxTicksLimit: 8, font: { size: 9 } }, grid: { display: false } }
+            }
+          }
+        }, { exportName: 'User Credits per Week' });
+      })();
+
+      // Credits by usage type donut
+      (function () {
+        const types = {{ type_chart_json | safe }};
+        const canvas = document.getElementById('userTypeChart');
+        if (!canvas) return;
+
+        if (types.length === 0) {
+          canvas.closest('.col-md-4').querySelector('.hero-chart-label').textContent = 'No type data';
+          canvas.style.display = 'none';
+          return;
+        }
+
+        window.userTypeBNL = new BNLChart('userTypeChart', {
+          type: 'doughnut',
+          data: {
+            labels: types.map(d => d.label),
+            datasets: [{
+              data: types.map(d => d.value),
+              backgroundColor: CHART_COLORS.slice(0, types.length),
+              borderWidth: 2,
+              borderColor: '#fff',
+              hoverOffset: 4,
+            }]
+          },
+          options: {
+            responsive: true,
+            cutout: '62%',
+            plugins: {
+              legend: {
+                position: 'right',
+                labels: { font: { size: 10 }, boxWidth: 12, padding: 6, color: '#384050' }
+              },
+              tooltip: {
+                callbacks: {
+                  label: ctx => ` ${ctx.label}: ${ctx.raw.toLocaleString()} credits`
+                }
+              }
+            }
+          }
+        }, { exportName: 'User Credits by Usage Type' });
+      })();
+
+      // Client-Side Table Sort
+      // Clicking a column header sorts already-rendered rows in-place without a
+      // page reload. Hidden fields (sort_by / sort_order) stay in sync so the
+      // server re-applies the same sort on filter-driven reloads.
+
+      const sortState = {
+        col:   '{{ sort_by or "" }}',
+        order: '{{ sort_order or "asc" }}',
+      };
+
+      function updateIndicators() {
+        document.querySelectorAll('.records-table thead th[data-col]').forEach(th => {
+          const ind = th.querySelector('.sort-indicator');
+          if (!ind) return;
+          if (th.dataset.col === sortState.col) {
+            ind.textContent = sortState.order === 'asc' ? '↑' : '↓';
+            ind.classList.add('active');
+            th.classList.add('sorted');
+          } else {
+            ind.textContent = '';
+            ind.classList.remove('active');
+            th.classList.remove('sorted');
+          }
+        });
+      }
+
+      function sortByCol(th) {
+        const col = th.dataset.col;
+        const idx = Array.from(th.parentElement.children).indexOf(th);
+
+        sortState.order = (sortState.col === col && sortState.order === 'asc') ? 'desc' : 'asc';
+        sortState.col   = col;
+
+        const tbody = th.closest('table').querySelector('tbody');
+        const rows  = Array.from(tbody.rows);
+
+        // Nothing to sort if the only row is the empty-state message.
+        if (rows.length === 1 && rows[0].querySelector('td[colspan]')) return;
+
+        rows.sort((a, b) => {
+          const av = a.cells[idx]?.textContent.trim() ?? '';
+          const bv = b.cells[idx]?.textContent.trim() ?? '';
+          const an = parseFloat(av.replace(/,/g, ''));
+          const bn = parseFloat(bv.replace(/,/g, ''));
+          // Use numeric comparison only when both values are real numbers that differ.
+          // Dates like "2024-06-15" parse to 2024 for every row in the same year, so
+          // if the numbers are equal but the raw strings differ, fall back to
+          // localeCompare which sorts ISO date strings correctly.
+          const cmp = (!isNaN(an) && !isNaN(bn) && an !== bn)
+            ? (an - bn)
+            : av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
+          return sortState.order === 'asc' ? cmp : -cmp;
+        });
+
+        rows.forEach(r => tbody.appendChild(r));
+        updateIndicators();
+
+        // Keep hidden fields in sync for server-side sort on next filter reload.
+        syncField('sort_by',    sortState.col);
+        syncField('sort_order', sortState.order);
+      }
+
+      function syncField(name, value) {
+        const form = document.getElementById('records-form');
+        let el = form.querySelector(`input[name="${name}"]`);
+        if (!el) {
+          el = document.createElement('input');
+          el.type  = 'hidden';
+          el.name  = name;
+          form.appendChild(el);
+        }
+        el.value = value;
+      }
+
+      // Reflect any server-applied initial sort in the header indicators.
+      updateIndicators();
+
+      // Filter changes require a server round-trip
+      document.addEventListener('change', e => {
+        if (!['selected_fields', 'filter_models', 'filter_types'].includes(e.target.name)) return;
+
+        const form = e.target.closest('form');
+
+        if (e.target.name === 'filter_models') {
+          let mfs = form.querySelector('input[name="mfs"]');
+          if (!mfs) {
+            mfs = Object.assign(document.createElement('input'), { type: 'hidden', name: 'mfs' });
+            form.appendChild(mfs);
+          }
+          mfs.value = '1';
+        }
+
+        form.submit();
+      });
+
+      document.addEventListener('blur', e => {
+        if (['start_date', 'end_date'].includes(e.target.name)) {
+          e.target.closest('form').submit();
+        }
+      }, true);
+    </script>
+{% endblock %}
+
