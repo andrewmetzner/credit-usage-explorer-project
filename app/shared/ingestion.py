@@ -293,6 +293,10 @@ class IngestionPipeline:
             })
         return records
 
+    def record_upload(self, upload_type: str, filename: str, stats: dict) -> None:
+        """Public entry point for recording a sheet upload in the history log."""
+        self._log_upload(upload_type, filename, stats)
+
     def _log_upload(self, upload_type: str, filename: str, stats: dict) -> None:
         path = self.processed_dir / self.UPLOAD_HISTORY_FILE
         try:

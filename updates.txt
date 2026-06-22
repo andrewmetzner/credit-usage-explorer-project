@@ -3,6 +3,46 @@ UPDATES LOG
 ================================================================
 
 ----------------------------------------------------------------
+2026-06-22 (later)
+----------------------------------------------------------------
+
+MULTI-SHEET UPLOAD
+- The Summary page uploader now accepts multiple files at once. All
+  selected sheets are merged into the current data in one action; order
+  does not matter (merge is commutative).
+- Added a "Replace current data instead of merging" checkbox for when a
+  fresh start is wanted rather than appending.
+- Uploaded sheets are read in memory and merged; the combined result is
+  written as a single canonical current_data.csv (stale current_data.*
+  siblings are cleaned up).
+
+UPLOAD LOG (Settings)
+- Every data-sheet upload is now recorded (new public method
+  record_upload() on IngestionPipeline).
+- The Settings "Upload Log" table now shows, per upload: when, type
+  (data sheet / historical / weekly), file, rows Added, total rows, and
+  credits. A "replace" badge marks replace-mode uploads.
+
+FORECAST SNAPSHOTS UI (decluttered)
+- Added a quick-select dropdown directly beneath the burndown chart to
+  overlay any past snapshots, with removable pills showing the current
+  selection. This replaces the wide, horizontally scrolling table as the
+  primary way to compare snapshots.
+- The full snapshot table is now tucked into a collapsible
+  "Manage & details" panel (collapsed by default), so the page no longer
+  scrolls sideways or feels cluttered.
+- Comparison cards still appear automatically when 2+ snapshots are
+  selected (via the dropdown or the table).
+
+TESTING
+- testfiles/test_data_merge.py - merge unit/scenario tests (unchanged).
+- testfiles/verify_upload_route.py - new integration test driving the
+  multi-file /upload-data route through the Flask test client; backs up
+  and restores live data so nothing is disturbed.
+- Verified: all templates compile, app factory imports, and the
+  multi-upload route + logging pass end-to-end.
+
+----------------------------------------------------------------
 2026-06-22
 ----------------------------------------------------------------
 

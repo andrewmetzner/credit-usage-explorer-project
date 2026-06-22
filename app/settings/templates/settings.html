@@ -94,29 +94,41 @@
       {# Upload History #}
       {% if upload_history %}
       <div class="settings-section">
-        <h5>Upload History</h5>
+        <h5>Upload Log</h5>
+        <p class="text-muted small mb-2">Every data sheet, historical, and weekly upload — most recent first.</p>
         <table class="settings-table">
           <thead>
             <tr>
               <th>When</th>
               <th>Type</th>
               <th>File</th>
+              <th class="text-end">Added</th>
+              <th class="text-end">Total Rows</th>
               <th class="text-end">Credits</th>
-              <th class="text-end">Rows</th>
-              <th class="text-end">Users</th>
             </tr>
           </thead>
           <tbody>
             {% for u in upload_history %}
+            {% set badge = {'data_sheet': 'bg-success', 'historical': 'bg-secondary', 'weekly': 'bg-primary'} %}
+            {% set label = {'data_sheet': 'data sheet'} %}
             <tr>
               <td style="white-space:nowrap; font-size:.78rem; color:#8a92a0;">{{ u.ts | replace('T', ' ') | replace('Z', ' UTC') }}</td>
               <td>
-                <span class="badge {% if u.type == 'historical' %}bg-secondary{% else %}bg-primary{% endif %}" style="font-size:.68rem;">{{ u.type }}</span>
+                <span class="badge {{ badge.get(u.type, 'bg-primary') }}" style="font-size:.68rem;">{{ label.get(u.type, u.type) }}</span>
+                {% if u.stats.mode == 'replace' %}<span class="badge bg-warning text-dark" style="font-size:.62rem;">replace</span>{% endif %}
               </td>
               <td style="font-size:.78rem; color:#8a92a0; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ u.filename }}">{{ u.filename }}</td>
+              <td class="text-end">
+                {%- if u.stats.rows_added is defined -%}
+                  <span class="{{ 'text-success fw-semibold' if u.stats.rows_added | int > 0 else 'text-muted' }}">+{{ '{:,}'.format(u.stats.rows_added | int) }}</span>
+                {%- else -%}—{%- endif -%}
+              </td>
+              <td class="text-end">
+                {%- if u.stats.total_rows is defined -%}{{ '{:,}'.format(u.stats.total_rows | int) }}
+                {%- elif u.stats.rows is defined -%}{{ '{:,}'.format(u.stats.rows | int) }}
+                {%- else -%}—{%- endif -%}
+              </td>
               <td class="text-end">{{ '{:,.0f}'.format(u.stats.total_credits | float) if u.stats.total_credits is defined else '—' }}</td>
-              <td class="text-end">{{ '{:,}'.format(u.stats.rows | int) if u.stats.rows is defined else '—' }}</td>
-              <td class="text-end">{{ '{:,}'.format(u.stats.users | int) if u.stats.users is defined else ('{:,}'.format(u.stats.unique_users | int) if u.stats.unique_users is defined else '—') }}</td>
             </tr>
             {% endfor %}
           </tbody>

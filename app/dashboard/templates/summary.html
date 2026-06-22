@@ -176,7 +176,8 @@
         </div>
         <div class="dash-section-body">
           <p class="text-muted small mb-3">
-            Upload a new usage data sheet to replace the current dataset for all pages.
+            Upload one or more usage data sheets. New sheets are <strong>merged</strong> into the
+            current dataset — overlapping days are de-duplicated automatically, in any order.
             Accepts <code>.xlsx</code>, <code>.xls</code>, or <code>.csv</code>.
           </p>
           <form id="upload-form" method="post" action="{{ url_for('main.upload_data') }}" enctype="multipart/form-data">
@@ -185,10 +186,16 @@
                 <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
                 <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
               </svg>
-              <span id="upload-file-label">Choose file&hellip;</span>
-              <input id="data-file-input" type="file" name="file" accept=".xlsx,.xls,.csv"
-                     onchange="document.getElementById('upload-file-label').textContent = this.files[0]?.name || 'Choose file…'">
+              <span id="upload-file-label">Choose file(s)&hellip;</span>
+              <input id="data-file-input" type="file" name="file" accept=".xlsx,.xls,.csv" multiple
+                     onchange="var n=this.files.length; document.getElementById('upload-file-label').textContent = n===0 ? 'Choose file(s)…' : (n===1 ? this.files[0].name : n + ' files selected')">
             </label>
+            <div class="form-check mb-2">
+              <input class="form-check-input" type="checkbox" name="replace_existing" id="replace-existing">
+              <label class="form-check-label small text-muted" for="replace-existing">
+                Replace current data instead of merging
+              </label>
+            </div>
             <button id="upload-btn" class="btn btn-primary btn-sm w-100" type="submit">Upload</button>
           </form>
           <!-- Loading overlay shown while upload processes -->

@@ -342,6 +342,38 @@
     <div style="position:relative; height: 300px;">
       <canvas id="burndownChart" style="cursor:crosshair;"></canvas>
     </div>
+
+    {% if forecast_history %}
+    <!-- Quick snapshot overlay selector -->
+    <div class="d-flex align-items-center gap-2 flex-wrap mt-2 pt-2" style="border-top:1px solid #eef0f2;">
+      <span style="font-size:.74rem; font-weight:600; color:#6c757d;">Overlay past snapshots:</span>
+      <div class="dropdown">
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2 dropdown-toggle" type="button"
+                id="snapQuickDropdown" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                aria-expanded="false" style="font-size:.74rem;">
+          <span id="quick-select-label">Select snapshots&hellip;</span>
+        </button>
+        <ul class="dropdown-menu shadow-sm p-2" aria-labelledby="snapQuickDropdown"
+            style="max-height:340px; overflow-y:auto; min-width:300px;">
+          <li class="d-flex justify-content-between align-items-center px-1 pb-1 mb-1 border-bottom">
+            <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none" style="font-size:.74rem;" onclick="quickSelectAll()">Select all</button>
+            <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-muted" style="font-size:.74rem;" onclick="quickSelectNone()">Clear</button>
+          </li>
+          {% for h in forecast_history %}
+          {% set k = h.snapshot_ts or (h.snapshot_date ~ '|' ~ (h.label or '')) %}
+          <li>
+            <label class="d-flex align-items-center gap-2 px-1 py-1 mb-0" style="cursor:pointer; white-space:nowrap;">
+              <input type="checkbox" class="form-check-input mt-0 quick-snap-cb" data-key="{{ k }}" onchange="quickToggle(this)">
+              <span style="width:11px;height:11px;border-radius:2px;background:{{ h.color or '#adb5bd' }};display:inline-block;flex-shrink:0;"></span>
+              <span style="font-size:.8rem;">{{ h.snapshot_date }}{% if h.label %} &middot; {{ h.label }}{% endif %}</span>
+            </label>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      <span id="quick-select-pills" class="d-flex gap-1 flex-wrap align-items-center"></span>
+    </div>
+    {% endif %}
   </div>
 
   <!-- Weekly Burn and Active Users -->
@@ -545,9 +577,8 @@
     <div class="dash-section-header">
       <span class="dash-section-title">History</span>
       {% if forecast_history %}
-      <span style="font-size:.72rem; color:#8a92a0;">
-        {{ forecast_history | length }} snapshot{{ 's' if forecast_history | length != 1 }}
-        &nbsp;·&nbsp; <span id="compare-hint" style="color:#0d6efd; display:none;">select 2+ rows to overlay on burndown chart</span>
+      <span style="font-size:.72rem; color:#8a92a0;" id="compare-hint">
+        {{ forecast_history | length }} snapshot{{ 's' if forecast_history | length != 1 }} &middot; overlay them with the selector above the chart
       </span>
       {% endif %}
       <span class="ms-auto d-flex gap-2 align-items-center">
@@ -555,14 +586,31 @@
           <button class="btn btn-outline-primary btn-sm py-0 px-2" style="font-size:.72rem;" type="submit" title="Create one snapshot per operational week">&#x1F4C5; Generate weekly</button>
         </form>
         {% if forecast_history %}
-        <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;" onclick="selectAllSnaps()">Select all</button>
-        <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;" onclick="clearComparison()">Clear</button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;" type="button"
+                data-bs-toggle="collapse" data-bs-target="#snap-manage" aria-expanded="false">
+          Manage &amp; details
+        </button>
         {% endif %}
       </span>
     </div>
 
   {% if forecast_history %}
 
+    <!-- Comparison cards (populated when 2+ snapshots are selected) -->
+    <div id="compare-panel" style="display:none; padding:.5rem 0 0;">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span style="font-size:.78rem; font-weight:700; color:#1a1d23;">Comparing <span id="compare-count">0</span> snapshots</span>
+        <button class="btn btn-outline-secondary btn-sm py-0" onclick="clearComparison()">Clear</button>
+      </div>
+      <div id="compare-grid" class="row g-2 mb-3"></div>
+      <div id="compare-chart-wrap" style="display:none;">
+        <div style="font-size:.65rem; font-weight:700; color:#8a92a0; letter-spacing:.06em; margin-bottom:.5rem;">SNAPSHOT COMPARISON</div>
+        <canvas id="compare-chart" height="240"></canvas>
+      </div>
+    </div>
+
+    <!-- Full table tucked into a collapsible panel to avoid clutter / horizontal scroll -->
+    <div class="collapse" id="snap-manage">
     <div style="overflow-x:auto;">
       <table class="lb-table" id="history-table">
         <thead>
@@ -637,18 +685,12 @@
         </tbody>
       </table>
     </div>
-
-    <div id="compare-panel" style="display:none; padding:1rem 1.25rem; background:#f8f9fb; border-top:1px solid #e3e6ea; border-radius:0 0 8px 8px;">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <span style="font-size:.78rem; font-weight:700; color:#1a1d23;">Comparing <span id="compare-count">0</span> snapshots — overlays shown on burndown chart above</span>
-        <button class="btn btn-outline-secondary btn-sm py-0" onclick="clearComparison()">Clear</button>
-      </div>
-      <div id="compare-grid" class="row g-2 mb-3"></div>
-      <div id="compare-chart-wrap" style="display:none;">
-        <div style="font-size:.65rem; font-weight:700; color:#8a92a0; letter-spacing:.06em; margin-bottom:.5rem;">SNAPSHOT COMPARISON</div>
-        <canvas id="compare-chart" height="240"></canvas>
-      </div>
-    </div>
+    </div>{# /collapse #snap-manage #}
+  {% else %}
+    <p class="text-muted small mb-0">
+      No snapshots yet. Use <strong>Generate weekly</strong> above, or save one from the
+      Custom Burn Window on the chart.
+    </p>
   {% endif %}{# forecast_history #}
   </div>{# dash-section #}
 
@@ -842,13 +884,12 @@
   function renderComparePanel() {
     const panel = document.getElementById('compare-panel');
     const grid  = document.getElementById('compare-grid');
-    const hint  = document.getElementById('compare-hint');
     const count = document.getElementById('compare-count');
     const snaps = [...selectedSnaps.values()];
     const n     = snaps.length;
-    hint.style.display  = n === 0 ? 'none' : '';
     panel.style.display = n >= 2  ? '' : 'none';
     updateBurndownOverlays();
+    syncQuickSelect();
     if (n < 2) { updateCompareChart([]); return; }
     count.textContent = n;
     grid.innerHTML = snaps.map((h, i) => {
@@ -938,6 +979,45 @@
       const key = snapKey(snap);
       if (!selectedSnaps.has(key)) toggleRow(tr);
     });
+  }
+
+  // ---- Quick-select dropdown (below the chart) ----
+  function findRowByKey(key) {
+    return [...document.querySelectorAll('.history-row')].find(tr => {
+      try { return snapKey(JSON.parse(tr.dataset.snap)) === key; } catch (_) { return false; }
+    });
+  }
+
+  function quickToggle(cb) {
+    const row = findRowByKey(cb.dataset.key);
+    if (row) toggleRow(row);   // toggleRow -> renderComparePanel -> syncQuickSelect keeps everything in sync
+  }
+
+  function quickSelectAll() { selectAllSnaps(); }
+  function quickSelectNone() { clearComparison(); }
+
+  function syncQuickSelect() {
+    // Reflect current selection into the dropdown checkboxes, button label, and pills.
+    document.querySelectorAll('.quick-snap-cb').forEach(cb => {
+      cb.checked = selectedSnaps.has(cb.dataset.key);
+    });
+    const n = selectedSnaps.size;
+    const lbl = document.getElementById('quick-select-label');
+    if (lbl) lbl.textContent = n === 0 ? 'Select snapshots…' : (n + ' selected');
+    const pills = document.getElementById('quick-select-pills');
+    if (pills) {
+      pills.innerHTML = [...selectedSnaps.values()].map((h, i) => {
+        const color = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
+        const text = h.label ? truncLabel(h.label, 18) : h.snapshot_date;
+        return `<span class="badge d-inline-flex align-items-center" style="background:${color};font-size:.66rem;font-weight:600;gap:.25rem;">${text}`
+          + `<span style="cursor:pointer;" title="Remove" onclick="removeQuickSnap('${h.snapshot_ts || (h.snapshot_date + '|' + (h.label||''))}')">&times;</span></span>`;
+      }).join('');
+    }
+  }
+
+  function removeQuickSnap(key) {
+    const row = findRowByKey(key);
+    if (row && selectedSnaps.has(key)) toggleRow(row);
   }
 
   function viewSnapForecast(tr, e) {

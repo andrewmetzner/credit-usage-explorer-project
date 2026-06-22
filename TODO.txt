@@ -1,2 +1,2 @@
-- BUG: appending more than 2 files (fixed already)
-- Generate weekly snapshots to see how forecasting would've looked each week using basic model and MC
+- scikit linear regression ML model for forecasts
+- edit snapshot history menu (remove horizontal scrolling, fix columns(?))
