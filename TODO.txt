@@ -10,3 +10,5 @@ Priority:
 Fine tuning:
 - generate ML snapshots too
 - Condensed GUI for forecasting
+- condensed GUI for records pages, outliers, users, etc
+(multiple views: cards, lists, etc)
