@@ -3,6 +3,40 @@ UPDATES LOG
 ================================================================
 
 ----------------------------------------------------------------
+2026-06-24 (Typed AlertRule + shared DictMixin)
+----------------------------------------------------------------
+
+- New app/shared/alert_rules.py: an AlertRule dataclass replacing the loose
+  {"metric":...,"threshold":...} dicts. Validation/coercion lives in one place
+  (AlertRule.from_dict — clamps metric to a known value, coerces numbers,
+  auto-generates ids); to_dict() serializes cleanly for JSON storage.
+- Extracted the Mapping mixin from forecast/service.py into shared/typed.py
+  (DictMixin) and reused it for AlertRule and the ContractStatus/Forecast
+  objects, so all three share one implementation. Rules stay drop-in
+  compatible with the template (r.name) and evaluate_rules (rule.get(...)).
+- config_service load/save now parse/serialize through AlertRule; add/delete/
+  toggle routes use typed access (toggle flips r.enabled, since a Mapping is
+  read-only for item assignment).
+- Verified: from_dict validation, JSON round-trip (saves plain dicts, loads
+  AlertRule), evaluate_rules, all pages + diagnostics, forecast CSV unchanged.
+
+----------------------------------------------------------------
+2026-06-24 (Split dashboard/routes.py by concern)
+----------------------------------------------------------------
+
+- dashboard/routes.py was 433 lines mixing six concerns. Split into focused
+  modules that each register onto the same `main` blueprint:
+    routes.py (154)            core pages (index/summary/records) + wiring
+    setup_routes.py (52)       first-run setup wizard
+    diagnostics_routes.py (22) /debug + /debug.json
+    outliers_routes.py (113)   outliers, notifications, alert-rule CRUD
+    upload_routes.py (146)     multi-sheet upload + merge
+- Endpoint names unchanged (main.setup_page, main.outliers_page,
+  main.upload_data, ...), so every url_for("main.*") and the setup-guard
+  exempt set stay valid. All 15 endpoints present; all pages + diagnostics
+  verified green.
+
+----------------------------------------------------------------
 2026-06-24 (Typed forecast objects: ContractStatus / Forecast)
 ----------------------------------------------------------------
 

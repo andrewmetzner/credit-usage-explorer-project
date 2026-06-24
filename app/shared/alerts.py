@@ -20,7 +20,7 @@ DEFAULT_OUTLIER_THRESHOLD = 1000.0
 STALE_DATA_DAYS = 10
 
 
-def evaluate_rules(df, rules: list[dict]) -> list[dict]:
+def evaluate_rules(df, rules: list) -> list[dict]:
     """Turn user-defined alert rules into alert dicts.
 
     Metrics:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -9,32 +8,11 @@ from typing import Any
 
 import pandas as pd
 
-
-class _StatusMapping(Mapping):
-    """Read these dataclasses like the plain dicts they replaced.
-
-    Every existing call site keeps working unchanged — ``cs["x"]``,
-    ``cs.get(...)``, ``{**cs, **fc}``, ``.items()``, ``pd.DataFrame([cs])`` and
-    Jinja's ``cs.x`` — while new code gets attribute access and IDE autocomplete
-    from the typed fields. Field order is preserved, so the snapshot CSV columns
-    are byte-for-byte identical.
-    """
-
-    def __getitem__(self, key: str) -> Any:
-        try:
-            return getattr(self, key)
-        except AttributeError as exc:
-            raise KeyError(key) from exc
-
-    def __iter__(self):
-        return iter(self.__dataclass_fields__)
-
-    def __len__(self) -> int:
-        return len(self.__dataclass_fields__)
+from app.shared.typed import DictMixin
 
 
 @dataclass
-class ContractStatus(_StatusMapping):
+class ContractStatus(DictMixin):
     """Where the contract stands right now (credits, pacing, dates)."""
 
     contract_start_date: Any
@@ -62,7 +40,7 @@ class ContractStatus(_StatusMapping):
 
 
 @dataclass
-class Forecast(_StatusMapping):
+class Forecast(DictMixin):
     """Projected burn and end-of-contract outlook."""
 
     operational_weeks: int

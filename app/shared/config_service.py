@@ -6,17 +6,7 @@ from pathlib import Path
 
 import yaml
 
-# Starter alert rules — mirror the previous built-in "heavy users this week".
-DEFAULT_ALERT_RULES: list[dict] = [
-    {
-        "id": "heavy-users",
-        "name": "Heavy users this week",
-        "metric": "per_user_window",
-        "threshold": 1000,
-        "window_days": 7,
-        "enabled": True,
-    },
-]
+from .alert_rules import DEFAULT_ALERT_RULES, AlertRule
 
 # Used when no contract_config.yaml exists yet (fresh install / setup wizard).
 DEFAULT_CONTRACT_CONFIG: dict = {
@@ -88,14 +78,18 @@ class AppConfig:
         with open(self.tier_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 
-    def load_alert_rules(self) -> list[dict]:
+    def load_alert_rules(self) -> list[AlertRule]:
         if not self.alert_rules_path.exists():
-            return [dict(r) for r in DEFAULT_ALERT_RULES]
+            return [AlertRule.from_dict(r) for r in DEFAULT_ALERT_RULES]
         try:
             data = json.loads(self.alert_rules_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else [dict(r) for r in DEFAULT_ALERT_RULES]
+            if isinstance(data, list):
+                return [AlertRule.from_dict(r) for r in data]
+            return [AlertRule.from_dict(r) for r in DEFAULT_ALERT_RULES]
         except Exception:
-            return [dict(r) for r in DEFAULT_ALERT_RULES]
+            return [AlertRule.from_dict(r) for r in DEFAULT_ALERT_RULES]
 
-    def save_alert_rules(self, rules: list[dict]) -> None:
-        self.alert_rules_path.write_text(json.dumps(rules, indent=2), encoding="utf-8")
+    def save_alert_rules(self, rules: list) -> None:
+        # Normalize whatever we're handed (AlertRule or dict) to clean dicts.
+        serializable = [AlertRule.from_dict(r).to_dict() for r in rules]
+        self.alert_rules_path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
