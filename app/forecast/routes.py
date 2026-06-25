@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 
 import pandas as _pd
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+import json
+
+from flask import Blueprint, Response, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
 
 from app.shared.chart_data import usage_type_weekly_json
 from .models import PriceModel
@@ -19,6 +21,26 @@ def create_forecast_blueprint(services) -> Blueprint:
 
     def _get_store_df():
         return store.data.df if store is not None else None
+
+    def _has_stat(row: dict, keys: tuple[str, ...]) -> bool:
+        for key in keys:
+            val = row.get(key)
+            if val is None:
+                continue
+            sval = str(val).strip().lower()
+            if sval and sval not in {"nan", "none", "null"}:
+                return True
+        return False
+
+    def _has_ml_stats(row: dict) -> bool:
+        # Force regeneration for snapshots made before the stabilized ML model;
+        # otherwise their saved series can show flat/implausible trend lines.
+        if str(row.get("ml_model_version", "")) != "stabilized_v2":
+            return False
+        return _has_stat(row, ("ml_r_squared", "ml_slope_per_week", "ml_p50_end_balance"))
+
+    def _has_mc_stats(row: dict) -> bool:
+        return _has_stat(row, ("mc_exhaustion_prob", "mc_p50_end_balance", "mc_runs"))
 
     def _build_forecast_context(template_name: str) -> str:
         cost_per_credit = float(request.args.get("cost_per_credit", 0) or 0)
@@ -307,7 +329,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             cfg_fc = config.setdefault("forecast", {})
             cfg_fc["monte_carlo_runs"] = min(int(cfg_fc.get("monte_carlo_runs", 10000)), 2000)
 
-        existing_labels = {h.get("label", "") for h in pipeline.get_forecast_history()}
+        existing_by_label = {h.get("label", ""): h for h in pipeline.get_forecast_history()}
         op_sorted = op_df.sort_values("week_start").reset_index(drop=True)
         generated = skipped = errors = 0
 
@@ -317,14 +339,21 @@ def create_forecast_blueprint(services) -> Blueprint:
             label = f"Week of {week_end_str}"
             snap_ts = f"{week_end_str}T00:00:00"
 
-            if label in existing_labels:
-                if not include_mc:
+            existing = existing_by_label.get(label)
+            if existing:
+                needs_ml = not _has_ml_stats(existing)
+                needs_mc = include_mc and not _has_mc_stats(existing)
+                if not needs_ml and not needs_mc:
                     skipped += 1
                     continue
-                # Regenerate this week so it gains Monte Carlo bands; drop the old
-                # (MC-less) snapshot first to avoid a duplicate history row.
+                # Regenerate old snapshots that are missing ML/MC statistics so
+                # chart overlays and comparison cards have complete model data.
                 try:
-                    pipeline.delete_snapshot(snap_ts, week_end_str, label)
+                    pipeline.delete_snapshot(
+                        existing.get("snapshot_ts", snap_ts),
+                        existing.get("snapshot_date", week_end_str),
+                        existing.get("label", label),
+                    )
                 except Exception:
                     pass
 
@@ -343,7 +372,7 @@ def create_forecast_blueprint(services) -> Blueprint:
                     snapshot_date=week_end_str,
                     skip_mc=not include_mc,
                 )
-                existing_labels.add(label)
+                existing_by_label[label] = {"label": label, "snapshot_ts": snap_ts, "snapshot_date": week_end_str}
                 generated += 1
             except Exception:
                 errors += 1
@@ -359,6 +388,88 @@ def create_forecast_blueprint(services) -> Blueprint:
         level = "success" if generated else ("info" if skipped else "warning")
         flash(", ".join(parts) + "." if parts else "Nothing to generate.", level)
         return redirect(url_for("forecast.forecast_page"))
+
+    @bp.route("/forecast/snapshot/generating")
+    def snapshot_generating_page() -> object:
+        return render_template("snap_generate.html")
+
+    @bp.route("/forecast/snapshot/generate-all-stream")
+    def generate_all_snapshots_stream() -> object:
+        def _stream():
+            config = copy.deepcopy(config_svc.load_contract())
+            hist_df = pipeline.get_historical_weekly_summary()
+            op_df = pipeline.get_operational_weekly_summary()
+            daily_df = _get_store_df()
+
+            if (op_df is None or op_df.empty) and daily_df is not None and not daily_df.empty:
+                _tmp = ForecastingService(config, hist_df, None, daily_df)
+                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
+                    op_df = _tmp.operational_df
+                if hist_df is None and _tmp.historical_df is not None:
+                    hist_df = _tmp.historical_df
+
+            if op_df is None or op_df.empty:
+                yield f"data: {json.dumps({'error': 'No data available. Upload data first.'})}\n\n"
+                return
+
+            cfg_fc = config.setdefault("forecast", {})
+            cfg_fc["monte_carlo_runs"] = min(int(cfg_fc.get("monte_carlo_runs", 10000)), 1000)
+
+            op_sorted = op_df.sort_values("week_start").reset_index(drop=True)
+            total = len(op_sorted)
+            existing_by_label = {h.get("label", ""): h for h in pipeline.get_forecast_history()}
+            generated = skipped = errors = 0
+
+            for i in range(total):
+                row = op_sorted.iloc[i]
+                week_end_str = str(_pd.Timestamp(row["week_end"]).date())
+                label = f"Week of {week_end_str}"
+                snap_ts = f"{week_end_str}T00:00:00"
+                pct = int((i + 1) / total * 100)
+                yield f"data: {json.dumps({'progress': pct, 'current': i + 1, 'total': total, 'week': week_end_str})}\n\n"
+
+                existing = existing_by_label.get(label)
+                if existing:
+                    needs_ml = not _has_ml_stats(existing)
+                    needs_mc = not _has_mc_stats(existing)
+                    if not needs_ml and not needs_mc:
+                        skipped += 1
+                        continue
+                    try:
+                        pipeline.delete_snapshot(
+                            existing.get("snapshot_ts", snap_ts),
+                            existing.get("snapshot_date", week_end_str),
+                            existing.get("label", label),
+                        )
+                    except Exception:
+                        pass
+
+                truncated_op = op_sorted.iloc[: i + 1].copy()
+                try:
+                    svc = ForecastingService(config, hist_df, truncated_op)
+                    if not svc.has_data():
+                        errors += 1
+                        continue
+                    svc.save_to_dir(
+                        pipeline.processed_dir,
+                        once_per_day=False,
+                        label=label,
+                        snapshot_ts=snap_ts,
+                        snapshot_date=week_end_str,
+                        skip_mc=False,
+                    )
+                    existing_by_label[label] = {"label": label, "snapshot_ts": snap_ts, "snapshot_date": week_end_str}
+                    generated += 1
+                except Exception:
+                    errors += 1
+
+            yield f"data: {json.dumps({'done': True, 'generated': generated, 'skipped': skipped, 'errors': errors})}\n\n"
+
+        return Response(
+            stream_with_context(_stream()),
+            content_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @bp.route("/forecast/model-data", methods=["GET"])
     def model_data() -> object:
@@ -412,7 +523,10 @@ def create_forecast_blueprint(services) -> Blueprint:
         except (ValueError, TypeError):
             return jsonify({"error": f"Unknown model: {model_id!r}"}), 400
 
-        result = model.run(ctx)
+        try:
+            result = model.run(ctx)
+        except Exception as exc:
+            return jsonify({"error": f"Model run failed: {exc}"}), 500
         return jsonify(result.to_json_dict())
 
     return bp

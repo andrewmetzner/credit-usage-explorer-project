@@ -27,6 +27,23 @@
     document.querySelectorAll('.alert-item[data-alert-id]').forEach(el => {
       el.classList.toggle('read', read.has(el.dataset.alertId));
     });
+
+    // The navbar bell is an "inbox": surface only UNREAD alerts there, so items
+    // the user has already read don't linger. (The Notifications page still
+    // lists everything as a history.)
+    const menu = document.getElementById('nav-alert-menu');
+    if (menu) {
+      let anyUnread = false;
+      menu.querySelectorAll('.nav-alert-li').forEach(li => {
+        const item = li.querySelector('.alert-item[data-alert-id]');
+        const isRead = item && read.has(item.dataset.alertId);
+        li.hidden = !!isRead;
+        if (!isRead) anyUnread = true;
+      });
+      const empty = document.getElementById('nav-alert-empty');
+      if (empty) empty.hidden = anyUnread;
+    }
+
     const unread = currentIds().filter(id => !read.has(id)).length;
     const badge = document.getElementById('alert-badge');
     if (badge) {
@@ -35,9 +52,17 @@
     }
   }
 
-  // Prune read ids that no longer correspond to an active alert.
+  // Prune read ids that no longer correspond to an active alert, so a resolved
+  // condition that recurs later re-notifies.
+  //
+  // Guard: only prune when this page actually rendered a non-empty alert list.
+  // The bell is fed by a global context processor, but if it ever yields an
+  // empty list on a given page (e.g. a transient failure building the forecast
+  // service on the Records page), pruning against an empty set would wipe ALL
+  // read-state — making already-read alerts pop back as unread elsewhere.
   (function prune() {
     const ids = new Set(currentIds());
+    if (ids.size === 0) return;            // nothing to prune against — leave read-state intact
     const read = new Set([...getRead()].filter(id => ids.has(id)));
     setRead(read);
   })();

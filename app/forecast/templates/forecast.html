@@ -1,16 +1,431 @@
 {% extends "base.html" %}
 {% from "macros/charts.html" import chart_card %}
-{% block title %}Forecast - Credit Usage Explorer{% endblock %}
+{% block title %}Forecast - CUE Project{% endblock %}
 
 {% block extra_head %}
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+    <style>
+      /* Forecast-page-only polish: compact controls, hidden chart legend, and scrollable detail drawers. */
+      .forecast-shell {
+        --fc-bg: #f6f8fb;
+        --fc-card: rgba(255,255,255,.94);
+        --fc-card-strong: #ffffff;
+        --fc-border: rgba(15, 23, 42, .10);
+        --fc-soft-border: rgba(15, 23, 42, .075);
+        --fc-text: #0f172a;
+        --fc-muted: #64748b;
+        --fc-faint: #94a3b8;
+        --fc-blue: #2563eb;
+        --fc-red: #dc3545;
+        --fc-orange: #fd7e14;
+        --fc-green: #198754;
+      }
+      .forecast-shell .page-title { letter-spacing: -.03em; }
+      .forecast-shell .page-subtitle { color: var(--fc-muted); }
+      .forecast-shell .kpi-strip {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+        gap: .65rem;
+        margin-bottom: 1rem;
+      }
+      .forecast-shell .kpi-card {
+        min-height: 98px;
+        border: 1px solid var(--fc-border);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(255,255,255,.88));
+        box-shadow: 0 12px 30px rgba(15, 23, 42, .045);
+        padding: .85rem .9rem;
+      }
+      .forecast-shell .kpi-label {
+        color: var(--fc-muted);
+        font-size: .66rem;
+        letter-spacing: .085em;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .forecast-shell .kpi-value { color: var(--fc-text); font-weight: 800; letter-spacing: -.02em; }
+      .forecast-shell .kpi-sub { color: var(--fc-muted); font-size: .73rem; }
+      .forecast-shell .chart-card {
+        border: 1px solid var(--fc-border);
+        border-radius: 18px;
+        background: var(--fc-card);
+        box-shadow: 0 16px 42px rgba(15, 23, 42, .055);
+      }
+      .forecast-shell .chart-card-title { letter-spacing: -.015em; font-weight: 800; }
+      .forecast-shell .chart-card-sub { color: var(--fc-faint); }
+      .forecast-card-main { overflow: hidden; }
+      .forecast-chart-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: .9rem;
+      }
+      .forecast-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: center;
+        gap: .35rem;
+      }
+      .forecast-control-rail,
+      .forecast-snapshot-rail {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: .65rem;
+        margin-top: .65rem;
+        padding: .62rem .7rem;
+        border: 1px solid var(--fc-soft-border);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(248,250,252,.95), rgba(255,255,255,.8));
+        font-size: .75rem;
+      }
+      .forecast-control-left,
+      .forecast-control-right,
+      .forecast-snapshot-left,
+      .forecast-snapshot-right {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: .55rem;
+      }
+      .fc-control-label {
+        color: var(--fc-muted);
+        font-weight: 800;
+        letter-spacing: .06em;
+        font-size: .64rem;
+        text-transform: uppercase;
+      }
+      .fc-check {
+        display: inline-flex;
+        align-items: center;
+        gap: .28rem;
+        cursor: pointer;
+        user-select: none;
+        margin: 0;
+        color: var(--fc-text);
+      }
+      .fc-check input { margin-top: 0; }
+      .fc-separator {
+        width: 1px;
+        height: 18px;
+        background: var(--fc-border);
+      }
+      .fc-color-panel {
+        display: none;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: .55rem;
+        margin-top: .55rem;
+        padding: .55rem .7rem;
+        border: 1px dashed var(--fc-border);
+        border-radius: 12px;
+        background: rgba(255,255,255,.72);
+        font-size: .72rem;
+        color: var(--fc-muted);
+      }
+      .fc-color-panel.is-open { display: flex; }
+      .fc-chart-area { position: relative; height: 390px; margin-top: .35rem; }
+      .fc-overlay-summary {
+        display: flex;
+        align-items: center;
+        gap: .35rem;
+        flex-wrap: wrap;
+        min-height: 28px;
+        margin-top: .35rem;
+        color: var(--fc-muted);
+        font-size: .72rem;
+      }
+      .fc-summary-chip,
+      .fc-legend-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: .34rem;
+        border: 1px solid var(--fc-border);
+        background: #fff;
+        color: var(--fc-text);
+        border-radius: 999px;
+        padding: .18rem .48rem;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+      .fc-summary-chip strong { font-weight: 800; }
+      .fc-legend-panel {
+        display: none;
+        margin-top: .55rem;
+        border: 1px solid var(--fc-soft-border);
+        border-radius: 14px;
+        background: rgba(255,255,255,.86);
+        max-height: 132px;
+        overflow: auto;
+        padding: .55rem;
+      }
+      .fc-legend-panel.is-open { display: block; }
+      .fc-legend-group { margin-bottom: .45rem; }
+      .fc-legend-group:last-child { margin-bottom: 0; }
+      .fc-legend-title {
+        font-size: .62rem;
+        letter-spacing: .07em;
+        text-transform: uppercase;
+        color: var(--fc-muted);
+        font-weight: 800;
+        margin: .05rem 0 .25rem;
+      }
+      .fc-legend-items { display: flex; flex-wrap: wrap; gap: .28rem; }
+      .fc-legend-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; }
+      .fc-legend-note { color: var(--fc-faint); font-size:.68rem; }
+      #legend-toggle-btn.active, #style-toggle-btn.active { color:#fff; background:#64748b; border-color:#64748b; }
+      .fc-legend-chip {
+        font-size: .7rem;
+        cursor: pointer;
+        padding: .18rem .45rem;
+      }
+      .fc-legend-chip.is-muted { opacity: .42; text-decoration: line-through; }
+      .fc-legend-swatch {
+        width: .65rem;
+        height: .65rem;
+        border-radius: 999px;
+        border: 2px solid currentColor;
+        background: transparent;
+        flex: 0 0 auto;
+      }
+      #quick-select-pills {
+        max-height: 46px;
+        overflow: auto;
+        padding-right: .1rem;
+      }
+      .forecast-snapshot-rail {
+        margin-top: .75rem;
+        border-top: 1px solid var(--fc-soft-border);
+      }
+      .forecast-shell .dropdown-menu {
+        border-radius: 14px;
+        border: 1px solid var(--fc-border);
+        box-shadow: 0 18px 42px rgba(15, 23, 42, .14) !important;
+      }
+      .forecast-shell .btn,
+      .forecast-shell .form-control,
+      .forecast-shell .form-select { border-radius: 9px; }
+      .forecast-shell .btn-group .btn { border-radius: 0; }
+      .forecast-shell .btn-group .btn:first-child { border-top-left-radius: 9px; border-bottom-left-radius: 9px; }
+      .forecast-shell .btn-group .btn:last-child { border-top-right-radius: 9px; border-bottom-right-radius: 9px; }
+      .forecast-density-hint { color: var(--fc-faint); font-size: .68rem; }
+
+
+      /* v3 simplified forecasting layout */
+      .forecast-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: .85rem;
+        margin-bottom: 1rem;
+      }
+      .forecast-summary-card {
+        border: 1px solid var(--fc-border);
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(255,255,255,.90));
+        box-shadow: 0 16px 38px rgba(15, 23, 42, .055);
+        padding: 1rem;
+        min-height: 132px;
+      }
+      .forecast-summary-card .summary-label {
+        color: var(--fc-muted);
+        font-size: .66rem;
+        letter-spacing: .085em;
+        font-weight: 800;
+        text-transform: uppercase;
+        margin-bottom: .35rem;
+      }
+      .forecast-summary-card .summary-main {
+        color: var(--fc-text);
+        font-size: 1.35rem;
+        line-height: 1.05;
+        font-weight: 850;
+        letter-spacing: -.035em;
+      }
+      .forecast-summary-card .summary-sub { color: var(--fc-muted); font-size: .76rem; margin-top: .25rem; }
+      .summary-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem .75rem; margin-top: .72rem; }
+      .summary-metric span { display:block; color:var(--fc-muted); font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; font-weight:750; }
+      .summary-metric strong { display:block; color:var(--fc-text); font-size:.84rem; line-height:1.2; }
+      .forecast-simple-legend {
+        display:flex; flex-wrap:wrap; align-items:center; gap:.4rem .55rem;
+        margin-top:.65rem; padding:.55rem .65rem;
+        border:1px solid var(--fc-soft-border); border-radius:14px;
+        background:rgba(255,255,255,.78); font-size:.72rem; color:var(--fc-muted);
+      }
+      .fc-native-details {
+        margin-top:.55rem;
+        border:1px dashed var(--fc-border);
+        border-radius:14px;
+        background:rgba(255,255,255,.72);
+        padding:.45rem .65rem;
+        font-size:.72rem;
+        color:var(--fc-muted);
+      }
+      .fc-native-details summary { cursor:pointer; font-weight:800; color:var(--fc-muted); text-transform:uppercase; letter-spacing:.06em; font-size:.64rem; }
+      .fc-native-details[open] summary { margin-bottom:.5rem; }
+      .fc-native-details .fc-color-panel { display:flex; margin-top:0; border:0; padding:0; background:transparent; }
+      .forecast-read-hint { color: var(--fc-faint); font-size:.7rem; }
+      .forecast-control-right .density-old, #legend-toggle-btn, #style-toggle-btn { display:none !important; }
+      .forecast-shell .chart-card canvas { max-width:100%; }
+      @media (max-width: 1180px) { .forecast-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+      @media (max-width: 650px) { .forecast-summary-grid { grid-template-columns: 1fr; } }
+
+
+
+      /* v4 reading-first refinements */
+      .forecast-usage-panel {
+        border: 1px solid var(--fc-soft-border);
+        border-radius: 14px;
+        background: rgba(255,255,255,.72);
+        padding: .55rem .7rem .62rem;
+        margin: .15rem 0 1.1rem;
+      }
+      .forecast-usage-head {
+        display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap;
+        color:var(--fc-muted); font-size:.72rem; margin-bottom:.38rem;
+      }
+      .forecast-usage-title { font-weight:800; letter-spacing:.055em; text-transform:uppercase; font-size:.64rem; color:var(--fc-muted); }
+      .forecast-usage-stats { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
+      .forecast-usage-stat strong { color:var(--fc-text); font-weight:850; }
+      .forecast-usage-progress { height: 10px !important; border-radius:999px; background:rgba(15,23,42,.07); overflow:hidden; }
+      .forecast-usage-progress .progress-bar { font-size:0; border-radius:0 !important; }
+      .forecast-usage-foot { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; margin-top:.42rem; }
+      .forecast-mini-legend { display:flex; align-items:center; gap:.65rem; flex-wrap:wrap; color:var(--fc-muted); font-size:.7rem; }
+      .forecast-dot { width:.55rem; height:.55rem; display:inline-block; border-radius:999px; vertical-align:-.04rem; margin-right:.25rem; }
+      .forecast-usage-actions { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap; margin-left:auto; color:var(--fc-muted); font-size:.7rem; }
+      .forecast-whatif-details { margin-top:.45rem; border-top:1px dashed var(--fc-soft-border); padding-top:.45rem; }
+      .forecast-whatif-details summary { cursor:pointer; font-size:.7rem; color:var(--fc-muted); font-weight:750; }
+      .forecast-whatif-grid { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap; margin-top:.45rem; }
+      .forecast-whatif-grid input[type="number"] { width: 112px !important; }
+      .forecast-whatif-grid input[type="range"] { max-width: 300px; min-width: 140px; }
+      .forecast-control-rail { padding: .5rem .62rem; }
+      .forecast-control-right { display:none; }
+      .forecast-simple-legend { margin-top:.45rem; padding:.45rem .58rem; }
+      .fc-chart-area { height: 360px; }
+      .forecast-snapshot-rail { padding: .52rem .62rem; }
+      .forecast-density-hint { display:none; }
+      .fc-advanced-bands { display:inline-flex; align-items:center; }
+      .fc-advanced-bands summary { cursor:pointer; color:var(--fc-muted); font-size:.68rem; font-weight:750; list-style:none; }
+      .fc-advanced-bands summary::-webkit-details-marker { display:none; }
+      .fc-advanced-bands[open] { gap:.45rem; flex-wrap:wrap; }
+      .fc-advanced-bands[open] summary { margin-right:.25rem; }
+      .forecast-shell .quick-snap-cb + span + span { max-width: 120px; overflow:hidden; text-overflow:ellipsis; }
+
+
+
+      /* v6: controls/legend live below the plot; tooltip is compact */
+      .forecast-graph-dock {
+        margin-top: .65rem;
+        border: 1px solid var(--fc-soft-border);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(255,255,255,.86), rgba(248,250,252,.72));
+        padding: .55rem .65rem;
+      }
+      .forecast-graph-controls {
+        display:flex;
+        align-items:center;
+        gap:.55rem;
+        flex-wrap:wrap;
+        padding-bottom:.42rem;
+        border-bottom:1px solid rgba(148,163,184,.18);
+        margin-bottom:.42rem;
+      }
+      .fc-toggle-chip {
+        border:1px solid rgba(148,163,184,.32);
+        background:#fff;
+        border-radius:999px;
+        padding:.16rem .48rem;
+      }
+      .fc-toggle-chip input { margin-right:.22rem; }
+      .forecast-simple-legend {
+        display:flex;
+        align-items:center;
+        gap:.44rem;
+        flex-wrap:wrap;
+        margin:0;
+        padding:0 0 .36rem 0;
+        border:0;
+        background:transparent;
+        font-size:.7rem;
+      }
+      .forecast-simple-legend .fc-summary-chip {
+        border:1px solid rgba(148,163,184,.28);
+        background:rgba(255,255,255,.72);
+        border-radius:999px;
+        padding:.14rem .45rem;
+        white-space:nowrap;
+      }
+      .forecast-simple-legend .fc-summary-chip.is-muted { opacity:.52; }
+      .fc-colors-details {
+        margin-top:.1rem;
+        padding:.28rem 0 0 0;
+        border:0;
+        background:transparent;
+      }
+      .fc-colors-details[open] { border-top:1px dashed rgba(148,163,184,.35); padding-top:.45rem; }
+      .fc-colors-details .fc-color-panel { gap:.65rem; flex-wrap:wrap; }
+      .fc-chart-area { height: 390px; }
+      .fc-overlay-summary { display:none; }
+      .forecast-density-hint { font-size:.66rem; color:var(--fc-faint); }
+      @media (max-width: 768px) {
+        .forecast-graph-controls { align-items:flex-start; }
+        .fc-chart-area { height: 330px; }
+      }
+
+      @media (max-width: 768px) {
+        .forecast-chart-head { flex-direction: column; }
+        .forecast-toolbar { justify-content: flex-start; }
+        .fc-chart-area { height: 320px; }
+        .forecast-control-rail,
+        .forecast-snapshot-rail { align-items: flex-start; }
+      }
+
+      /* v7: compact dock bar + Show/hide dropdown menu */
+      .forecast-dock-bar { font-size: .75rem; }
+      .forecast-dock-bar .fc-toggle-chip { margin: 0; }
+      .fc-menu-header {
+        font-size: .62rem; letter-spacing: .07em; text-transform: uppercase;
+        font-weight: 800; color: var(--fc-muted);
+        margin: .35rem .15rem .2rem; padding-top: .25rem;
+        border-top: 1px solid var(--fc-soft-border);
+      }
+      .fc-menu-header:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+      .fc-menu-row {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: .5rem; padding: .2rem .25rem; border-radius: 8px;
+      }
+      .fc-menu-row:hover { background: rgba(148,163,184,.12); }
+      .fc-menu-left { display: inline-flex; align-items: center; gap: .45rem; min-width: 0; }
+      .fc-menu-check {
+        width: .9rem; flex: 0 0 .9rem; text-align: center;
+        color: var(--fc-blue); font-weight: 800;
+      }
+      .fc-menu-label {
+        font-size: .78rem; color: var(--fc-text);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .fc-snap-bands { display: inline-flex; gap: .25rem; flex: 0 0 auto; }
+      .fc-snap-band-btn {
+        font-size: .6rem; font-weight: 800; line-height: 1;
+        padding: .16rem .34rem; border-radius: 6px; cursor: pointer;
+        border: 1px solid var(--band-color); color: var(--band-color);
+        background: transparent;
+      }
+      .fc-snap-band-btn.is-on { background: var(--band-color); color: #fff; }
+
+      /* Advanced settings: stacked Colors + Burn window groups */
+      .fc-advanced-panel { display: flex; flex-direction: column; gap: .85rem; }
+      .fc-advanced-group .fc-control-label { display: block; margin-bottom: .35rem; }
+      .fc-advanced-group .fc-color-panel { margin: 0; }
+    </style>
 {% endblock %}
 
 {% block body %}
-<div class="container py-4">
+<div class="container-fluid forecast-shell py-3 px-3 px-xl-4">
 
   <!-- Page Header -->
   <div class="mb-3">
@@ -63,150 +478,112 @@
     'HIGH_UNDERUSE': 'info'
   } %}
 
-  <!-- KPI Strip -->
-  <div class="kpi-strip">
-
-    <div class="kpi-card">
-      <div class="kpi-label">Pacing</div>
-      <div class="kpi-value">
-        <span class="badge bg-{{ pacing_colors.get(cs.pacing_status, 'secondary') }}" style="font-size:.8rem;">
-          {{ cs.pacing_status | fmt_status }}
-        </span>
+  <!-- Executive Forecast Summary -->
+  <div class="forecast-summary-grid">
+    <div class="forecast-summary-card">
+      <div class="summary-label">Status</div>
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <span class="badge bg-{{ pacing_colors.get(cs.pacing_status, 'secondary') }}">{{ cs.pacing_status | fmt_status }}</span>
+        <span class="badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}">{{ fc.forecast_status | fmt_status }}</span>
       </div>
-      <div class="kpi-sub">ratio {{ "{:.2f}".format(cs.burn_pace_ratio) }}</div>
-    </div>
-
-    <div class="kpi-card">
-      <div class="kpi-label">Forecast</div>
-      <div class="kpi-value">
-        <span class="badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}" style="font-size:.8rem;">
-          {{ fc.forecast_status | fmt_status }}
-        </span>
+      <div class="summary-metrics">
+        <div class="summary-metric"><span>Pace ratio</span><strong>{{ "{:.2f}".format(cs.burn_pace_ratio) }}</strong></div>
+        <div class="summary-metric"><span>Exhaustion</span><strong>{{ fc.forecast_exhaustion_date or "None" }}</strong></div>
+        <div class="summary-metric"><span>Used</span><strong>{{ "{:.1%}".format(cs.percent_credits_used) }}</strong></div>
+        <div class="summary-metric"><span>By end</span><strong>{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }}</strong></div>
       </div>
-      <div class="kpi-sub">{{ fc.forecast_exhaustion_date or 'no exhaustion' }}</div>
     </div>
 
-    <div class="kpi-card">
-      <div class="kpi-label">Credits Remaining</div>
-      <div class="kpi-value">{{ "{:,.0f}".format(cs.credits_remaining) }}</div>
-      <div class="kpi-sub">of {{ "{:,.0f}".format(cs.purchased_credits) }} purchased</div>
-    </div>
-
-    <div class="kpi-card">
-      <div class="kpi-label">Forecast Weekly Burn</div>
-      <div class="kpi-value">{{ "{:,.0f}".format(fc.forecast_weekly_burn) }}</div>
-      <div class="kpi-sub">{{ "{:,.0f}".format(fc.forecast_monthly_burn) }} / month</div>
-    </div>
-
-    <div class="kpi-card">
-      <div class="kpi-label">End Balance</div>
-      <div class="kpi-value {{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">
-        {{ "{:+,.0f}".format(fc.forecast_contract_end_balance) }}
+    <div class="forecast-summary-card">
+      <div class="summary-label">Credit Position</div>
+      <div class="summary-main">{{ "{:,.0f}".format(cs.credits_remaining) }}</div>
+      <div class="summary-sub">remaining of {{ "{:,.0f}".format(cs.purchased_credits) }} purchased</div>
+      <div class="summary-metrics">
+        <div class="summary-metric"><span>Used</span><strong>{{ "{:,.0f}".format(cs.total_credits_used) }}</strong></div>
+        <div class="summary-metric"><span>End balance</span><strong class="{{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">{{ "{:+,.0f}".format(fc.forecast_contract_end_balance) }}</strong></div>
       </div>
-      <div class="kpi-sub">{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }} used by end</div>
     </div>
 
-    <div class="kpi-card">
-      <div class="kpi-label">Contract Period</div>
-      <div class="kpi-value" style="font-size:.70rem;"><u>Start</u>: {{ cs.contract_start_date }}</div>
-      <div class="kpi-value" style="font-size:.70rem;"><u>End</u>: {{ cs.contract_end_date }}</div>
-      <div class="kpi-sub">{{ cs.weeks_remaining | round(1) }}w left</div>
+    <div class="forecast-summary-card">
+      <div class="summary-label">Burn + Contract</div>
+      <div class="summary-main">{{ "{:,.0f}".format(fc.forecast_weekly_burn) }}</div>
+      <div class="summary-sub">credits / week · {{ "{:,.0f}".format(fc.forecast_monthly_burn) }} / month</div>
+      <div class="summary-metrics">
+        <div class="summary-metric"><span>Start</span><strong>{{ cs.contract_start_date }}</strong></div>
+        <div class="summary-metric"><span>End</span><strong>{{ cs.contract_end_date }}</strong></div>
+        <div class="summary-metric"><span>Latest data</span><strong>{{ cs.latest_usage_date }}</strong></div>
+        <div class="summary-metric"><span>Weeks left</span><strong>{{ cs.weeks_remaining | round(1) }}</strong></div>
+      </div>
     </div>
 
-    <div class="kpi-card">
-      <div class="kpi-label">MC Risk</div>
-      <div class="kpi-value" id="mc-kpi-prob" style="color:#adb5bd;">—</div>
-      <div class="kpi-sub" id="mc-kpi-sub"></div>
+    <div class="forecast-summary-card">
+      <div class="summary-label">Risk + ML Reading</div>
+      <div class="summary-main" id="mc-kpi-prob" style="color:var(--fc-faint);">—</div>
+      <div class="summary-sub" id="mc-kpi-sub">Monte Carlo risk loading</div>
+      <div class="summary-metrics">
+        <div class="summary-metric"><span>ML trend</span><strong id="ml-kpi-slope" style="color:var(--fc-faint);">—</strong></div>
+        <div class="summary-metric"><span>Fit</span><strong id="ml-kpi-sub">Loading</strong></div>
+      </div>
     </div>
-
   </div>
 
-  <!-- Credit Usage Progress Bar -->
+  <!-- Compact Credit Usage Bar -->
   {% set pct_used = [cs.percent_credits_used * 100, 100] | min %}
   {% set pct_forecast = [(fc.forecast_percent_credits_used_by_contract_end * 100 - pct_used), 0] | max %}
   {% set bar_color = 'danger' if fc.forecast_status == 'EXHAUSTION_RISK' else ('warning' if fc.forecast_status in ['MODERATE_UNDERUSE', 'HIGH_UNDERUSE'] else 'success') %}
-  <div class="mb-4">
-    <div class="d-flex justify-content-between small text-muted mb-1">
-      <span>0%</span>
-      <span>Credit usage vs. purchased ({{ "{:,.0f}".format(cs.purchased_credits) }})</span>
-      <span>100%</span>
-    </div>
-    <div class="progress" style="height: 22px; border-radius: 8px;">
-      <div class="progress-bar bg-primary" style="width: {{ pct_used | round(1) }}%; border-radius: 8px 0 0 8px;"
-           title="Used: {{ '{:.1%}'.format(cs.percent_credits_used) }}">
-        {{ "{:.1%}".format(cs.percent_credits_used) }}
+  <div class="forecast-usage-panel">
+    <div class="forecast-usage-head">
+      <div class="forecast-usage-title">Credit usage</div>
+      <div class="forecast-usage-stats">
+        <span class="forecast-usage-stat"><strong>{{ "{:.1%}".format(cs.percent_credits_used) }}</strong> used</span>
+        <span class="forecast-usage-stat"><strong>{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }}</strong> projected by end</span>
+        <span class="forecast-usage-stat"><strong>{{ "{:,.0f}".format(cs.credits_remaining) }}</strong> remaining</span>
       </div>
-      <div class="progress-bar bg-{{ bar_color }} opacity-50"
-           style="width: {{ [pct_forecast, 100 - pct_used] | min | round(1) }}%"
-           title="Forecast additional usage"></div>
     </div>
-    <div class="d-flex gap-3 mt-1 small text-muted">
-      <span><span class="badge bg-primary">&nbsp;</span> Used to date</span>
-      <span><span class="badge bg-{{ bar_color }} opacity-75">&nbsp;</span> Forecast remaining usage</span>
-      <span class="ms-auto d-flex align-items-center gap-1">
-        <label class="form-check-label d-flex align-items-center gap-1 mb-0" style="cursor:pointer; font-size:.75rem;">
-          <input type="checkbox" class="form-check-input mb-0" id="exclude-partial-chk"
-                 {% if exclude_partial %}checked{% endif %}
-                 onchange="applyExcludePartial(this.checked)">
-          Exclude partial week
+    <div class="progress forecast-usage-progress" title="Used {{ '{:.1%}'.format(cs.percent_credits_used) }}; projected end usage {{ '{:.1%}'.format(fc.forecast_percent_credits_used_by_contract_end) }}">
+      <div class="progress-bar bg-primary" style="width: {{ pct_used | round(1) }}%;"></div>
+      <div class="progress-bar bg-{{ bar_color }} opacity-50" style="width: {{ [pct_forecast, 100 - pct_used] | min | round(1) }}%;"></div>
+    </div>
+    <div class="forecast-usage-foot">
+      <div class="forecast-mini-legend">
+        <span><span class="forecast-dot bg-primary"></span>Used</span>
+        <span><span class="forecast-dot bg-{{ bar_color }} opacity-75"></span>Projected remaining usage</span>
+        <span class="text-muted">Purchased: {{ "{:,.0f}".format(cs.purchased_credits) }}</span>
+      </div>
+      <div class="forecast-usage-actions">
+        <label class="form-check-label d-flex align-items-center gap-1 mb-0" style="cursor:pointer;"
+               title="Include the current, still-in-progress week in the burn-rate calculation. Off by default since a partial week understates the weekly burn.">
+          <input type="checkbox" class="form-check-input mb-0" id="include-partial-chk"
+                 {% if not exclude_partial %}checked{% endif %}
+                 onchange="applyExcludePartial(!this.checked)">
+          Include partial week
         </label>
-      </span>
+      </div>
     </div>
-
+    <details class="forecast-whatif-details" id="whatif-wrap">
+      <summary>&#9889; What-if: add credits</summary>
+      <div class="forecast-whatif-grid">
+        <span class="text-muted">Additional credits</span>
+        <input type="number" id="whatif-extra" class="form-control form-control-sm" step="1000" min="0" value="0"
+               oninput="syncWhatIfSlider(+this.value); applyWhatIfExtra(+this.value)">
+        <input type="range" id="whatif-slider" class="form-range" min="0" step="1000" value="0"
+               oninput="document.getElementById('whatif-extra').value=this.value; applyWhatIfExtra(+this.value)">
+        <button type="button" class="btn btn-link btn-sm p-0 text-muted" style="font-size:.7rem;" onclick="resetWhatIf()">Reset</button>
+        <span id="whatif-stats" class="d-flex gap-3 flex-wrap" style="font-size:.72rem;"></span>
+      </div>
+    </details>
   </div>
 
   <!-- Burndown Chart -->
   <div class="section-label" id="burndown-chart-section">Charts</div>
 
-  <!-- Custom Burn Window panel (toggled by gear in chart toolbar) -->
-  <div id="acc-data-window" class="collapse {% if data_from or data_to %}show{% endif %} mb-2">
-    <div class="card card-body py-3 px-3 {% if data_from or data_to %}border-primary{% endif %}" style="border-radius:10px; background:#f8f9fb;">
-      <div class="d-flex align-items-center gap-2 mb-2">
-        <span style="font-size:.8rem; font-weight:600;">Custom Burn Window</span>
-        {% if data_from or data_to %}
-        <span class="badge bg-primary" style="font-size:.68rem;">{{ data_from or '…' }} → {{ data_to or '…' }}</span>
-        {% else %}
-        <span class="text-muted" style="font-size:.75rem;">limit which weeks drive the burn rate forecast</span>
-        {% endif %}
-      </div>
-      <div class="d-flex flex-wrap align-items-end gap-2">
-        <div>
-          <label class="form-label mb-1" style="font-size:.75rem;">From</label>
-          <input type="date" id="data-from" class="form-control form-control-sm" style="width:155px;" value="{{ data_from or '' }}">
-        </div>
-        <div>
-          <label class="form-label mb-1" style="font-size:.75rem;">To</label>
-          <input type="date" id="data-to" class="form-control form-control-sm" style="width:155px;" value="{{ data_to or '' }}">
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="applyDataWindow()">Apply</button>
-        {% if data_from or data_to %}
-        <a class="btn btn-outline-secondary btn-sm"
-           href="{{ url_for('forecast.forecast_page') }}?exclude_partial={{ '1' if exclude_partial else '0' }}">Clear</a>
-        {% endif %}
-        {% if data_from or data_to %}
-        <div class="ms-auto d-flex align-items-end gap-2">
-          <form method="post" action="{{ url_for('forecast.save_forecast_snapshot') }}" class="d-flex align-items-end gap-2">
-            <input type="hidden" name="next_page" value="forecast">
-            <input type="hidden" name="data_from" value="{{ data_from or '' }}">
-            <input type="hidden" name="data_to"   value="{{ data_to or '' }}">
-            <input type="text" name="snapshot_label" class="form-control form-control-sm" style="width:220px;"
-                   placeholder="Snapshot label"
-                   value="{% if data_from and data_to %}{{ data_from }} – {{ data_to }}{% elif data_from %}From {{ data_from }}{% else %}To {{ data_to }}{% endif %}">
-            <button type="submit" class="btn btn-primary btn-sm">Save Snapshot</button>
-          </form>
-        </div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
-
-  <div class="chart-card mb-3">
-    <div class="d-flex justify-content-between align-items-start mb-1">
+  <div class="chart-card mb-3 forecast-card-main">
+    <div class="forecast-chart-head mb-1">
       <div>
         <div class="chart-card-title">Credit Burndown</div>
         <div class="chart-card-sub">Actual &amp; projected remaining &nbsp;·&nbsp; Ctrl+scroll to zoom &nbsp;·&nbsp; drag to pan</div>
       </div>
-      <div class="chart-toolbar">
+      <div class="chart-toolbar forecast-toolbar">
         <div class="btn-group btn-group-sm me-1" role="group" title="Projection granularity">
           <button id="gran-weekly" class="btn btn-outline-secondary py-0 px-2 active" onclick="setBurndownGranularity('weekly')">Weekly</button>
           <button id="gran-daily"  class="btn btn-outline-secondary py-0 px-2"        onclick="setBurndownGranularity('daily')">Daily</button>
@@ -218,74 +595,105 @@
         </div>
         <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"  onclick="window.burndownChart && window.burndownChart.exportPNG()">&#8681;</button>
         <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"  onclick="window.burndownChart && window.burndownChart.openFullscreen()">&#9974;</button>
-        <button type="button" title="Custom burn window"
-                onclick="var el=document.getElementById('acc-data-window'); var bsEl=bootstrap.Collapse.getOrCreateInstance(el); bsEl.toggle(); el.addEventListener('shown.bs.collapse',()=>el.scrollIntoView({behavior:'smooth',block:'nearest'}),{once:true});"
-                class="btn btn-outline-secondary btn-sm py-0 px-2 {% if data_from or data_to %}active{% endif %}"
-                title="Custom burn window">
-          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="currentColor" viewBox="0 0 16 16">
-            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492M5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0"/>
-            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.474l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115z"/>
-          </svg>
-        </button>
       </div>
     </div>
-    <!-- Model overlay selector -->
-    <div class="d-flex align-items-center flex-wrap gap-3 mb-2" style="font-size:.75rem;">
-      <span style="font-weight:600; color:#6c757d;">Overlay:</span>
-      <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
-        <input type="checkbox" id="model-det" checked onchange="toggleForecastModel('deterministic', this.checked)">
-        <span style="color:#dc3545;">&#8212; Base Forecast</span>
-      </label>
-      <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
-        <input type="checkbox" id="model-mc" onchange="toggleForecastModel('monte_carlo', this.checked)">
-        <span style="color:#fd7e14;">&#9646; Monte Carlo</span>
-        <span class="text-muted ms-1" style="font-size:.7rem;">({{ "{:,}".format(saved_contract.get('forecast', {}).get('monte_carlo_runs', 10000) | int) }} runs)</span>
-      </label>
-      <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
-        <input type="checkbox" id="model-lr" onchange="toggleForecastModel('linear_regression', this.checked)">
-        <span style="color:#198754;">&#9472; Linear Trend (ML)</span>
-        <span id="lr-status" class="text-muted ms-1" style="font-size:.7rem;"></span>
-      </label>
-      <span id="mc-band-controls" class="d-flex align-items-center gap-2" style="display:none;">
-        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
-          <input type="checkbox" id="mc-show-p90" checked onchange="toggleMcBand('p90', this.checked)">
-          <span style="font-size:.7rem; color:#fd7e14;">P90</span>
-        </label>
-        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
-          <input type="checkbox" id="mc-show-p50" checked onchange="toggleMcBand('p50', this.checked)">
-          <span style="font-size:.7rem; color:#fd7e14;">P50</span>
-        </label>
-        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer; user-select:none;">
-          <input type="checkbox" id="mc-show-p10" checked onchange="toggleMcBand('p10', this.checked)">
-          <span style="font-size:.7rem; color:#fd7e14;">P10</span>
-        </label>
-      </span>
-      <span id="mc-status" class="text-muted" style="display:none; font-size:.7rem;"></span>
-      <span class="ms-auto d-flex align-items-center gap-2" style="font-size:.7rem; color:#6c757d;">
-        <span style="font-weight:600;">Colors:</span>
-        <label class="d-flex align-items-center gap-1 mb-0" title="Actual remaining line color">
-          <input type="color" id="color-actual" class="color-swatch" onchange="setBurndownColor('actual', this.value)">
-          <span>Actual</span>
-        </label>
-        <label class="d-flex align-items-center gap-1 mb-0" title="Projected remaining line color">
-          <input type="color" id="color-proj" class="color-swatch" onchange="setBurndownColor('proj', this.value)">
-          <span>Projected</span>
-        </label>
-        <label class="d-flex align-items-center gap-1 mb-0" title="Weekly burn bar color">
-          <input type="color" id="color-weekly" class="color-swatch" onchange="setBurndownColor('weekly', this.value)">
-          <span>Weekly</span>
-        </label>
-        <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.68rem;" onclick="resetChartColors()" title="Reset to defaults">reset</button>
-      </span>
-    </div>
-    <div style="position:relative; height: 300px;">
+    <!-- The graph itself stays clean; model toggles, legend, and colors live below the plot. -->
+    <div class="fc-chart-area">
       <canvas id="burndownChart" class="cursor-crosshair"></canvas>
     </div>
+    <div id="burndownOverlaySummary" class="fc-overlay-summary"></div>
+    <div class="forecast-graph-dock">
+      <!-- Compact control bar: a Show/hide dropdown drives every series; an
+           optional on-chart legend renders into the canvas (and the PNG). -->
+      <div class="forecast-dock-bar d-flex align-items-center flex-wrap gap-2">
+        <div class="dropdown">
+          <button class="btn btn-outline-secondary btn-sm py-0 px-2 dropdown-toggle" type="button"
+                  id="showSeriesDropdown" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                  aria-expanded="false" style="font-size:.74rem;">Show / hide series</button>
+          <div class="dropdown-menu p-2 shadow-sm" aria-labelledby="showSeriesDropdown"
+               style="min-width:300px; max-height:420px; overflow-y:auto;">
+            <div id="burndownSeriesMenu"></div>
+          </div>
+        </div>
 
-    {% if forecast_history %}
-    <!-- Quick snapshot overlay selector -->
-    <div class="d-flex align-items-center gap-2 flex-wrap mt-2 pt-2" style="border-top:1px solid #eef0f2;">
-      <span style="font-size:.74rem; font-weight:600; color:#6c757d;">Overlay past snapshots:</span>
+        <label class="fc-check fc-toggle-chip mb-0" title="Draw a legend on the chart itself — included when you export the PNG.">
+          <input type="checkbox" id="legend-on-chart" onchange="toggleChartLegend(this.checked)">
+          <span>Legend on chart</span>
+        </label>
+
+        <details class="fc-native-details fc-colors-details ms-auto" {% if data_from or data_to %}open{% endif %}>
+          <summary>Advanced settings{% if data_from or data_to %} &middot; burn window active{% endif %}</summary>
+          <div class="fc-advanced-panel">
+
+            <!-- Colors -->
+            <div class="fc-advanced-group">
+              <div class="fc-control-label">Colors</div>
+              <div id="chart-settings-panel" class="fc-color-panel">
+                <label class="d-flex align-items-center gap-1 mb-0" title="Actual remaining line color">
+                  <input type="color" id="color-actual" class="color-swatch" onchange="setBurndownColor('actual', this.value)">
+                  <span>Actual</span>
+                </label>
+                <label class="d-flex align-items-center gap-1 mb-0" title="Base forecast line color">
+                  <input type="color" id="color-proj" class="color-swatch" onchange="setBurndownColor('proj', this.value)">
+                  <span>Base</span>
+                </label>
+                <label class="d-flex align-items-center gap-1 mb-0" title="Monte Carlo line and band color">
+                  <input type="color" id="color-mc" class="color-swatch" onchange="setBurndownColor('mc', this.value)">
+                  <span>Monte Carlo</span>
+                </label>
+                <label class="d-flex align-items-center gap-1 mb-0" title="ML trend line and band color">
+                  <input type="color" id="color-ml" class="color-swatch" onchange="setBurndownColor('ml', this.value)">
+                  <span>ML</span>
+                </label>
+                <label class="d-flex align-items-center gap-1 mb-0" title="Weekly burn bar color">
+                  <input type="color" id="color-weekly" class="color-swatch" onchange="setBurndownColor('weekly', this.value)">
+                  <span>Weekly bars</span>
+                </label>
+                <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.68rem;" onclick="resetChartColors()" title="Reset to defaults">reset</button>
+              </div>
+            </div>
+
+            <!-- Burn window -->
+            <div class="fc-advanced-group">
+              <div class="fc-control-label">Burn window{% if data_from or data_to %} &middot; active{% endif %}</div>
+              <div class="fc-color-panel" style="display:flex; align-items:flex-end; gap:.6rem; flex-wrap:wrap;">
+                <div>
+                  <label class="form-label mb-1" style="font-size:.7rem;">From</label>
+                  <input type="date" id="data-from" class="form-control form-control-sm" style="width:150px;" value="{{ data_from or '' }}">
+                </div>
+                <div>
+                  <label class="form-label mb-1" style="font-size:.7rem;">To</label>
+                  <input type="date" id="data-to" class="form-control form-control-sm" style="width:150px;" value="{{ data_to or '' }}">
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="applyDataWindow()">Apply</button>
+                {% if data_from or data_to %}
+                <a class="btn btn-outline-secondary btn-sm"
+                   href="{{ url_for('forecast.forecast_page') }}?exclude_partial={{ '1' if exclude_partial else '0' }}">Clear</a>
+                <form method="post" action="{{ url_for('forecast.save_forecast_snapshot') }}" class="d-flex align-items-end gap-2">
+                  <input type="hidden" name="next_page" value="forecast">
+                  <input type="hidden" name="data_from" value="{{ data_from or '' }}">
+                  <input type="hidden" name="data_to"   value="{{ data_to or '' }}">
+                  <input type="text" name="snapshot_label" class="form-control form-control-sm" style="width:200px;"
+                         placeholder="Snapshot label"
+                         value="{% if data_from and data_to %}{{ data_from }} – {{ data_to }}{% elif data_from %}From {{ data_from }}{% else %}To {{ data_to }}{% endif %}">
+                  <button type="submit" class="btn btn-primary btn-sm">Save Snapshot</button>
+                </form>
+                {% else %}
+                <span class="text-muted align-self-center" style="font-size:.72rem;">Limit which weeks drive the burn-rate forecast.</span>
+                {% endif %}
+              </div>
+            </div>
+
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <!-- Snapshot bar: overlay selector + generate controls -->
+    <div class="forecast-snapshot-rail">
+      <div class="forecast-snapshot-left">
+      {% if forecast_history %}
+      <span class="fc-control-label">Snapshots</span>
       <div class="dropdown">
         <button class="btn btn-outline-secondary btn-sm py-0 px-2 dropdown-toggle" type="button"
                 id="snapQuickDropdown" data-bs-toggle="dropdown" data-bs-auto-close="outside"
@@ -304,25 +712,41 @@
             <label class="d-flex align-items-center gap-2 px-1 py-1 mb-0" style="cursor:pointer; white-space:nowrap;">
               <input type="checkbox" class="form-check-input mt-0 quick-snap-cb" data-key="{{ k }}" onchange="quickToggle(this)">
               <span style="width:11px;height:11px;border-radius:2px;background:{{ h.color or '#adb5bd' }};display:inline-block;flex-shrink:0;"></span>
-              <span style="font-size:.8rem;">{{ h.snapshot_date }}{% if h.label %} &middot; {{ h.label }}{% endif %}</span>
+              <span style="font-size:.8rem;" title="{{ h.label or h.snapshot_date }}">{{ h.snapshot_date }}</span>
             </label>
           </li>
           {% endfor %}
         </ul>
       </div>
-      <label class="d-flex align-items-center gap-1 mb-0 ms-1" style="cursor:pointer; font-size:.74rem; color:#6c757d;"
-             title="Overlay each selected snapshot's Monte Carlo confidence bands (P10–P90)">
-        <input type="checkbox" class="form-check-input mt-0" id="snap-mc-toggle" onchange="toggleSnapMc(this.checked)">
-        Monte Carlo bands
-      </label>
-      <label class="d-flex align-items-center gap-1 mb-0 ms-1" style="cursor:pointer; font-size:.74rem; color:#6c757d;"
-             title="Overlay each selected snapshot's linear-trend (ML) projection + residual bands">
-        <input type="checkbox" class="form-check-input mt-0" id="snap-ml-toggle" onchange="toggleSnapMl(this.checked)">
-        Linear trend (ML)
-      </label>
       <span id="quick-select-pills" class="d-flex gap-1 flex-wrap align-items-center"></span>
+      {% else %}
+      <span class="text-muted">No snapshots yet</span>
+      {% endif %}
+
+      </div>
+      <div class="forecast-snapshot-right">
+        <form method="post" action="{{ url_for('forecast.generate_weekly_snapshots') }}" class="d-inline">
+          <div class="btn-group btn-group-sm" role="group">
+            <button type="submit" name="include_mc" value="0" class="btn btn-outline-secondary"
+                    style="font-size:.7rem; padding:.1rem .45rem;"
+                    title="Generate one snapshot per operational week">&#x1F4C5; Generate</button>
+            <button type="submit" name="include_mc" value="1" class="btn btn-outline-secondary"
+                    style="font-size:.7rem; padding:.1rem .45rem;"
+                    title="Generate with Monte Carlo bands (slower)">+ MC</button>
+          </div>
+        </form>
+        <a href="{{ url_for('forecast.snapshot_generating_page') }}" class="btn btn-outline-primary btn-sm"
+           style="font-size:.7rem; padding:.1rem .45rem;"
+           title="Auto-generate all weekly snapshots with progress tracking">&#x26A1; Auto-generate all</a>
+        {% if forecast_history %}
+        <form method="post" action="{{ url_for('forecast.delete_all_forecast_snapshots') }}" class="d-inline"
+              onsubmit="return confirm('Delete ALL {{ forecast_history | length }} snapshots?');">
+          <button type="submit" class="btn btn-outline-danger btn-sm" style="font-size:.7rem; padding:.1rem .4rem;"
+                  title="Delete all snapshots">&#x1F5D1;</button>
+        </form>
+        {% endif %}
+      </div>
     </div>
-    {% endif %}
   </div>
 
   <!-- Weekly Burn and Active Users -->
@@ -500,6 +924,23 @@
       </div>
     </div>
 
+    <!-- Linear Trend (ML) -->
+    <div class="accordion-item acc-item">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed acc-btn" type="button"
+                data-bs-toggle="collapse" data-bs-target="#acc-ml"
+               >
+          Linear Trend (ML)
+          <span class="ms-2 badge" id="ml-acc-badge" style="font-size:.72rem; display:none;"></span>
+        </button>
+      </h2>
+      <div id="acc-ml" class="accordion-collapse collapse">
+        <div class="accordion-body py-3" id="ml-acc-body">
+          <div class="text-muted small">Loading ML model statistics&hellip;</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Cumulative Burn chart -->
     <div class="accordion-item acc-item">
       <h2 class="accordion-header">
@@ -524,135 +965,6 @@
 
   </div>
 
-  <!-- Snapshot History -->
-  <div class="section-label">Snapshot History</div>
-  <div class="dash-section mb-4">
-    <div class="dash-section-header">
-      <span class="dash-section-title">History</span>
-      {% if forecast_history %}
-      <span style="font-size:.72rem; color:#8a92a0;" id="compare-hint">
-        {{ forecast_history | length }} snapshot{{ 's' if forecast_history | length != 1 }} &middot; overlay them with the selector above the chart
-      </span>
-      {% endif %}
-      <span class="ms-auto d-flex gap-2 align-items-center snap-toolbar">
-        {# Two submit buttons, one form: the clicked button's include_mc value is sent. #}
-        <form method="post" action="{{ url_for('forecast.generate_weekly_snapshots') }}">
-          <div class="btn-group btn-group-sm" role="group" aria-label="Generate weekly snapshots">
-            <button class="btn btn-outline-primary" type="submit" name="include_mc" value="0"
-                    onclick="return confirm('Generate one snapshot per operational week?');"
-                    title="One snapshot per operational week (fast)">&#x1F4C5; Generate weekly</button>
-            <button class="btn btn-outline-primary" type="submit" name="include_mc" value="1"
-                    onclick="return confirm('Generate weekly snapshots with Monte Carlo bands? This is slower.');"
-                    title="Same, but compute Monte Carlo confidence bands (slower)">+ Monte Carlo</button>
-          </div>
-        </form>
-        {% if forecast_history %}
-        <button class="btn btn-outline-secondary btn-sm" type="button"
-                data-bs-toggle="collapse" data-bs-target="#snap-manage" aria-expanded="false">Manage &amp; details</button>
-        <form method="post" action="{{ url_for('forecast.delete_all_forecast_snapshots') }}"
-              onsubmit="return confirm('Delete ALL {{ forecast_history | length }} snapshots? This cannot be undone.');">
-          <button class="btn btn-outline-danger btn-sm" type="submit" title="Delete every saved snapshot">&#x1F5D1; Delete all</button>
-        </form>
-        {% endif %}
-      </span>
-    </div>
-
-  {% if forecast_history %}
-
-    <!-- Comparison cards (populated when 2+ snapshots are selected) -->
-    <div id="compare-panel" style="display:none; padding:.5rem 0 0;">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <span style="font-size:.78rem; font-weight:700; color:#1a1d23;">Comparing <span id="compare-count">0</span> snapshots</span>
-        <span class="d-flex align-items-center gap-2">
-          <label class="d-flex align-items-center gap-1 mb-0" style="font-size:.72rem; cursor:pointer; color:#6c757d;"
-                 title="Show a bar chart comparing the selected snapshots">
-            <input type="checkbox" id="compare-chart-toggle" onchange="toggleCompareChart(this.checked)"> Chart
-          </label>
-          <button class="btn btn-outline-secondary btn-sm py-0" onclick="clearComparison()">Clear</button>
-        </span>
-      </div>
-      <div id="compare-grid" class="row g-2 mb-3"></div>
-      <div id="compare-chart-wrap" style="display:none;">
-        <div style="font-size:.65rem; font-weight:700; color:#8a92a0; letter-spacing:.06em; margin-bottom:.5rem;">SNAPSHOT COMPARISON</div>
-        <div style="position:relative; height:170px;"><canvas id="compare-chart"></canvas></div>
-      </div>
-    </div>
-
-    <!-- Full table tucked into a collapsible panel; fixed layout = no horizontal scroll -->
-    <div class="collapse" id="snap-manage">
-      <table class="snap-table" id="history-table">
-        <thead>
-          <tr>
-            <th style="width:34px;"></th>
-            <th style="width:23%;">Snapshot</th>
-            <th style="width:118px;">Status</th>
-            <th class="text-end">Weekly Burn</th>
-            <th class="text-end">Remaining</th>
-            <th class="text-end">End Bal.</th>
-            <th class="text-end" style="width:72px;">MC Risk</th>
-            <th style="width:56px;"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for h in forecast_history %}
-          <tr class="history-row" data-snap='{{ h | tojson }}' onclick="toggleRow(this)" style="cursor:pointer;">
-            <td class="cell-select" onclick="event.stopPropagation()">
-              <input type="checkbox" class="form-check-input history-cb" onclick="event.stopPropagation();toggleRow(this.closest('tr'))">
-              <input type="color" class="snap-color-input"
-                     value="{{ h.color or '#adb5bd' }}"
-                     data-ts="{{ h.snapshot_ts or '' }}" data-date="{{ h.snapshot_date }}" data-label="{{ h.label or '' }}"
-                     onchange="setSnapColor(this)" title="Snapshot color">
-            </td>
-            <td class="snapshot-label-cell"
-                data-ts="{{ h.snapshot_ts or '' }}" data-date="{{ h.snapshot_date }}" data-old-label="{{ h.label or '' }}"
-                onclick="event.stopPropagation()">
-              <div class="snap-date">{{ h.snapshot_date }}</div>
-              <div class="d-flex align-items-center gap-1">
-                <span class="label-display {% if not h.label %}label-empty{% endif %}">{{ h.label or 'No label' }}</span>
-                <button type="button" class="label-edit-btn btn btn-link p-0 text-muted" title="Rename" onclick="startRename(this.closest('td'))">&#x270F;</button>
-              </div>
-              <input class="label-edit form-control form-control-sm py-0 mt-1" style="display:none; font-size:.76rem;" value="{{ h.label or '' }}">
-            </td>
-            <td>
-              <span class="pacing-pill {{ h.pacing_status }}">{{ h.pacing_status | fmt_status }}</span>
-              <span class="pacing-pill {{ h.forecast_status }} mt-1 d-inline-block">{{ h.forecast_status | fmt_status }}</span>
-            </td>
-            <td class="text-end num">{{ '{:,.0f}'.format(h.forecast_weekly_burn | float) if h.forecast_weekly_burn else '—' }}</td>
-            <td class="text-end num">{{ '{:,.0f}'.format(h.credits_remaining | float) if h.credits_remaining else '—' }}</td>
-            <td class="text-end num">
-              <span class="{{ 'text-danger' if h.forecast_contract_end_balance and h.forecast_contract_end_balance | float < 0 else 'text-success' }}">
-                {{ '{:,.0f}'.format(h.forecast_contract_end_balance | float) if h.forecast_contract_end_balance else '—' }}
-              </span>
-              {% if h.forecast_exhaustion_date %}<div class="sub-note">exh {{ h.forecast_exhaustion_date }}</div>{% endif %}
-            </td>
-            <td class="text-end num">
-              {%- if h.mc_exhaustion_prob -%}
-                <span class="{{ 'text-danger' if h.mc_exhaustion_prob | float > 0.5 else ('text-warning' if h.mc_exhaustion_prob | float > 0.1 else 'text-success') }}">
-                  {{ '{:.0%}'.format(h.mc_exhaustion_prob | float) }}
-                </span>
-              {%- else -%}<span class="text-muted">—</span>{%- endif -%}
-            </td>
-            <td class="cell-actions text-end" onclick="event.stopPropagation()">
-              <a class="btn btn-link btn-sm p-0 text-primary"
-                 onclick="viewSnapForecast(this.closest('tr'), event)"
-                 title="View forecast at this snapshot" style="cursor:pointer;">&#x1F441;</a>
-              <button type="button" class="btn btn-link btn-sm p-0 text-danger"
-                      data-ts="{{ h.snapshot_ts or '' }}" data-date="{{ h.snapshot_date }}" data-label="{{ h.label or '' }}"
-                      onclick="deleteSnapshot(this, event)" title="Delete snapshot">&#x1F5D1;</button>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>{# /collapse #snap-manage #}
-  {% else %}
-    <p class="text-muted small mb-0">
-      No snapshots yet. Use <strong>Generate weekly</strong> above, or save one from the
-      Custom Burn Window on the chart.
-    </p>
-  {% endif %}{# forecast_history #}
-  </div>{# dash-section #}
-
   {% endif %}{# not no_data #}
 
 </div><!-- /container -->
@@ -673,15 +985,127 @@
     "weeksLeft": {{ forecast.weeks_remaining if not no_data else 0 }},
     "latestDate": "{{ contract_status.latest_usage_date if not no_data else '' }}",
     "currentRemaining": {{ contract_status.credits_remaining if not no_data else 0 }},
+    "contractEndDate": "{{ contract_status.contract_end_date if not no_data else '' }}",
+    "csWeeksLeft": {{ contract_status.weeks_remaining if not no_data else 0 }},
     "mcRuns": {{ saved_contract.get('forecast', {}).get('monte_carlo_runs', 10000) | int }},
+    "snapshots": {{ forecast_history | tojson }},
     "urls": {
       "snapshotSeries": "{{ url_for('forecast.get_snapshot_series') }}",
       "rename": "{{ url_for('forecast.rename_forecast_snapshot') }}",
       "color": "{{ url_for('forecast.set_snapshot_color') }}",
       "delete": "{{ url_for('forecast.delete_forecast_snapshot') }}",
-      "forecastPage": "{{ url_for('forecast.forecast_page') }}"
+      "forecastPage": "{{ url_for('forecast.forecast_page') }}",
+      "modelData": "{{ url_for('forecast.model_data') }}"
     }
   }
   </script>
   <script src="{{ url_for('static', filename='js/forecast.js') }}"></script>
+
+  <script>
+    // ── What-if: buy-more-credits scenario ────────────────────────────────
+    (function () {
+      function _fd() {
+        return JSON.parse(document.getElementById('forecast-data').textContent);
+      }
+
+      function _setWhatIfMax() {
+        const fd = _fd();
+        const slider = document.getElementById('whatif-slider');
+        if (slider) slider.max = Math.round(fd.purchased);
+      }
+
+      window.toggleWhatIf = function () {
+        const wrap = document.getElementById('whatif-wrap');
+        if (!wrap) return;
+        wrap.open = !wrap.open;
+        if (wrap.open) { _setWhatIfMax(); }
+        else { _clearWhatIfLine(); }
+      };
+
+      const whatIfWrap = document.getElementById('whatif-wrap');
+      if (whatIfWrap) {
+        whatIfWrap.addEventListener('toggle', function () {
+          if (this.open) _setWhatIfMax();
+          else _clearWhatIfLine();
+        });
+      }
+
+      window.syncWhatIfSlider = function (v) {
+        document.getElementById('whatif-slider').value = v;
+      };
+
+      window.applyWhatIfExtra = function (delta) {
+        const fd = _fd();
+        const newRemaining  = fd.currentRemaining + delta;
+        const newEndBalance = newRemaining - fd.weeklyBurn * fd.csWeeksLeft;
+        const weeksToExh    = fd.weeklyBurn > 0 ? newRemaining / fd.weeklyBurn : Infinity;
+        const exhausted     = weeksToExh < fd.csWeeksLeft;
+
+        const fmt = n => Math.round(n).toLocaleString();
+        const sign = n => (n >= 0 ? '+' : '') + fmt(n);
+
+        let statsHtml = `<span>New remaining: <strong>${fmt(newRemaining)}</strong></span>`
+          + `<span>New end balance: <strong class="${newEndBalance >= 0 ? 'text-success' : 'text-danger'}">${sign(newEndBalance)}</strong></span>`;
+
+        if (exhausted) {
+          const exhDate = new Date(fd.latestDate);
+          exhDate.setDate(exhDate.getDate() + Math.round(weeksToExh * 7));
+          statsHtml += `<span class="text-danger">Exhaustion ~${exhDate.toISOString().slice(0,10)}</span>`;
+        } else {
+          statsHtml += `<span class="text-success">No exhaustion &#10003;</span>`;
+        }
+        statsHtml += `<span class="text-muted">${fmt(delta)} credits added</span>`;
+        document.getElementById('whatif-stats').innerHTML = statsHtml;
+
+        _drawWhatIfLine(fd, newRemaining);
+      };
+
+      window.resetWhatIf = function () {
+        document.getElementById('whatif-extra').value = 0;
+        document.getElementById('whatif-slider').value = 0;
+        document.getElementById('whatif-stats').innerHTML = '';
+        _clearWhatIfLine();
+      };
+
+      function _drawWhatIfLine(fd, startRemaining) {
+        if (!window.burndownChart) return;
+        const start   = new Date(fd.latestDate);
+        const endDate = new Date(fd.contractEndDate || start);
+        const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+        const totalWeeks = Math.ceil((endDate - start) / msPerWeek) + 1;
+        const pts = [];
+        for (let w = 0; w <= totalWeeks; w++) {
+          const d = new Date(start.getTime() + w * msPerWeek);
+          const y = startRemaining - fd.weeklyBurn * w;
+          pts.push({ x: d.toISOString().slice(0, 10), y: Math.max(0, y) });
+          if (y <= 0) break;
+        }
+        const ds = window.burndownChart.data.datasets;
+        const existing = ds.findIndex(d => d._whatif);
+        const dataset = {
+          _whatif: true,
+          label: 'What-if',
+          data: pts,
+          borderColor: 'rgba(147, 51, 234, 0.9)',
+          backgroundColor: 'rgba(147, 51, 234, 0.06)',
+          borderDash: [6, 4],
+          borderWidth: 2.5,
+          pointRadius: 0,
+          tension: 0,
+          fill: false,
+          order: -10,
+        };
+        if (existing >= 0) { ds[existing] = dataset; } else { ds.push(dataset); }
+        window.burndownChart.update('none');
+        if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
+      }
+
+      function _clearWhatIfLine() {
+        if (!window.burndownChart) return;
+        window.burndownChart.data.datasets = window.burndownChart.data.datasets.filter(d => !d._whatif);
+        window.burndownChart.update('none');
+        if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
+      }
+    })();
+  </script>
 {% endblock %}

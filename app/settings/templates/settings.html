@@ -81,7 +81,7 @@
             <tr>
               <td>{{ week.week_start }}</td>
               <td>{{ week.week_end }}</td>
-              <td style=”font-size:.78rem; color:#8a92a0;”>{{ week.source_file or '&mdash;' }}</td>
+              <td style=”font-size:.78rem; color:var(--muted);”>{{ week.source_file or '&mdash;' }}</td>
               <td class="text-end">{{ '{:,.2f}'.format(week.total_credits_used) }}</td>
               <td class="text-end">{{ week.unique_users }}</td>
               <td class="text-end">{{ week.credit_active_users }}</td>
@@ -118,12 +118,12 @@
             {% set badge = {'data_sheet': 'bg-success', 'historical': 'bg-secondary', 'weekly': 'bg-primary'} %}
             {% set label = {'data_sheet': 'data sheet'} %}
             <tr>
-              <td style="white-space:nowrap; font-size:.78rem; color:#8a92a0;">{{ u.ts | replace('T', ' ') | replace('Z', ' UTC') }}</td>
+              <td style="white-space:nowrap; font-size:.78rem; color:var(--muted);">{{ u.ts | replace('T', ' ') | replace('Z', ' UTC') }}</td>
               <td>
                 <span class="badge {{ badge.get(u.type, 'bg-primary') }}" style="font-size:.68rem;">{{ label.get(u.type, u.type) }}</span>
                 {% if u.stats.mode == 'replace' %}<span class="badge bg-warning text-dark" style="font-size:.62rem;">replace</span>{% endif %}
               </td>
-              <td style="font-size:.78rem; color:#8a92a0; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ u.filename }}">{{ u.filename }}</td>
+              <td style="font-size:.78rem; color:var(--muted); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ u.filename }}">{{ u.filename }}</td>
               <td class="text-end">
                 {%- if u.stats.rows_added is defined -%}
                   <span class="{{ 'text-success fw-semibold' if u.stats.rows_added | int > 0 else 'text-muted' }}">+{{ '{:,}'.format(u.stats.rows_added | int) }}</span>
@@ -144,7 +144,7 @@
 
       {# Advanced Forecasting Data (optional) #}
       <div class="settings-section">
-        <h5>Advanced Forecasting Data <span style="font-weight:400; font-size:.8rem; color:#8a92a0; text-transform:none; letter-spacing:0;">(optional)</span></h5>
+        <h5>Advanced Forecasting Data <span style="font-weight:400; font-size:.8rem; color:var(--muted); text-transform:none; letter-spacing:0;">(optional)</span></h5>
         <div class="alert alert-info py-2 px-3 mb-3" style="font-size:.82rem;">
           The <a href=”{{ url_for('main.summary_page') }}”>Summary page</a> upload is all you need &mdash;
           forecasting runs automatically from your data sheet.
@@ -158,7 +158,7 @@
           <div class="accordion-item border-0" style="background:transparent;">
             <h2 class="accordion-header">
               <button class="accordion-button collapsed py-2 px-0 bg-transparent shadow-none"
-                      style="font-size:.84rem; font-weight:600; color:#1a1d23;"
+                      style="font-size:.84rem; font-weight:600; color:var(--ink);"
                       type="button" data-bs-toggle="collapse" data-bs-target="#collapseHistorical">
                 Historical weekly export (Excel)
               </button>
@@ -186,7 +186,7 @@
           <div class="accordion-item border-0 mt-1" style="background:transparent;">
             <h2 class="accordion-header">
               <button class="accordion-button collapsed py-2 px-0 bg-transparent shadow-none"
-                      style="font-size:.84rem; font-weight:600; color:#1a1d23;"
+                      style="font-size:.84rem; font-weight:600; color:var(--ink);"
                       type="button" data-bs-toggle="collapse" data-bs-target="#collapseWeekly">
                 Weekly operational export (CSV)
               </button>
@@ -273,7 +273,7 @@
             <div class="col-md-3">
               <label class="form-label d-flex align-items-center gap-1">
                 Forecast mode
-                <span tabindex="0" data-bs-toggle="tooltip" title="Auto selects weights by how many operational weeks exist. Manual uses the weights you set below." style="cursor:default; color:#6c757d; font-size:.8rem;">ⓘ</span>
+                <span tabindex="0" data-bs-toggle="tooltip" title="Auto selects weights by how many operational weeks exist. Manual uses the weights you set below." style="cursor:default; color:var(--muted); font-size:.8rem;">ⓘ</span>
               </label>
               <select id="forecast-mode-select" class="form-select form-select-sm" name="forecast_mode">
                 <option value="auto" {% if f.mode == 'auto' %}selected{% endif %}>auto</option>
@@ -309,7 +309,7 @@
             <div class="col-md-3">
               <label class="form-label d-flex align-items-center gap-1">
                 Monte Carlo simulations
-                <span tabindex="0" data-bs-toggle="tooltip" title="Number of simulation runs for Monte Carlo confidence bands. Higher = more accurate but slower. Range: 500–20000." style="cursor:default; color:#6c757d; font-size:.8rem;">ⓘ</span>
+                <span tabindex="0" data-bs-toggle="tooltip" title="Number of simulation runs for Monte Carlo confidence bands. Higher = more accurate but slower. Range: 500–20000." style="cursor:default; color:var(--muted); font-size:.8rem;">ⓘ</span>
               </label>
               <input class="form-control form-control-sm" type="number" name="monte_carlo_runs"
                      value="{{ f.get('monte_carlo_runs', 10000) }}" min="100" max="20000" step="1">

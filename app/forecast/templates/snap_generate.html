@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Generating Snapshots - CUE Project{% endblock %}
+
+{% block body %}
+<div class="container py-5" style="max-width: 580px;">
+  <h1 class="page-title mb-1">Generating Snapshots</h1>
+  <p class="page-subtitle mb-4">Creating weekly forecast snapshots for all operational weeks.</p>
+
+  <div class="dash-section p-4">
+    <div class="d-flex justify-content-between align-items-center mb-1" style="font-size:.8rem; color:var(--muted);">
+      <span id="gen-msg">Connecting&hellip;</span>
+      <span id="gen-count"></span>
+    </div>
+    <div class="progress mb-3" style="height:14px; border-radius:8px;">
+      <div id="gen-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+           style="width:0%; border-radius:8px; transition:width .3s ease;"></div>
+    </div>
+    <div id="gen-done" style="display:none;" class="alert alert-success mb-3 py-2"></div>
+    <a href="{{ url_for('forecast.forecast_page') }}" class="btn btn-outline-secondary btn-sm">Skip to Forecast &rarr;</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const evtSource = new EventSource("{{ url_for('forecast.generate_all_snapshots_stream') }}");
+
+  evtSource.onmessage = function (e) {
+    const d = JSON.parse(e.data);
+
+    if (d.error) {
+      document.getElementById('gen-msg').textContent = 'Error: ' + d.error;
+      document.getElementById('gen-bar').classList.remove('progress-bar-animated');
+      document.getElementById('gen-bar').classList.add('bg-danger');
+      evtSource.close();
+      return;
+    }
+
+    if (d.done) {
+      evtSource.close();
+      document.getElementById('gen-bar').style.width = '100%';
+      document.getElementById('gen-bar').classList.remove('progress-bar-animated');
+      const parts = [];
+      if (d.generated) parts.push(d.generated + ' generated');
+      if (d.skipped)   parts.push(d.skipped   + ' skipped (already exist)');
+      if (d.errors)    parts.push(d.errors     + ' errors');
+      const doneEl = document.getElementById('gen-done');
+      doneEl.textContent = 'Done! ' + (parts.join(', ') || 'Nothing new to generate') + '. Redirecting…';
+      doneEl.style.display = '';
+      document.getElementById('gen-msg').textContent = 'Complete.';
+      document.getElementById('gen-count').textContent = '';
+      setTimeout(() => { window.location.href = "{{ url_for('forecast.forecast_page') }}"; }, 1800);
+    } else {
+      document.getElementById('gen-bar').style.width = d.progress + '%';
+      document.getElementById('gen-msg').textContent = 'Week ' + d.week;
+      document.getElementById('gen-count').textContent = d.current + ' / ' + d.total;
+    }
+  };
+
+  evtSource.onerror = function () {
+    document.getElementById('gen-msg').textContent = 'Connection interrupted — redirecting…';
+    evtSource.close();
+    setTimeout(() => { window.location.href = "{{ url_for('forecast.forecast_page') }}"; }, 2500);
+  };
+</script>
+{% endblock %}

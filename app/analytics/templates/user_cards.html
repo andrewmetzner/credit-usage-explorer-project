@@ -200,8 +200,13 @@
                date_field=date_field, start_date=start_date, end_date=end_date) }}">
             <div class="user-card">
               <div class="user-card-body">
-                <div class="user-name">{{ u.name or u.email or 'Unknown user' }}</div>
-                {% if u.email %}<div class="user-email">{{ u.email }}</div>{% endif %}
+                <div class="user-cell mb-2">
+                  <span class="avatar">{{ (u.name or u.email or '?')[:2] }}</span>
+                  <span style="min-width:0;">
+                    <div class="user-name">{{ u.name or u.email or 'Unknown user' }}</div>
+                    {% if u.email %}<div class="user-email" style="margin-bottom:0;">{{ u.email }}</div>{% endif %}
+                  </span>
+                </div>
                 {% if start_date or end_date %}
                 <div class="date-range">{{ start_date or 'All time' }} &ndash; {{ end_date or 'All time' }}</div>
                 {% endif %}

@@ -133,13 +133,8 @@ def register_upload_routes(bp, services) -> None:
 
         try:
             cfg = config_svc.load_contract()
-            auto_save_mode = cfg.get("forecast", {}).get("snapshot_auto_save", "daily")
-            if auto_save_mode in ("on_upload", "both"):
-                svc = services.build_forecasting_service(cfg)
-                if svc.has_data():
-                    label = (f"Upload: {per_file[0]['filename']}" if len(files) == 1
-                             else f"Upload: {len(files)} sheets")
-                    svc.save_to_dir(pipeline.processed_dir, once_per_day=False, label=label)
+            if cfg.get("contract", {}).get("contract_start_date"):
+                return redirect(url_for("forecast.snapshot_generating_page"))
         except Exception:
             pass
 

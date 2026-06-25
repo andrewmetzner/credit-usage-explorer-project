@@ -23,12 +23,12 @@
     <div class="dash-section p-0" style="overflow:hidden;">
       {% for a in nav_alerts %}
       <a class="alert-item d-flex gap-3 align-items-start p-3 text-decoration-none"
-         style="border-bottom:1px solid #f0f2f5; color:inherit;"
+         style="border-bottom:1px solid var(--border-soft); color:inherit;"
          data-alert-id="{{ a.id }}" onclick="markAlertRead('{{ a.id }}')"
          href="{{ url_for(a.link_endpoint, **a.link_args) if a.link_endpoint else '#' }}">
         <span class="badge bg-{{ a.level }} mt-1" style="height:.7rem; width:.7rem; padding:0; border-radius:50%; flex-shrink:0;"></span>
         <span class="flex-grow-1">
-          <div class="alert-title fw-semibold" style="color:#1a1d23;">{{ a.title }}</div>
+          <div class="alert-title fw-semibold">{{ a.title }}</div>
           <div class="text-muted small">{{ a.detail }}</div>
         </span>
         <span class="alert-unread-dot mt-1" title="Unread"></span>

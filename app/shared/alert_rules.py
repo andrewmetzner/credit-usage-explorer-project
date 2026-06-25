@@ -8,7 +8,7 @@ and ``evaluate_rules``' ``rule.get(...)`` reads.
 """
 from __future__ import annotations
 
-import uuid
+import hashlib
 from dataclasses import asdict, dataclass
 
 from .typed import DictMixin
@@ -55,14 +55,30 @@ class AlertRule(DictMixin):
         metric = str(data.get("metric") or "per_user_window")
         if metric not in VALID_METRICS:
             metric = "per_user_window"
+        name = (str(data.get("name") or "").strip() or "Alert rule")
+        threshold = _num(data.get("threshold"), 1000.0, float)
+        window_days = _num(data.get("window_days"), 7, int)
+        usage_type = str(data.get("usage_type") or "").strip()
+        model = str(data.get("model") or "").strip()
+
+        # The id drives the notification bell's read/unread state, so it MUST be
+        # stable across loads and process restarts. When a rule has no saved id,
+        # derive one deterministically from its defining fields instead of a
+        # random uuid — otherwise every reload mints a fresh id and previously
+        # read alerts re-appear as unread.
+        rid = data.get("id")
+        if not rid:
+            basis = "|".join([name, metric, str(threshold), str(window_days), usage_type, model])
+            rid = hashlib.md5(basis.encode("utf-8")).hexdigest()[:8]
+
         return cls(
-            id=str(data.get("id") or uuid.uuid4().hex[:8]),
-            name=(str(data.get("name") or "").strip() or "Alert rule"),
+            id=str(rid),
+            name=name,
             metric=metric,
-            threshold=_num(data.get("threshold"), 1000.0, float),
-            window_days=_num(data.get("window_days"), 7, int),
-            usage_type=str(data.get("usage_type") or "").strip(),
-            model=str(data.get("model") or "").strip(),
+            threshold=threshold,
+            window_days=window_days,
+            usage_type=usage_type,
+            model=model,
             enabled=bool(data.get("enabled", True)),
         )
 

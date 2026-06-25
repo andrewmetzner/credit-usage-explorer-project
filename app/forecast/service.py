@@ -475,7 +475,7 @@ class ForecastingService:
                 "exhaustion_probability": mc_result.metadata.get("exhaustion_probability"),
             }
 
-        # Linear-trend (ML) time series — burndown + residual bands.
+        # Linear-trend (ML) time series — burndown + residual bands + stats.
         ml_series: dict = {}
         if ml_result is not None:
             ml_series = {
@@ -483,7 +483,10 @@ class ForecastingService:
                 "p50": ml_result.burndown or [],
                 "p90": ml_result.p90 or [],
                 "slope_per_week": ml_result.metadata.get("slope_credits_per_week"),
+                "raw_slope_per_week": ml_result.metadata.get("raw_slope_credits_per_week"),
+                "trend_weight": ml_result.metadata.get("trend_weight"),
                 "r_squared": ml_result.metadata.get("r_squared"),
+                "metadata": ml_result.metadata,
             }
 
         data = {
@@ -553,12 +556,26 @@ class ForecastingService:
         if not skip_ml:
             try:
                 ml_result = self._run_ml(cs, fc)
+                md = ml_result.metadata or {}
                 ml_stats = {
-                    "ml_slope_per_week": ml_result.metadata.get("slope_credits_per_week"),
-                    "ml_r_squared": ml_result.metadata.get("r_squared"),
-                    "ml_p10_end_balance": round(ml_result.p10[-1]["value"], 1) if ml_result.p10 else None,
-                    "ml_p50_end_balance": round(ml_result.burndown[-1]["value"], 1) if ml_result.burndown else None,
-                    "ml_p90_end_balance": round(ml_result.p90[-1]["value"], 1) if ml_result.p90 else None,
+                    "ml_model_version": md.get("model_version"),
+                    "ml_model_engine": md.get("model_engine"),
+                    "ml_model_quality": md.get("model_quality"),
+                    "ml_trend_direction": md.get("trend_direction"),
+                    "ml_observations_used": md.get("observations_used"),
+                    "ml_slope_per_week": md.get("slope_credits_per_week"),
+                    "ml_raw_slope_per_week": md.get("raw_slope_credits_per_week"),
+                    "ml_trend_weight": md.get("trend_weight"),
+                    "ml_intercept": md.get("intercept"),
+                    "ml_r_squared": md.get("r_squared"),
+                    "ml_rmse": md.get("rmse"),
+                    "ml_mae": md.get("mae"),
+                    "ml_residual_std": md.get("residual_std"),
+                    "ml_projected_exhaustion": md.get("projected_exhaustion"),
+                    "ml_projected_exhaustion_date": md.get("projected_exhaustion_date"),
+                    "ml_p10_end_balance": round(ml_result.p10[-1]["value"], 1) if ml_result.p10 else md.get("p10_end_balance"),
+                    "ml_p50_end_balance": round(ml_result.burndown[-1]["value"], 1) if ml_result.burndown else md.get("p50_end_balance"),
+                    "ml_p90_end_balance": round(ml_result.p90[-1]["value"], 1) if ml_result.p90 else md.get("p90_end_balance"),
                 }
             except Exception:
                 pass

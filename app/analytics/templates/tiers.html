@@ -70,9 +70,40 @@
         </div>
       </form>
 
-      <!-- Credits / Week by usage type — the filters above narrow the data. -->
-      {{ chart_card("tiersChart", "Credits / Week", "tiersChart",
-                    subtitle="By usage type — reflects the filters above", height=240, bar_toggle=True) }}
+      <!-- Credits / Week chart with collapse toggle -->
+      <div class="chart-card mb-3">
+        <div class="d-flex justify-content-between align-items-start mb-1">
+          <div>
+            <div class="chart-card-title">Credits / Week</div>
+            <div class="chart-card-sub">Reflects filters above</div>
+          </div>
+          <div class="chart-toolbar">
+            <div class="btn-group btn-group-sm" role="group" title="Bar mode">
+              <button type="button" class="btn btn-outline-secondary py-0 px-2 active"
+                      onclick="setUsageTypeMode('tiersChart', true, this)">Stacked</button>
+              <button type="button" class="btn btn-outline-secondary py-0 px-2"
+                      onclick="setUsageTypeMode('tiersChart', false, this)">Grouped</button>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"
+                    onclick="window.tiersChart && window.tiersChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"
+                    onclick="window.tiersChart && window.tiersChart.openFullscreen()">&#9974;</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2"
+                    data-bs-toggle="collapse" data-bs-target="#tiers-chart-body"
+                    title="Show / hide chart">
+              <svg id="tiers-chart-chevron" xmlns="http://www.w3.org/2000/svg" width="12" height="12"
+                   fill="currentColor" viewBox="0 0 16 16" style="transition:transform .2s;">
+                <path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div id="tiers-chart-body" class="collapse show">
+          <div style="position:relative; height:240px;">
+            <canvas id="tiersChart" class="cursor-crosshair"></canvas>
+          </div>
+        </div>
+      </div>
       <script type="application/json" id="tiers-chart-data">{{ tiers_chart_data | safe }}</script>
 
       <!-- TABS -->
@@ -521,9 +552,17 @@
         el.addEventListener('change', () => document.getElementById('filter-form').submit());
       });
 
-      // Weekly chart, broken down by usage type (the filters above narrow the data).
-      const tiersData = JSON.parse(document.getElementById('tiers-chart-data').textContent);
-      window.tiersChart = renderUsageTypeChart('tiersChart', tiersData,
+      const _tiersData = JSON.parse(document.getElementById('tiers-chart-data').textContent);
+      window.tiersChart = renderUsageTypeChart('tiersChart', _tiersData,
         { exportName: 'Credits by Usage Type per Week' });
+
+      // Rotate chevron when chart collapses / expands
+      const _tiersBody = document.getElementById('tiers-chart-body');
+      _tiersBody.addEventListener('hide.bs.collapse', () => {
+        document.getElementById('tiers-chart-chevron').style.transform = 'rotate(-90deg)';
+      });
+      _tiersBody.addEventListener('show.bs.collapse', () => {
+        document.getElementById('tiers-chart-chevron').style.transform = '';
+      });
     </script>
 {% endblock %}

@@ -3,6 +3,28 @@ UPDATES LOG
 ================================================================
 
 ----------------------------------------------------------------
+2026-06-25 (GUI polish + dark mode toggle)
+----------------------------------------------------------------
+
+- Dark mode: added a light/dark theme toggle (sun/moon) in the navbar,
+  persisted in localStorage with a no-flash init script in <head>. Driven by
+  CSS custom properties: expanded :root with semantic vars (--surface-2,
+  --text, --text-soft, --faint, --hover, --accent-soft, --shadow) and a
+  [data-theme="dark"] override block. Converted remaining hardcoded hex in
+  app.css + inline template styles to vars, and added dark overrides for the
+  Bootstrap pieces we use (form-control/select, dropdown-menu, badge.bg-light,
+  btn-outline-secondary, btn-close, progress, table striping, modal, hr).
+- Table/readability polish (reference: OpenAI admin dashboard): airier
+  leaderboard rows, surface-2 sticky headers, tabular-nums on numeric cells +
+  KPI/stat/metric values, and reference-style initials avatars on the Users
+  cards (.avatar / .user-cell).
+- Charts left unchanged (per request). All pages verified in light; theme
+  variables verified present; diagnostics green.
+- Note: app's own components + Bootstrap overrides are variable-driven, so new
+  UI should use the CSS vars (var(--ink)/--text/--surface/--border/...) rather
+  than hardcoded hex, to stay theme-correct.
+
+----------------------------------------------------------------
 2026-06-24 (Rename outliers page -> alerts)
 ----------------------------------------------------------------
 

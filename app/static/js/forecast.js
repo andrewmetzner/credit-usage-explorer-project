@@ -24,140 +24,44 @@ const SNAP_DATA_MAP  = {};
 const SNAP_COLORS    = ['#20c997','#6f42c1','#d63384','#ffc107','#0dcaf0','#198754'];
 const CURRENT_REMAINING = D.currentRemaining || 0;
 let compareChart     = null;
+window.forecastDensity = localStorage.getItem('forecast-density') || 'clean';
+if (localStorage.getItem('forecast-ui-version') !== 'simple-v6') {
+  localStorage.setItem('forecast-ui-version', 'simple-v6');
+  localStorage.setItem('forecast-density', 'clean');
+  localStorage.removeItem('forecast-legend-open');
+  localStorage.setItem('forecast-mc-p90', '0');
+  localStorage.setItem('forecast-mc-p50', '1');
+  localStorage.setItem('forecast-mc-p10', '0');
+  window.forecastDensity = 'clean';
+}
 
 function fmtN(v) { const n = parseFloat(v); return isNaN(n) ? '—' : Math.round(n).toLocaleString(); }
 function fmtPct(v) { const n = parseFloat(v); return isNaN(n) ? '—' : Math.round(n * 100) + '%'; }
+function fmtR2(v) { const n = parseFloat(v); return isNaN(n) ? '—' : n.toFixed(2); }
+function fmtSignedN(v) { const n = parseFloat(v); return isNaN(n) ? '—' : (n >= 0 ? '+' : '') + Math.round(n).toLocaleString(); }
+function fmtSignedPerWeek(v) { const s = fmtSignedN(v); return s === '—' ? s : s + '/wk'; }
 function truncLabel(s, max) { max = max || 12; return s && s.length > max ? s.slice(0, max) + '…' : (s || ''); }
 
-// Strip the "Week of " prefix the weekly snapshots carry so legend / tooltip
-// rows read as plain dates (e.g. "Week of 2026-05-03 · forecast" → "2026-05-03 · forecast").
-function cleanLegendLabel(s) { return String(s == null ? '' : s).replace(/^week of:?\s*/i, ''); }
-
-// A snapshot's display name: weekly snapshots collapse to just their date;
-// user-named snapshots keep their custom label.
-function snapDisplayName(h) {
-  const l = (h && h.label) || '';
-  return (!l || /^week of/i.test(l)) ? (h && h.snapshot_date) || '' : l;
-}
-
-/* The Show/hide dropdown menu is the single control surface for the burndown
- * chart (the built-in Chart.js legend is off unless the user turns on the
- * on-chart legend for PNG export). It renders rows for the projection models,
- * the actual/what-if lines, and one row per selected snapshot — each snapshot
- * row carrying its own MC and ML toggles. */
-function _modelOn(id) {
-  const v = localStorage.getItem('forecast-model-' + id);
-  return id === 'deterministic' ? v !== '0' : v === '1';
-}
-
-function _menuHeader(text) {
-  const h = document.createElement('div');
-  h.className = 'fc-menu-header';
-  h.textContent = text;
-  return h;
-}
-
-// A toggle row: check box indicator + colour swatch + label, plus optional
-// trailing controls (used for the per-snapshot MC / ML buttons).
-function _menuRow(label, color, on, onClick, title, trailing) {
-  const row = document.createElement('div');
-  row.className = 'fc-menu-row';
-  if (title) row.title = title;
-  const left = document.createElement('span');
-  left.className = 'fc-menu-left';
-  left.style.cursor = 'pointer';
-  left.innerHTML =
-    `<span class="fc-menu-check">${on ? '&#10003;' : ''}</span>` +
-    `<span class="fc-legend-swatch" style="color:${color};"></span>` +
-    `<span class="fc-menu-label" style="${on ? '' : 'opacity:.55;'}">${label}</span>`;
-  left.addEventListener('click', onClick);
-  row.appendChild(left);
-  if (trailing) row.appendChild(trailing);
-  return row;
-}
-
-function _snapBandBtn(text, activeColor, active, onClick, title) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.textContent = text;
-  b.title = title;
-  b.className = 'fc-snap-band-btn' + (active ? ' is-on' : '');
-  b.style.setProperty('--band-color', activeColor);
-  b.addEventListener('click', e => { e.stopPropagation(); onClick(); });
-  return b;
-}
-
-function refreshBurndownLegend() {
-  const bc = window.burndownChart;
-  const menu = document.getElementById('burndownSeriesMenu');
-  if (!bc || !menu) return;
-  const chart = bc.chart || bc;
-  const datasets = chart.data.datasets || [];
-  menu.innerHTML = '';
-
-  // ── Forecast models (load / remove on click) ──
-  menu.appendChild(_menuHeader('Forecasts'));
-  [
-    { id: 'deterministic',     name: 'Base',              color: getChartColor('proj') },
-    { id: 'monte_carlo',       name: 'Monte Carlo',       color: '#fd7e14' },
-    { id: 'linear_regression', name: 'Linear Trend (ML)', color: '#198754' },
-  ].forEach(m => {
-    const on = _modelOn(m.id);
-    menu.appendChild(_menuRow(m.name, m.color, on,
-      () => { window.toggleForecastModel(m.id, !on); refreshBurndownLegend(); },
-      on ? 'Hide ' + m.name : 'Show ' + m.name));
-  });
-
-  // ── Other displayed lines (visibility toggle): actual, what-if ──
-  // Model main lines are covered above; their bands carry _noLegend. Snapshot
-  // datasets are handled in their own section below.
-  const skip = new Set(['Projected remaining', 'MC P50 (median)', 'Linear Trend (ML)']);
-  const lineRows = [];
-  datasets.forEach((d, i) => {
-    if (d._noLegend || d._snapOverlay || skip.has(d.label)) return;
-    const meta = chart.getDatasetMeta(i);
-    const hidden = meta.hidden === true;
-    const color = (typeof d.borderColor === 'string' && d.borderColor) ||
-                  (typeof d.backgroundColor === 'string' && d.backgroundColor) || '#888';
-    lineRows.push(_menuRow(cleanLegendLabel(d.label), color, !hidden, () => {
-      const mm = chart.getDatasetMeta(i);
-      mm.hidden = mm.hidden === true ? false : true;
-      chart.update();
-      refreshBurndownLegend();
-    }, 'Show / hide'));
-  });
-  if (lineRows.length) {
-    menu.appendChild(_menuHeader('Lines'));
-    lineRows.forEach(r => menu.appendChild(r));
+function snapshotWeekDate(h) {
+  const candidates = [h && h.label, h && h.snapshot_date, h && h.snapshot_ts].filter(Boolean).map(String);
+  for (const c of candidates) {
+    const m = c.match(/(20\d{2}-\d{2}-\d{2})/);
+    if (m) return m[1];
   }
-
-  // ── Snapshots: one row each, with independent MC + ML toggles ──
-  if (typeof selectedSnaps !== 'undefined' && selectedSnaps.size > 0) {
-    menu.appendChild(_menuHeader('Snapshots'));
-    let i = 0;
-    selectedSnaps.forEach((h, key) => {
-      const color = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
-      const name = truncLabel(snapDisplayName(h), 18);
-      const trailing = document.createElement('span');
-      trailing.className = 'fc-snap-bands';
-      trailing.appendChild(_snapBandBtn('Base', color, !snapBaseOff.has(key),
-        () => toggleSnapBaseFor(key), 'Base forecast line for this snapshot'));
-      trailing.appendChild(_snapBandBtn('MC', '#fd7e14', snapMcKeys.has(key),
-        () => toggleSnapMcFor(key), 'Monte Carlo bands for this snapshot'));
-      trailing.appendChild(_snapBandBtn('ML', '#198754', snapMlKeys.has(key),
-        () => toggleSnapMlFor(key), 'Linear-trend (ML) projection for this snapshot'));
-      // Row label is informational; the Base / MC / ML buttons do the per-snapshot work.
-      const row = _menuRow(name, color, true, e => e.preventDefault(),
-        'Add / remove snapshots from the Snapshots dropdown', trailing);
-      row.querySelector('.fc-menu-left').style.cursor = 'default';
-      const chk = row.querySelector('.fc-menu-check');
-      if (chk) chk.innerHTML = '';   // not a toggle — Base / MC / ML buttons carry the action
-      menu.appendChild(row);
-      i++;
-    });
-  }
+  return (h && h.snapshot_date) ? String(h.snapshot_date).slice(0, 10) : 'Snapshot';
 }
-window.refreshBurndownLegend = refreshBurndownLegend;
+function snapshotDisplayName(h, prefix) {
+  return snapshotWeekDate(h);
+}
+function snapshotMenuName(h) {
+  return 'Week of: ' + snapshotWeekDate(h);
+}
+function trendArrow(direction) { return direction === 'increasing' ? '↑' : direction === 'decreasing' ? '↓' : '→'; }
+function trendClass(direction) { return direction === 'increasing' ? 'text-danger' : direction === 'decreasing' ? 'text-success' : 'text-muted'; }
+function endBalanceClass(v) { const n = parseFloat(v); return isNaN(n) ? '' : n <= 0 ? 'text-danger' : n <= 50000 ? 'text-warning' : 'text-success'; }
+function modelDataUrl(params) { return (D.urls.modelData || '/forecast/model-data') + '?' + params.toString(); }
+function hasStat(v) { return v !== undefined && v !== null && String(v).trim() !== '' && !['nan','none','null'].includes(String(v).trim().toLowerCase()); }
+function hasSnapshotMl(h) { return hasStat(h.ml_slope_per_week) || hasStat(h.ml_r_squared) || hasStat(h.ml_p50_end_balance); }
 
 function snapRemainingAt(h, dateStr) {
   const snap   = new Date(h.snapshot_date);
@@ -200,86 +104,78 @@ function updateBurndownOverlays() {
   const snaps = [...selectedSnaps.values()];
   let maxRemaining = window.burndownMaxY || 0;
   const allLabels  = window.burndownLabels || [];
-
-  // Drop per-snapshot flags for snapshots that are no longer selected.
-  const liveKeys = new Set(snaps.map(h => snapKey(h)));
-  [...snapBaseOff].forEach(k => { if (!liveKeys.has(k)) snapBaseOff.delete(k); });
-  [...snapMcKeys].forEach(k => { if (!liveKeys.has(k)) snapMcKeys.delete(k); });
-  [...snapMlKeys].forEach(k => { if (!liveKeys.has(k)) snapMlKeys.delete(k); });
+  const detailedSnapshots = window.forecastDensity === 'full';
 
   snaps.forEach((h, i) => {
     maxRemaining = Math.max(maxRemaining, parseFloat(h.credits_remaining || 0));
-    const key       = snapKey(h);
     const color     = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
-    const snapLabel = truncLabel(snapDisplayName(h), 16);
+    const snapLabel = snapshotDisplayName(h, false);
     const series    = seriesCache.get(h.snapshot_ts);
     const fb        = series && series.forecast_burndown && series.forecast_burndown.length
       ? series.forecast_burndown : null;
 
     if (fb) {
-      if (!snapBaseOff.has(key)) {
-        const forecastData = interpSeriesData(fb, allLabels, 'date', 'remaining');
-        const startIdx = forecastData.findIndex(v => v !== null);
-        bc.data.datasets.push({
-          label: snapLabel + ' · forecast',
-          data: forecastData,
-          borderColor: color, borderDash: [5, 4], borderWidth: 2,
-          backgroundColor: 'transparent', fill: false, tension: 0.05,
-          pointRadius: forecastData.map((v, j) => j === startIdx ? 7 : 0),
-          pointBackgroundColor: color,
-          spanGaps: false, _snapOverlay: true,
-        });
-      }
+      const forecastData = interpSeriesData(fb, allLabels, 'date', 'remaining');
+      const startIdx = forecastData.findIndex(v => v !== null);
+      bc.data.datasets.push({
+        label: snapLabel,
+        data: forecastData,
+        borderColor: color, borderDash: [5, 4], borderWidth: 2,
+        backgroundColor: 'transparent', fill: false, tension: 0.05,
+        pointRadius: forecastData.map((v, j) => j === startIdx ? 7 : 0),
+        pointBackgroundColor: color,
+        spanGaps: false, _snapOverlay: true,
+      });
 
       const mc = series && series.mc;
-      if (snapMcKeys.has(key) && mc && mc.p50 && mc.p50.length) {
+      if (detailedSnapshots && window.showSnapMc && mc && mc.p50 && mc.p50.length) {
         const p10d = interpSeriesData(mc.p10 || [], allLabels, 'date', 'value');
         const p50d = interpSeriesData(mc.p50,       allLabels, 'date', 'value');
         const p90d = interpSeriesData(mc.p90 || [], allLabels, 'date', 'value');
         const alpha = hexToRgba(color, 0.12);
         bc.data.datasets.push({
-          label: snapLabel + ' · MC P90', data: p90d,
+          label: snapLabel + ' MC P90', data: p90d,
           borderColor: hexToRgba(color, 0.45), borderWidth: 1, borderDash: [2, 3],
-          backgroundColor: alpha, fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true,
+          backgroundColor: alpha, fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
         });
         bc.data.datasets.push({
-          label: snapLabel + ' · MC P50', data: p50d,
-          borderColor: hexToRgba(color, 0.85), borderWidth: 2, borderDash: [4, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true,
+          label: snapLabel + ' MC P50', data: p50d,
+          borderColor: hexToRgba(color, 0.7), borderWidth: 1.5, borderDash: [4, 3],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
         });
         bc.data.datasets.push({
-          label: snapLabel + ' · MC P10', data: p10d,
+          label: snapLabel + ' MC P10', data: p10d,
           borderColor: hexToRgba(color, 0.45), borderWidth: 1, borderDash: [2, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true,
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
         });
       }
 
       const ml = series && series.ml;
-      if (snapMlKeys.has(key) && ml && ml.p50 && ml.p50.length) {
+      if (detailedSnapshots && window.showSnapMl && ml && ml.p50 && ml.p50.length) {
         const m10 = interpSeriesData(ml.p10 || [], allLabels, 'date', 'value');
         const m50 = interpSeriesData(ml.p50,       allLabels, 'date', 'value');
         const m90 = interpSeriesData(ml.p90 || [], allLabels, 'date', 'value');
         bc.data.datasets.push({
-          label: snapLabel + ' · ML P90', data: m90,
+          label: snapLabel + ' ML P90', data: m90,
           borderColor: hexToRgba(color, 0.4), borderWidth: 1, borderDash: [1, 3],
-          backgroundColor: hexToRgba(color, 0.08), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true,
+          backgroundColor: hexToRgba(color, 0.08), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
         });
         bc.data.datasets.push({
-          label: snapLabel + ' · ML trend', data: m50,
-          borderColor: hexToRgba(color, 0.85), borderWidth: 2, borderDash: [1, 2],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true,
+          label: snapLabel + ' ML trend', data: m50,
+          borderColor: hexToRgba(color, 0.75), borderWidth: 1.5, borderDash: [1, 2],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
         });
         bc.data.datasets.push({
-          label: snapLabel + ' · ML P10', data: m10,
+          label: snapLabel + ' ML P10', data: m10,
           borderColor: hexToRgba(color, 0.4), borderWidth: 1, borderDash: [1, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true,
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true,
         });
       }
-    } else if (!snapBaseOff.has(key)) {
+    } else {
       const data     = allLabels.map(l => snapRemainingAt(h, l));
       const firstIdx = data.findIndex(v => v !== null);
       bc.data.datasets.push({
-        label: snapLabel + ' · forecast', data,
+        label: snapLabel, data,
         borderColor: color, borderDash: [4, 3], borderWidth: 2,
         backgroundColor: 'transparent', fill: false, tension: 0.05,
         pointRadius:          data.map((v, j) => j === firstIdx ? 7 : 0),
@@ -289,8 +185,8 @@ function updateBurndownOverlays() {
     }
   });
 
-  bc.update();
-  refreshBurndownLegend();
+  updateForecastChart(bc, 'none');
+  if (typeof syncForecastDensityButtons === 'function') syncForecastDensityButtons();
 }
 
 function forecastAccuracyHtml(h) {
@@ -343,7 +239,7 @@ function updateCompareChart(snaps) {
     return;
   }
   wrap.style.display = '';
-  const labels   = snaps.map(h => h.label ? truncLabel(h.label) : h.snapshot_date);
+  const labels   = snaps.map(h => snapshotDisplayName(h, false));
   const burnData = snaps.map(h => parseFloat(h.forecast_weekly_burn || 0));
   const remData  = snaps.map(h => parseFloat(h.credits_remaining || 0));
   const balData  = snaps.map(h => parseFloat(h.forecast_contract_end_balance || 0));
@@ -394,6 +290,12 @@ function renderComparePanel() {
         <div class="d-flex justify-content-between mt-1"><span class="text-muted">End balance</span><strong class="${parseFloat(h.forecast_contract_end_balance||0)<0?'text-danger':'text-success'}">${fmtN(h.forecast_contract_end_balance)}</strong></div>
         <div class="d-flex justify-content-between mt-1"><span class="text-muted">Exhaustion</span><strong>${h.forecast_exhaustion_date||'—'}</strong></div>
         ${h.mc_exhaustion_prob ? `<div class="d-flex justify-content-between mt-1"><span class="text-muted">MC Risk</span><strong class="${parseFloat(h.mc_exhaustion_prob)>0.5?'text-danger':parseFloat(h.mc_exhaustion_prob)>0.1?'text-warning':'text-success'}">${fmtPct(h.mc_exhaustion_prob)}</strong></div>` : ''}
+        ${hasSnapshotMl(h) ? `<div style="margin-top:.45rem;padding-top:.45rem;border-top:1px solid #eee;">
+          <div style="font-size:.65rem;font-weight:700;color:#8a92a0;letter-spacing:.06em;margin-bottom:.25rem;">ML TREND</div>
+          <div class="d-flex justify-content-between"><span class="text-muted">Slope</span><strong class="${trendClass(h.ml_trend_direction)}">${trendArrow(h.ml_trend_direction)} ${fmtSignedPerWeek(h.ml_slope_per_week)}</strong></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">R²</span><strong>${fmtR2(h.ml_r_squared)}</strong></div>
+          <div class="d-flex justify-content-between mt-1"><span class="text-muted">ML P50 end</span><strong class="${endBalanceClass(h.ml_p50_end_balance)}">${fmtN(h.ml_p50_end_balance)}</strong></div>
+        </div>` : ''}
         ${forecastAccuracyHtml(h)}
       </div></div>`;
   }).join('');
@@ -515,42 +417,63 @@ function quickSelectNone() {
   renderComparePanel();
 }
 
-// Per-snapshot overlays: each selected snapshot independently controls its base
-// forecast line, its Monte Carlo bands, and its linear-trend (ML) projection.
-// The base line is shown by default, so we track the snapshots whose base is OFF.
-const snapBaseOff = new Set();
-const snapMcKeys = new Set();
-const snapMlKeys = new Set();
-
-function toggleSnapBaseFor(key) {
-  if (snapBaseOff.has(key)) snapBaseOff.delete(key); else snapBaseOff.add(key);
-  updateBurndownOverlays();
-  refreshBurndownLegend();
-}
-
-function toggleSnapMcFor(key) {
-  if (snapMcKeys.has(key)) {
-    snapMcKeys.delete(key);
-  } else {
-    snapMcKeys.add(key);
-    const h = selectedSnaps.get(key);
-    if (h) fetchSnapSeries(h);
+window.showSnapMc = false;
+function toggleSnapMc(on) {
+  window.showSnapMc = !!on;
+  if (window.showSnapMc && window.forecastDensity !== 'full') {
+    window.forecastDensity = 'full';
+    localStorage.setItem('forecast-density', 'full');
+    syncForecastDensityButtons();
   }
+  [...selectedSnaps.values()].forEach(h => fetchSnapSeries(h));
   updateBurndownOverlays();
-  refreshBurndownLegend();
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
 }
 
-function toggleSnapMlFor(key) {
-  if (snapMlKeys.has(key)) {
-    snapMlKeys.delete(key);
-  } else {
-    snapMlKeys.add(key);
-    const h = selectedSnaps.get(key);
-    if (h) fetchSnapSeries(h);
+window.showSnapMl = false;
+function toggleSnapMl(on) {
+  window.showSnapMl = !!on;
+  if (window.showSnapMl && window.forecastDensity !== 'full') {
+    window.forecastDensity = 'full';
+    localStorage.setItem('forecast-density', 'full');
+    syncForecastDensityButtons();
   }
+  [...selectedSnaps.values()].forEach(h => fetchSnapSeries(h));
   updateBurndownOverlays();
-  refreshBurndownLegend();
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
 }
+
+function syncForecastDensityButtons() {
+  const clean = document.getElementById('density-clean');
+  const full = document.getElementById('density-full');
+  if (clean) {
+    clean.classList.toggle('active', window.forecastDensity !== 'full');
+    clean.setAttribute('aria-pressed', window.forecastDensity !== 'full' ? 'true' : 'false');
+  }
+  if (full) {
+    full.classList.toggle('active', window.forecastDensity === 'full');
+    full.setAttribute('aria-pressed', window.forecastDensity === 'full' ? 'true' : 'false');
+  }
+}
+
+window.setForecastDensity = function(mode) {
+  window.forecastDensity = mode === 'full' ? 'full' : 'clean';
+  localStorage.setItem('forecast-density', window.forecastDensity);
+  if (window.forecastDensity !== 'full') {
+    window.showSnapMc = false;
+    window.showSnapMl = false;
+    const smc = document.getElementById('snap-mc-toggle');
+    const sml = document.getElementById('snap-ml-toggle');
+    if (smc) smc.checked = false;
+    if (sml) sml.checked = false;
+  }
+  syncForecastDensityButtons();
+  updateBurndownOverlays();
+  if (typeof window.refreshLrOverlay === 'function') window.refreshLrOverlay();
+  if (typeof window.refreshMcBands === 'function') window.refreshMcBands();
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
+};
+
 
 function syncQuickSelect() {
   document.querySelectorAll('.quick-snap-cb').forEach(cb => {
@@ -563,7 +486,7 @@ function syncQuickSelect() {
   if (pills) {
     pills.innerHTML = [...selectedSnaps.values()].map((h, i) => {
       const color = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
-      const text = truncLabel(snapDisplayName(h), 18);
+      const text = snapshotDisplayName(h, false);
       return `<span class="badge d-inline-flex align-items-center" style="background:${color};font-size:.66rem;font-weight:600;gap:.25rem;">${text}`
         + `<span style="cursor:pointer;" title="Remove" onclick="removeQuickSnap('${h.snapshot_ts || (h.snapshot_date + '|' + (h.label||''))}')">&times;</span></span>`;
     }).join('');
@@ -638,7 +561,7 @@ function deleteSnapshot(btn, e) {
 /* ===================================================================== *
  * Chart color helpers
  * ===================================================================== */
-const CHART_COLOR_DEFAULTS = { actual: '#0d6efd', proj: '#dc3545', weekly: '#0d6efd' };
+const CHART_COLOR_DEFAULTS = { actual: '#0d6efd', proj: '#dc3545', weekly: '#0d6efd', mc: '#fd7e14', ml: '#198754' };
 function getChartColor(key) {
   return localStorage.getItem('fc-color-' + key) || CHART_COLOR_DEFAULTS[key];
 }
@@ -658,17 +581,29 @@ function hexToRgba(hex, alpha) {
 function applyAllChartColors() {
   const bc = window.burndownChart;
   if (bc) {
+    const actualCol = getChartColor('actual');
+    const projCol = getChartColor('proj');
+    const mcCol = getChartColor('mc');
+    const mlCol = getChartColor('ml');
     bc.data.datasets.forEach(ds => {
-      if (!ds._mcOverlay && !ds._snapOverlay) {
+      if (!ds._snapOverlay) {
         if (ds.label === 'Actual remaining') {
-          ds.borderColor = getChartColor('actual');
-          ds.backgroundColor = hexToRgba(getChartColor('actual'), 0.07);
+          ds.borderColor = actualCol;
+          ds.backgroundColor = hexToRgba(actualCol, 0.07);
         } else if (ds.label === 'Projected remaining') {
-          ds.borderColor = getChartColor('proj');
+          ds.borderColor = projCol;
+        } else if (ds._mcOverlay) {
+          const isMid = String(ds.label || '').toLowerCase().includes('p50');
+          ds.borderColor = isMid ? mcCol : hexToRgba(mcCol, 0.55);
+          if (ds.fill) ds.backgroundColor = hexToRgba(mcCol, 0.16);
+        } else if (ds._lrOverlay) {
+          const isTrend = String(ds.label || '').toLowerCase().includes('trend') || String(ds.label || '').toLowerCase().includes('linear');
+          ds.borderColor = isTrend ? mlCol : hexToRgba(mlCol, 0.42);
+          if (ds.fill) ds.backgroundColor = hexToRgba(mlCol, 0.10);
         }
       }
     });
-    bc.update('none');
+    updateForecastChart(bc, 'none');
   }
   const wc = window.weeklyChart;
   if (wc) {
@@ -681,6 +616,7 @@ function applyAllChartColors() {
     );
     wc.update('none');
   }
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
 }
 window.setBurndownColor = function(key, val) {
   setChartColor(key, val);
@@ -691,6 +627,161 @@ window.setBurndownColor = function(key, val) {
     const el = document.getElementById('color-' + k);
     if (el) el.value = getChartColor(k);
   });
+})();
+
+
+function unwrapChart(c) {
+  return c && c.chart ? c.chart : c;
+}
+function forceHideNativeLegend(c) {
+  const targets = [];
+  if (c) targets.push(c);
+  if (c && c.chart && c.chart !== c) targets.push(c.chart);
+  targets.forEach(ch => {
+    if (!ch || !ch.options) return;
+    ch.options.plugins = ch.options.plugins || {};
+    ch.options.plugins.legend = ch.options.plugins.legend || {};
+    ch.options.plugins.legend.display = false;
+    ch.options.plugins.legend.labels = ch.options.plugins.legend.labels || {};
+    ch.options.plugins.legend.labels.generateLabels = function () { return []; };
+    if (ch.legend && ch.legend.options) ch.legend.options.display = false;
+  });
+}
+function updateForecastChart(c, mode) {
+  if (!c) return;
+  forceHideNativeLegend(c);
+  const ch = unwrapChart(c);
+  if (ch && ch.options) {
+    ch.options.plugins = ch.options.plugins || {};
+    ch.options.plugins.legend = ch.options.plugins.legend || {};
+    ch.options.plugins.legend.display = false;
+    ch.options.plugins.legend.labels = ch.options.plugins.legend.labels || {};
+    ch.options.plugins.legend.labels.generateLabels = function () { return []; };
+  }
+  if (ch && typeof ch.update === 'function') ch.update(mode || 'default');
+  else if (typeof c.update === 'function') c.update(mode || 'default');
+  forceHideNativeLegend(c);
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
+}
+
+/* ===================================================================== *
+ * Compact burndown legend and chart-density helpers
+ * ===================================================================== */
+function firstColor(value, fallback) {
+  if (Array.isArray(value)) return firstColor(value.find(Boolean), fallback);
+  return value || fallback || '#64748b';
+}
+function safeSwatchColor(ds) {
+  return firstColor(ds.borderColor, firstColor(ds.backgroundColor, '#64748b'));
+}
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function compactDatasetLabel(label) {
+  const txt = String(label || 'Series');
+  return txt.length > 34 ? txt.slice(0, 31) + '...' : txt;
+}
+
+function conciseBurndownLabel(label) {
+  const txt = String(label || 'Series');
+  if (txt === 'Actual remaining') return 'Actual';
+  if (txt === 'Projected remaining') return 'Base forecast';
+  if (txt === 'Linear Trend (ML)') return 'ML trend';
+  if (txt.startsWith('MC P50')) return 'MC median';
+  if (txt.startsWith('MC P90')) return 'MC optimistic';
+  if (txt.startsWith('MC P10')) return 'MC pessimistic';
+  const m = txt.match(/(20\d{2}-\d{2}-\d{2})/);
+  if (m && /forecast/i.test(txt)) return m[1] + ' snapshot';
+  if (m && /MC P50/i.test(txt)) return m[1] + ' MC median';
+  if (m && /ML trend/i.test(txt)) return m[1] + ' ML';
+  return compactDatasetLabel(txt);
+}
+function isKeyBurndownTooltipItem(item) {
+  const ds = item && item.dataset ? item.dataset : {};
+  const label = String(ds.label || '');
+  const raw = item.raw;
+  if (raw === null || raw === undefined || Number.isNaN(Number(raw))) return false;
+  // Keep hover callouts readable: show key lines only. MC/ML bands still draw on the chart.
+  if (/P90|P10/i.test(label)) return false;
+  if (ds._snapOverlay && !/forecast/i.test(label) && !/20\d{2}-\d{2}-\d{2}$/.test(label)) return false;
+  if (ds._snapOverlay && (/MC|ML/i.test(label))) return false;
+  return true;
+}
+function datasetLegendGroup(ds) {
+  if (ds._whatif) return 'Scenario';
+  if (ds._snapOverlay) return 'Snapshot overlays';
+  if (ds._mcOverlay) return 'Monte Carlo';
+  if (ds._lrOverlay) return 'ML trend';
+  return 'Core';
+}
+function makeSummaryChip(text, detail) {
+  return `<span class="fc-summary-chip">${escapeHtml(text)}${detail ? ` <strong>${escapeHtml(detail)}</strong>` : ''}</span>`;
+}
+
+window.toggleChartLegend = function() {
+  const panel = document.getElementById('burndownLegendPanel');
+  if (!panel) return;
+  panel.classList.toggle('is-open');
+  localStorage.setItem('forecast-legend-open', panel.classList.contains('is-open') ? '1' : '0');
+  refreshBurndownLegend();
+};
+
+window.toggleChartSettings = function() {
+  const panel = document.getElementById('chart-settings-panel');
+  if (!panel) return;
+  panel.classList.toggle('is-open');
+  localStorage.setItem('forecast-style-open', panel.classList.contains('is-open') ? '1' : '0');
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
+};
+
+window.toggleLegendDataset = function(idx) {
+  const bc = window.burndownChart;
+  if (!bc || !bc.data || !bc.data.datasets[idx]) return;
+  const ds = bc.data.datasets[idx];
+  ds.hidden = !ds.hidden;
+  updateForecastChart(bc, 'none');
+};
+
+function refreshBurndownLegend() {
+  const bc = window.burndownChart;
+  const panel = document.getElementById('burndownLegendPanel');
+  const summary = document.getElementById('burndownOverlaySummary');
+  if (bc) forceHideNativeLegend(bc);
+
+  const selected = typeof selectedSnaps !== 'undefined' ? [...selectedSnaps.values()] : [];
+  const selectedNames = selected.map(h => snapshotDisplayName(h, false));
+  if (summary) summary.innerHTML = '';
+  if (!panel) return;
+
+  const detOn = document.getElementById('model-det')?.checked;
+  const mcOn = document.getElementById('model-mc')?.checked;
+  const lrOn = document.getElementById('model-lr')?.checked;
+  const chipClass = on => 'fc-summary-chip' + (on ? '' : ' is-muted');
+  const mcText = mcOn ? 'MC risk' : 'MC risk off';
+  const lrText = lrOn ? 'ML trend' : 'ML trend off';
+  const snapChips = selectedNames.length
+    ? selected.map((h, i) => {
+        const color = h.color || SNAP_COLORS[i % SNAP_COLORS.length];
+        const text = snapshotDisplayName(h, false);
+        return `<span class="fc-summary-chip"><span class="fc-legend-swatch" style="color:${escapeHtml(color)}"></span>${escapeHtml(text)}</span>`;
+      }).join('')
+    : '<span class="fc-legend-note">No snapshots selected.</span>';
+
+  panel.innerHTML = `
+    <span class="fc-control-label">Legend</span>
+    <span class="fc-summary-chip"><span class="fc-legend-swatch" style="color:${escapeHtml(getChartColor('actual'))}"></span>Actual</span>
+    <button type="button" class="${chipClass(detOn)}" onclick="document.getElementById('model-det').click()"><span class="fc-legend-swatch" style="color:${escapeHtml(getChartColor('proj'))}"></span>Base</button>
+    <button type="button" class="${chipClass(mcOn)}" onclick="document.getElementById('model-mc').click()"><span class="fc-legend-swatch" style="color:${escapeHtml(getChartColor('mc'))}"></span>${mcText}</button>
+    <button type="button" class="${chipClass(lrOn)}" onclick="document.getElementById('model-lr').click()"><span class="fc-legend-swatch" style="color:${escapeHtml(getChartColor('ml'))}"></span>${lrText}</button>
+    <span class="fc-separator"></span>
+    <span class="fc-legend-note">Snapshot weeks:</span>
+    ${snapChips}
+  `;
+}
+(function restoreForecastPanels() {
+  const stylePanel = document.getElementById('chart-settings-panel');
+  if (stylePanel && localStorage.getItem('forecast-style-open') === '1') stylePanel.classList.add('is-open');
+  syncForecastDensityButtons();
 })();
 
 /* ===================================================================== *
@@ -751,8 +842,17 @@ window.setBurndownColor = function(key, val) {
   window.burndownLabels = allLabels;
   window.burndownMaxY   = purchased;
 
+  const _prevLegendDisplay = window.Chart && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.legend ? Chart.defaults.plugins.legend.display : undefined;
+  const _prevGenerateLabels = window.Chart && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.legend && Chart.defaults.plugins.legend.labels ? Chart.defaults.plugins.legend.labels.generateLabels : undefined;
+  if (window.Chart && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.legend) {
+    Chart.defaults.plugins.legend.display = false;
+    Chart.defaults.plugins.legend.labels = Chart.defaults.plugins.legend.labels || {};
+    Chart.defaults.plugins.legend.labels.generateLabels = function () { return []; };
+  }
+
   window.burndownChart = new BNLChart('burndownChart', {
     type: 'line',
+    plugins: [{ id: 'forceNoLegend', beforeInit: chart => { chart.options.plugins.legend.display = false; }, beforeUpdate: chart => { chart.options.plugins.legend.display = false; } }],
     data: {
       labels: allLabels,
       datasets: [
@@ -772,47 +872,20 @@ window.setBurndownColor = function(key, val) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
+      // Keep hover readable even with many overlays: nearest line only, plus filtered key items.
+      interaction: { mode: 'nearest', intersect: false, axis: 'xy' },
       plugins: {
-        // Series toggling lives in the Show/hide dropdown. The built-in legend
-        // is opt-in (the "Legend on chart" switch) so it can be baked into the
-        // exported PNG. When shown it is display-only — clicking the dropdown,
-        // not the legend, toggles series — and it hides the faint bands + any
-        // currently-hidden series so it reads as "what's on the chart".
-        legend: {
-          display: localStorage.getItem('fc-legend-on') === '1',
-          position: 'top',
-          onClick: () => {},
-          labels: {
-            usePointStyle: true,
-            boxWidth: 10,
-            font: { size: 10 },
-            generateLabels: (ch) => {
-              const base = Chart.defaults.plugins.legend.labels.generateLabels(ch);
-              return base
-                .filter(it => {
-                  const ds = ch.data.datasets[it.datasetIndex];
-                  const meta = ch.getDatasetMeta(it.datasetIndex);
-                  return ds && !ds._noLegend && meta.hidden !== true;
-                })
-                .map(it => { it.text = cleanLegendLabel(it.text); return it; });
-            },
-          },
-        },
+        legend: { display: false, labels: { generateLabels: function () { return []; } } },
         tooltip: {
-          // Keep the hover panel compact so it doesn't overflow / clip when
-          // many overlays are active: drop empty points and the faint P10/P90
-          // band lines (marked _noTooltip), then cap the visible rows.
+          mode: 'nearest', intersect: false, position: 'nearest',
+          filter: isKeyBurndownTooltipItem,
           itemSort: (a, b) => (b.raw ?? -Infinity) - (a.raw ?? -Infinity),
-          filter: (item) => item.raw != null && !item.dataset._noTooltip,
-          usePointStyle: true,
-          boxWidth: 8,
-          boxHeight: 8,
-          bodyFont: { size: 11 },
-          titleFont: { size: 11 },
-          maxWidth: 320,
           callbacks: {
-            label: ctx => `  ${cleanLegendLabel(ctx.dataset.label)}: ${Math.round(ctx.raw ?? 0).toLocaleString()} credits`,
+            label: ctx => `  ${conciseBurndownLabel(ctx.dataset.label)}: ${Math.round(ctx.raw ?? 0).toLocaleString()} credits`,
+            footer: items => {
+              const selected = (typeof selectedSnaps !== 'undefined' && selectedSnaps.size) ? selectedSnaps.size : 0;
+              return selected > 1 ? 'Bands are drawn but hidden from hover to keep this readable.' : '';
+            },
           },
         },
         zoom: {
@@ -831,22 +904,11 @@ window.setBurndownColor = function(key, val) {
       },
     },
   }, { exportName: 'Credit Burndown' });
-
-  // On-chart legend (baked into the PNG export). Default off for a clean plot.
-  window.toggleChartLegend = function (on) {
-    localStorage.setItem('fc-legend-on', on ? '1' : '0');
-    const bc = window.burndownChart;
-    if (!bc) return;
-    bc.chart.options.plugins.legend.display = !!on;
-    bc.chart.update();
-  };
-  (function () {
-    const on = localStorage.getItem('fc-legend-on') === '1';
-    const cb = document.getElementById('legend-on-chart');
-    if (cb) cb.checked = on;
-  })();
-
-  refreshBurndownLegend();
+  updateForecastChart(window.burndownChart, 'none');
+  if (window.Chart && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.legend) {
+    Chart.defaults.plugins.legend.display = _prevLegendDisplay;
+    if (_prevGenerateLabels) Chart.defaults.plugins.legend.labels.generateLabels = _prevGenerateLabels;
+  }
 
   window.setBurndownGranularity = function(gran) {
     if (gran === currentGranularity) return;
@@ -863,11 +925,11 @@ window.setBurndownColor = function(key, val) {
       if (ds.label === 'Actual remaining')    ds.data = allLabels.map(l => lookup(actualPts, l));
       if (ds.label === 'Projected remaining') ds.data = allLabels.map(l => lookup(projPts, l));
     });
-    bc.update();
+    updateForecastChart(bc, 'none');
     if (typeof updateBurndownOverlays === 'function') updateBurndownOverlays();
     if (typeof window.refreshMcBands    === 'function') window.refreshMcBands();
     if (typeof window.refreshLrOverlay  === 'function') window.refreshLrOverlay();
-    refreshBurndownLegend();
+    if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
     document.getElementById('gran-weekly').classList.toggle('active', gran === 'weekly');
     document.getElementById('gran-daily').classList.toggle('active', gran === 'daily');
   };
@@ -876,6 +938,7 @@ window.setBurndownColor = function(key, val) {
     document.getElementById('gran-weekly').classList.remove('active');
     document.getElementById('gran-daily').classList.add('active');
   }
+  if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
 })();
 
 /* ===================================================================== *
@@ -883,24 +946,49 @@ window.setBurndownColor = function(key, val) {
  * ===================================================================== */
 (function () {
   if (!document.getElementById('burndownChart')) return;
-  const MC_RUNS = D.mcRuns;
+  const MC_RUNS = D.mcRuns || 10000;
   let mcCache  = null;
   let mcLoading = null;
   let detDataset = null;
-  let lrCache = null, lrLoading = null;
+  let lrCache = null;
+  let lrLoading = null;
+
+  function isChecked(id) {
+    const el = document.getElementById(id);
+    return !!(el && el.checked);
+  }
+
+  function updateChart(bc, mode) {
+    updateForecastChart(bc, mode || 'default');
+  }
+
+  function fetchModelData(params) {
+    return fetch(modelDataUrl(params)).then(async r => {
+      let data = null;
+      try { data = await r.json(); } catch (_) { data = null; }
+      if (!r.ok || (data && data.error)) {
+        throw new Error((data && data.error) || ('HTTP ' + r.status));
+      }
+      return data || {};
+    });
+  }
 
   window.toggleForecastModel = function (modelId, enabled) {
     localStorage.setItem('forecast-model-' + modelId, enabled ? '1' : '0');
     if (modelId === 'deterministic') {
       const bc = window.burndownChart;
       if (!bc) return;
+      const idx = bc.data.datasets.findIndex(d => d.label === 'Projected remaining' && !d._mcOverlay && !d._lrOverlay && !d._snapOverlay);
       if (enabled) {
-        if (detDataset) { bc.data.datasets.splice(1, 0, detDataset); detDataset = null; }
-      } else {
-        detDataset = bc.data.datasets.splice(1, 1)[0] || null;
+        if (detDataset && idx < 0) {
+          const actualIdx = bc.data.datasets.findIndex(d => d.label === 'Actual remaining');
+          bc.data.datasets.splice(Math.max(actualIdx + 1, 1), 0, detDataset);
+          detDataset = null;
+        }
+      } else if (idx >= 0) {
+        detDataset = bc.data.datasets.splice(idx, 1)[0] || null;
       }
-      bc.update();
-      refreshBurndownLegend();
+      updateChart(bc);
     } else if (modelId === 'monte_carlo') {
       if (enabled) loadMcOverlay(); else removeMcOverlay();
     } else if (modelId === 'linear_regression') {
@@ -908,14 +996,13 @@ window.setBurndownColor = function(key, val) {
     }
   };
 
-  // ── Linear Trend (ML) overlay ──
+  // ---- Linear Trend (ML) overlay + statistics ----
   function getLrData() {
     if (lrCache) return Promise.resolve(lrCache);
     if (!lrLoading) {
       const params = new URLSearchParams(window.location.search);
       params.set('model', 'linear_regression');
-      lrLoading = fetch('/forecast/model-data?' + params.toString())
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      lrLoading = fetchModelData(params)
         .then(data => { lrCache = data; lrLoading = null; return data; })
         .catch(e => { lrLoading = null; throw e; });
     }
@@ -931,9 +1018,14 @@ window.setBurndownColor = function(key, val) {
       if (idx === -1) return pts[pts.length - 1].value;
       if (idx === 0)  return pts[0].value;
       const a = pts[idx - 1], b = pts[idx];
-      const t = (new Date(l) - new Date(a.date)) / (new Date(b.date) - new Date(a.date));
+      const denom = new Date(b.date) - new Date(a.date);
+      const t = denom ? (new Date(l) - new Date(a.date)) / denom : 0;
       return a.value + t * (b.value - a.value);
     });
+  }
+
+  function endVal(arr) {
+    return arr && arr.length ? arr[arr.length - 1].value : null;
   }
 
   function applyLrToChart(data) {
@@ -941,31 +1033,111 @@ window.setBurndownColor = function(key, val) {
     if (!bc) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
     const allLabels = bc.data.labels;
-    const C = '#198754';
+    const C = getChartColor('ml');
     const p50 = interpPts(data.burndown, allLabels);
     const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
-    if (hasBand) {
+    const showBands = hasBand && window.forecastDensity === 'full';
+    if (showBands) {
       bc.data.datasets.push({
-        label: 'LR P90', data: interpPts(data.p90, allLabels),
+        label: 'ML P90 (optimistic)', data: interpPts(data.p90, allLabels),
         borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
         backgroundColor: hexToRgba(C, 0.10), fill: '+1', tension: 0.1, pointRadius: 0,
-        spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
+        spanGaps: false, _lrOverlay: true,
       });
       bc.data.datasets.push({
-        label: 'LR P10', data: interpPts(data.p10, allLabels),
+        label: 'ML P10 (pessimistic)', data: interpPts(data.p10, allLabels),
         borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
         backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0,
-        spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
+        spanGaps: false, _lrOverlay: true,
       });
     }
     bc.data.datasets.push({
       label: 'Linear Trend (ML)', data: p50,
-      borderColor: C, borderWidth: 2, borderDash: [6, 3],
+      borderColor: C, borderWidth: 2.5, borderDash: [6, 3],
       backgroundColor: 'transparent', fill: false, tension: 0.1,
       pointRadius: 0, pointHoverRadius: 4, spanGaps: false, _lrOverlay: true,
     });
-    bc.update();
-    refreshBurndownLegend();
+    updateChart(bc);
+  }
+
+  function updateLrStats(data) {
+    const m = data.metadata || {};
+    const slope = m.slope_credits_per_week;
+    const direction = m.trend_direction || (parseFloat(slope) > 0 ? 'increasing' : parseFloat(slope) < 0 ? 'decreasing' : 'flat');
+    const obs = m.observations_used || 0;
+    const p10End = hasStat(m.p10_end_balance) ? m.p10_end_balance : endVal(data.p10);
+    const p50End = hasStat(m.p50_end_balance) ? m.p50_end_balance : endVal(data.burndown);
+    const p90End = hasStat(m.p90_end_balance) ? m.p90_end_balance : endVal(data.p90);
+    const quality = (m.model_quality || 'unknown').replace(/_/g, ' ');
+    const engine = (m.model_engine || 'unknown').replace(/_/g, ' ');
+    const statusText = m.insufficient_data
+      ? `${obs} obs · flat fallback`
+      : `${trendArrow(direction)} ${fmtSignedPerWeek(slope)} · R² ${fmtR2(m.r_squared)}`;
+
+    const status = document.getElementById('lr-status');
+    if (status) status.textContent = statusText;
+
+    const slopeEl = document.getElementById('ml-kpi-slope');
+    const subEl = document.getElementById('ml-kpi-sub');
+    if (slopeEl) {
+      slopeEl.innerHTML = `<span class="${trendClass(direction)}">${trendArrow(direction)} ${fmtSignedPerWeek(slope)}</span>`;
+    }
+    if (subEl) subEl.textContent = `R² ${fmtR2(m.r_squared)} · ${obs} weeks`;
+
+    const badge = document.getElementById('ml-acc-badge');
+    if (badge) {
+      const bg = direction === 'increasing' ? 'danger' : direction === 'decreasing' ? 'success' : 'secondary';
+      badge.textContent = `${direction} · R² ${fmtR2(m.r_squared)}`;
+      badge.className = `ms-2 badge bg-${bg}`;
+      badge.style.display = '';
+    }
+
+    const body = document.getElementById('ml-acc-body');
+    if (body) {
+      const exhausted = m.projected_exhaustion ? 'Yes' : 'No';
+      const exhaustionDate = m.projected_exhaustion_date || '—';
+      const fallbackNote = m.insufficient_data
+        ? '<p class="mb-0 small text-warning">Not enough weekly observations for a fitted trend, so the ML model is using a flat fallback projection.</p>'
+        : '';
+      body.innerHTML = `
+        <div class="row g-3">
+          <div class="col-md-5">
+            <p class="text-muted small mb-1 fw-semibold">Trend Fit</p>
+            <table class="table table-sm mb-2">
+              <tr><td>Trend slope</td><td class="text-end fw-semibold ${trendClass(direction)}">${trendArrow(direction)} ${fmtSignedPerWeek(slope)}</td></tr>
+              <tr><td>R²</td><td class="text-end">${fmtR2(m.r_squared)}</td></tr>
+              <tr><td>Observations</td><td class="text-end">${obs}</td></tr>
+              <tr><td>Model quality</td><td class="text-end text-capitalize">${quality}</td></tr>
+              <tr><td>Engine</td><td class="text-end text-capitalize">${engine}</td></tr>
+            </table>
+            ${fallbackNote}
+          </div>
+          <div class="col-md-7">
+            <p class="text-muted small mb-1 fw-semibold">ML Projection</p>
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Metric</th><th class="text-end">Value</th><th class="text-muted text-end" style="font-size:.7rem;">Notes</th></tr></thead>
+              <tbody>
+                <tr><td>Next-week burn</td><td class="text-end">${fmtN(m.next_week_predicted_burn)}</td><td class="text-muted text-end small">trend estimate</td></tr>
+                <tr><td>P10 end balance</td><td class="text-end ${endBalanceClass(p10End)}">${fmtN(p10End)}</td><td class="text-muted text-end small">pessimistic</td></tr>
+                <tr><td>P50 end balance</td><td class="text-end ${endBalanceClass(p50End)}">${fmtN(p50End)}</td><td class="text-muted text-end small">median</td></tr>
+                <tr><td>P90 end balance</td><td class="text-end ${endBalanceClass(p90End)}">${fmtN(p90End)}</td><td class="text-muted text-end small">optimistic</td></tr>
+                <tr><td>Projected exhaustion</td><td class="text-end ${m.projected_exhaustion ? 'text-danger' : 'text-success'}">${exhausted}</td><td class="text-muted text-end small">${exhaustionDate}</td></tr>
+                <tr><td>RMSE</td><td class="text-end">${fmtN(m.rmse)}</td><td class="text-muted text-end small">fit error</td></tr>
+                <tr><td>MAE</td><td class="text-end">${fmtN(m.mae)}</td><td class="text-muted text-end small">fit error</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+  }
+
+  function markLrUnavailable(msg) {
+    const slopeEl = document.getElementById('ml-kpi-slope');
+    const body = document.getElementById('ml-acc-body');
+    const status = document.getElementById('lr-status');
+    if (slopeEl) slopeEl.textContent = '—';
+    if (status) status.textContent = msg || 'load failed';
+    if (body) body.innerHTML = `<div class="text-muted small">ML model statistics unavailable${msg ? ': ' + msg : ''}.</div>`;
   }
 
   async function loadLrOverlay() {
@@ -973,15 +1145,10 @@ window.setBurndownColor = function(key, val) {
     if (status && !lrCache) status.textContent = 'loading…';
     try {
       const data = await getLrData();
+      updateLrStats(data);
       applyLrToChart(data);
-      if (status) {
-        const m = data.metadata || {};
-        status.textContent = (m.slope_credits_per_week != null)
-          ? `slope ${Math.round(m.slope_credits_per_week).toLocaleString()}/wk · R² ${m.r_squared}`
-          : '';
-      }
     } catch (e) {
-      if (status) status.textContent = 'load failed';
+      markLrUnavailable(e.message || 'load failed');
       const cb = document.getElementById('model-lr');
       if (cb) cb.checked = false;
     }
@@ -991,21 +1158,29 @@ window.setBurndownColor = function(key, val) {
     const bc = window.burndownChart;
     if (!bc) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
-    bc.update();
-    refreshBurndownLegend();
+    updateChart(bc);
     const status = document.getElementById('lr-status');
-    if (status) status.textContent = '';
+    if (status && !isChecked('model-lr')) status.textContent = lrCache ? 'stats loaded' : '';
   }
-  window.refreshLrOverlay = function () { if (lrCache) applyLrToChart(lrCache); };
+  window.refreshLrOverlay = function () {
+    if (lrCache && isChecked('model-lr')) applyLrToChart(lrCache);
+    else {
+      const bc = window.burndownChart;
+      if (bc) {
+        bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
+        updateChart(bc, 'none');
+      }
+    }
+  };
 
+  // ---- Monte Carlo overlay + statistics ----
   function getMcData() {
     if (mcCache) return Promise.resolve(mcCache);
     if (!mcLoading) {
       const params = new URLSearchParams(window.location.search);
       params.set('model', 'monte_carlo');
       params.set('runs', MC_RUNS);
-      mcLoading = fetch('/forecast/model-data?' + params.toString())
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      mcLoading = fetchModelData(params)
         .then(data => { mcCache = data; mcLoading = null; return data; })
         .catch(e => { mcLoading = null; throw e; });
     }
@@ -1019,9 +1194,10 @@ window.setBurndownColor = function(key, val) {
     if (status && !mcCache) { status.textContent = 'loading…'; status.style.display = ''; }
     try {
       const data = await getMcData();
+      updateMcStats(data);
       applyMcToChart(data);
       const ctrl = document.getElementById('mc-band-controls');
-      if (ctrl) ctrl.style.display = '';
+      if (ctrl) ctrl.style.display = 'inline-flex';
       if (status) {
         const ep = data.metadata && data.metadata.exhaustion_probability != null
           ? Math.round(data.metadata.exhaustion_probability * 100) + '% exhaustion risk  ·  '
@@ -1040,7 +1216,8 @@ window.setBurndownColor = function(key, val) {
 
   window.toggleMcBand = function (band, visible) {
     localStorage.setItem('forecast-mc-' + band, visible ? '1' : '0');
-    applyMcBands(visible ? 'show' : 'default');
+    if (isChecked('model-mc')) applyMcBands(visible ? 'show' : 'default');
+    if (typeof refreshBurndownLegend === 'function') refreshBurndownLegend();
   };
 
   function updateMcStats(data) {
@@ -1051,7 +1228,7 @@ window.setBurndownColor = function(key, val) {
     const p90End = data.p90     && data.p90.length     ? data.p90[data.p90.length - 1].value         : null;
 
     const riskCls = ep === null ? '' : ep > 0.5 ? 'text-danger' : ep > 0.1 ? 'text-warning' : 'text-success';
-    const balCls  = v => v !== null && v < 0 ? 'text-danger' : v !== null ? 'text-success' : '';
+    const balCls  = v => v !== null && v <= 0 ? 'text-danger' : v !== null && v <= 50000 ? 'text-warning' : v !== null ? 'text-success' : '';
     const fmtBal  = v => v !== null ? Math.round(v).toLocaleString() : '—';
 
     const probEl = document.getElementById('mc-kpi-prob');
@@ -1110,29 +1287,15 @@ window.setBurndownColor = function(key, val) {
 
   function applyMcBands(mode) {
     const bc = window.burndownChart;
-    if (!bc || !mcCache) return;
+    if (!bc || !mcCache || !isChecked('model-mc')) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._mcOverlay);
 
     const data      = mcCache;
     const allLabels = bc.data.labels;
 
-    function interpMc(pts) {
-      if (!pts || !pts.length) return allLabels.map(() => null);
-      const start = pts[0].date, end = pts[pts.length - 1].date;
-      return allLabels.map(l => {
-        if (l < start || l > end) return null;
-        const idx = pts.findIndex(p => p.date > l);
-        if (idx === -1) return pts[pts.length - 1].value;
-        if (idx === 0)  return pts[0].value;
-        const a = pts[idx - 1], b = pts[idx];
-        const t = (new Date(l) - new Date(a.date)) / (new Date(b.date) - new Date(a.date));
-        return a.value + t * (b.value - a.value);
-      });
-    }
-
-    const p90data = interpMc(data.p90);
-    const p50data = interpMc(data.burndown);
-    const p10data = interpMc(data.p10);
+    const p90data = interpPts(data.p90, allLabels);
+    const p50data = interpPts(data.burndown, allLabels);
+    const p10data = interpPts(data.p10, allLabels);
 
     const showP90 = localStorage.getItem('forecast-mc-p90') !== '0';
     const showP10 = localStorage.getItem('forecast-mc-p10') !== '0';
@@ -1144,18 +1307,18 @@ window.setBurndownColor = function(key, val) {
       bc.data.datasets.push({
         label: 'MC P90 (optimistic)',
         data: p90data,
-        borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
-        backgroundColor: showP10 ? 'rgba(253,126,20,0.18)' : 'transparent',
+        borderColor: hexToRgba(getChartColor('mc'), 0.55), borderWidth: 1.5, borderDash: [3, 3],
+        backgroundColor: showP10 ? hexToRgba(getChartColor('mc'), 0.18) : 'transparent',
         fill: p90Fill,
         pointRadius: 0, tension: 0.1, spanGaps: false,
-        _mcOverlay: true, _mcBand: 'p90', _noTooltip: true, _noLegend: true,
+        _mcOverlay: true, _mcBand: 'p90',
       });
     }
     if (showP50) {
       bc.data.datasets.push({
         label: 'MC P50 (median)',
         data: p50data,
-        borderColor: '#fd7e14', borderWidth: 2.5, borderDash: [6, 3],
+        borderColor: getChartColor('mc'), borderWidth: 2.5, borderDash: [6, 3],
         backgroundColor: 'transparent', fill: false,
         pointRadius: 0, pointHoverRadius: 4, tension: 0.1, spanGaps: false,
         _mcOverlay: true, _mcBand: 'p50',
@@ -1165,10 +1328,10 @@ window.setBurndownColor = function(key, val) {
       bc.data.datasets.push({
         label: 'MC P10 (pessimistic)',
         data: p10data,
-        borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
+        borderColor: hexToRgba(getChartColor('mc'), 0.55), borderWidth: 1.5, borderDash: [3, 3],
         backgroundColor: 'transparent', fill: false,
         pointRadius: 0, tension: 0.1, spanGaps: false,
-        _mcOverlay: true, _mcBand: 'p10', _noTooltip: true, _noLegend: true,
+        _mcOverlay: true, _mcBand: 'p10',
       });
     }
 
@@ -1179,125 +1342,56 @@ window.setBurndownColor = function(key, val) {
       }
     });
 
-    bc.chart.update(mode || 'default');
-    refreshBurndownLegend();
+    updateChart(bc, mode || 'default');
   }
 
-  window.refreshMcBands = function() { if (mcCache) applyMcBands('none'); };
+  window.refreshMcBands = function() {
+    if (mcCache && isChecked('model-mc')) applyMcBands('none');
+    else {
+      const bc = window.burndownChart;
+      if (bc) {
+        bc.data.datasets = bc.data.datasets.filter(d => !d._mcOverlay);
+        updateChart(bc, 'none');
+      }
+    }
+  };
 
   function removeMcOverlay() {
     const bc = window.burndownChart;
     if (!bc) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._mcOverlay);
-    bc.update();
-    refreshBurndownLegend();
+    updateChart(bc);
     const ctrl = document.getElementById('mc-band-controls');
     if (ctrl) ctrl.style.display = 'none';
-    mcCache = null;
+    const status = document.getElementById('mc-status');
+    if (status) status.style.display = 'none';
   }
 
-  // Restore model overlays from the last session (pills read the same state).
-  if (localStorage.getItem('forecast-model-deterministic') === '0') {
-    window.toggleForecastModel('deterministic', false);
+  // Restore checkbox states after page reload
+  const savedDet = localStorage.getItem('forecast-model-deterministic');
+  const savedMc  = localStorage.getItem('forecast-model-monte_carlo');
+  if (savedDet === '0') {
+    const cb = document.getElementById('model-det');
+    if (cb) { cb.checked = false; window.toggleForecastModel('deterministic', false); }
   }
-  if (localStorage.getItem('forecast-model-monte_carlo') === '1') {
-    window.toggleForecastModel('monte_carlo', true);
+  if (savedMc === '1') {
+    const cb = document.getElementById('model-mc');
+    if (cb) { cb.checked = true; window.toggleForecastModel('monte_carlo', true); }
   }
   if (localStorage.getItem('forecast-model-linear_regression') === '1') {
-    window.toggleForecastModel('linear_regression', true);
-  }
-  refreshBurndownLegend();
-
-  // ── ML (linear trend) statistics — KPI card + accordion ──
-  function updateMlStats(data) {
-    const md = (data && data.metadata) || {};
-    const slope   = md.slope_credits_per_week;
-    const r2      = md.r_squared;
-    const quality = md.model_quality;
-    const dir     = md.trend_direction;
-    const fmt = v => (v == null ? '—' : Math.round(v).toLocaleString());
-
-    const slopeEl = document.getElementById('ml-kpi-slope');
-    const subEl   = document.getElementById('ml-kpi-sub');
-    if (slopeEl) {
-      if (slope != null) {
-        slopeEl.textContent = (slope > 0 ? '+' : '') + fmt(slope) + '/wk';
-        slopeEl.style.color = slope > 0 ? '#dc3545' : (slope < 0 ? '#198754' : '');
-      } else {
-        slopeEl.textContent = '—';
-      }
-    }
-    if (subEl) {
-      subEl.textContent = (r2 != null) ? ('R² ' + r2)
-                        : (quality ? quality.replace(/_/g, ' ') : '—');
-    }
-
-    const badge = document.getElementById('ml-acc-badge');
-    if (badge && quality) {
-      const cls = quality === 'strong_fit' ? 'success'
-                : quality === 'moderate_fit' ? 'warning'
-                : quality === 'weak_fit' ? 'secondary' : 'info';
-      badge.textContent = quality.replace(/_/g, ' ');
-      badge.className = 'ms-2 badge bg-' + cls;
-      badge.style.display = '';
-    }
-
-    const body = document.getElementById('ml-acc-body');
-    if (!body) return;
-    if (md.insufficient_data) {
-      body.innerHTML = '<div class="text-muted small">Not enough weekly history to fit a reliable trend yet.</div>';
-      return;
-    }
-    const dirCls = dir === 'increasing' ? 'text-danger'
-                 : dir === 'decreasing' ? 'text-success' : 'text-muted';
-    const p10 = data.p10 && data.p10.length ? data.p10[data.p10.length - 1].value : md.p10_end_balance;
-    const p50 = data.burndown && data.burndown.length ? data.burndown[data.burndown.length - 1].value : md.p50_end_balance;
-    const p90 = data.p90 && data.p90.length ? data.p90[data.p90.length - 1].value : md.p90_end_balance;
-    const balCls = v => v != null && v < 0 ? 'text-danger' : v != null ? 'text-success' : '';
-    body.innerHTML = `
-      <div class="row g-3">
-        <div class="col-md-6">
-          <p class="text-muted small mb-1 fw-semibold">Trend Fit</p>
-          <table class="table table-sm mb-0">
-            <tr><td>Direction</td><td class="text-end fw-semibold ${dirCls}">${dir ? dir.replace(/_/g,' ') : '—'}</td></tr>
-            <tr><td>Slope</td><td class="text-end">${slope != null ? (slope > 0 ? '+' : '') + fmt(slope) + ' / wk' : '—'}</td></tr>
-            <tr><td>R² (fit quality)</td><td class="text-end">${r2 != null ? r2 : '—'}</td></tr>
-            <tr><td>RMSE</td><td class="text-end">${fmt(md.rmse)}</td></tr>
-            <tr><td>Weeks of history</td><td class="text-end">${md.observations_used != null ? md.observations_used : '—'}</td></tr>
-            <tr><td>Engine</td><td class="text-end text-muted small">${md.model_engine || 'linear regression'}</td></tr>
-          </table>
-        </div>
-        <div class="col-md-6">
-          <p class="text-muted small mb-1 fw-semibold">Projected End Balance</p>
-          <table class="table table-sm mb-2">
-            <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end ${balCls(p10)}">${fmt(p10)}</td></tr>
-            <tr><td>P50 <span class="text-muted small">(expected)</span></td><td class="text-end ${balCls(p50)}">${fmt(p50)}</td></tr>
-            <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end ${balCls(p90)}">${fmt(p90)}</td></tr>
-          </table>
-          ${md.projected_exhaustion_date
-            ? `<p class="mb-0 small text-danger">Trend projects exhaustion around ${md.projected_exhaustion_date}.</p>`
-            : `<p class="mb-0 small text-success">Trend does not project exhaustion before contract end.</p>`}
-        </div>
-      </div>`;
+    const cb = document.getElementById('model-lr');
+    if (cb) { cb.checked = true; window.toggleForecastModel('linear_regression', true); }
   }
 
-  // Auto-load MC stats on page load (also serves chart overlay if it was restored)
+  // Auto-load model statistics on page load.  These calls populate KPI and
+  // accordion stats without drawing overlays unless the checkbox is enabled.
   getMcData().then(updateMcStats).catch(() => {
     const probEl = document.getElementById('mc-kpi-prob');
     if (probEl) probEl.textContent = '—';
     const body = document.getElementById('mc-acc-body');
     if (body) body.innerHTML = '<div class="text-muted small">Simulation data unavailable.</div>';
   });
-
-  // Auto-load ML (linear trend) stats on page load.
-  getLrData().then(updateMlStats).catch(() => {
-    const slopeEl = document.getElementById('ml-kpi-slope');
-    if (slopeEl) slopeEl.textContent = '—';
-    const subEl = document.getElementById('ml-kpi-sub');
-    if (subEl) subEl.textContent = 'unavailable';
-    const body = document.getElementById('ml-acc-body');
-    if (body) body.innerHTML = '<div class="text-muted small">ML model data unavailable.</div>';
-  });
+  getLrData().then(updateLrStats).catch(e => markLrUnavailable(e.message || 'load failed'));
 })();
 
 /* ===================================================================== *

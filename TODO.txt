@@ -1,7 +1,15 @@
-Fine tuning:
-- Condensed GUI for forecasting
-- possible edit credits on the fly on forecasting graph 
-to provide a what-if-we-bought-more possible trend?
+urgent:
+- bug fix: Notification Bell: Red 3 notification comes up when initially on page, why is that
 
+Fine tuning:
 - condensed GUI for records pages, outliers, users, etc
-(multiple views: cards, lists, etc)
+  (multiple views: cards, lists, etc)
+
+- Similar to the tiers page chart: (add drop downs for each chart on Summary!!) add filtering and stuff to charts on Summary page
+- remove that tiers credits chart all together
+- FULL RENAME: call it Leaderboard instead of Tiers
+- in base.html, theres a spot where i'd like this put: comment is <!-- put upload button here -->
+  upload function button is added to the nav bar, remove from summary page
+
+- I disabled dark mode toggle until the css has been fully made for dark modes, 
+  personally would rather have the toggle in settings when CSS is finished (certain part not finished yet)

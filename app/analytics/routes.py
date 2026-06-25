@@ -94,7 +94,6 @@ def create_analytics_blueprint(services) -> Blueprint:
             lb_monthly=lb_monthly,
             lb_yearly=lb_yearly,
             base_query=urlencode(base_params),
-            # Chart is broken down by usage type; the filters above narrow the data.
             tiers_chart_data=json.dumps(usage_type_weekly(df, type_col="usage_type_parsed_type")),
             min_credits=min_credits,
             max_credits=max_credits,

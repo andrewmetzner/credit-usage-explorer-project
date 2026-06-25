@@ -57,7 +57,7 @@
                 usage_type_filter=r.usage_type, model_filter=r.model) %}
             <tr class="{% if not r.enabled %}rule-row-off{% endif %}">
               <td class="fw-semibold">{{ r.name }}</td>
-              <td style="font-size:.8rem; color:#555c6b;">
+              <td style="font-size:.8rem; color:var(--text-soft);">
                 {{ metric_labels.get(r.metric, r.metric) }}
                 {% if r.usage_type %}<span class="badge bg-light text-dark border ms-1">{{ r.usage_type }}</span>{% endif %}
                 {% if r.model %}<span class="badge bg-light text-dark border">{{ r.model }}</span>{% endif %}

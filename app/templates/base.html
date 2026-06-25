@@ -3,40 +3,43 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Credit Usage Explorer{% endblock %}</title>
+    <script>
+      (function () {
+        try {
+          if (localStorage.getItem('theme') === 'dark')
+            document.documentElement.setAttribute('data-theme', 'dark');
+        } catch (e) {}
+      })();
+      function toggleTheme() {
+        var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var next = dark ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('theme', next); } catch (e) {}
+      }
+    </script>
+    <title>{% block title %}CUE Project{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
     {% block extra_head %}{% endblock %}
   </head>
   <body>
 
-    <!-- ── Persistent top navbar ── -->
-    <nav class="app-nav">
-      <div class="app-nav-bar">
-        <div class="app-nav-links">
-          <a class="app-nav-link {% if request.endpoint == 'main.summary_page' %}active{% endif %}"
-             href="{{ url_for('main.summary_page') }}">Summary</a>
-          <a class="app-nav-link {% if request.endpoint == 'main.records_page' %}active{% endif %}"
-             href="{{ url_for('main.records_page') }}">Records</a>
-          <a class="app-nav-link {% if request.endpoint == 'analytics.tiers_page' %}active{% endif %}"
-             href="{{ url_for('analytics.tiers_page') }}">Tiers</a>
-          <a class="app-nav-link {% if request.endpoint in ('analytics.user_cards_page', 'analytics.user_summary') %}active{% endif %}"
-             href="{{ url_for('analytics.user_cards_page') }}">Users</a>
-          <a class="app-nav-link {% if request.endpoint == 'main.alerts_page' %}active{% endif %}"
-             href="{{ url_for('main.alerts_page') }}">Alerts</a>
-          <a class="app-nav-link {% if request.endpoint == 'forecast.forecast_page' %}active{% endif %}"
-             href="{{ url_for('forecast.forecast_page') }}">Forecast</a>
-          <a class="app-nav-link {% if request.endpoint and request.endpoint.startswith('settings.') %}active{% endif %}"
-             href="{{ url_for('settings.settings_page') }}">Settings</a>
-        </div>
+    <!-- ── Side navigation ── -->
+    <aside class="app-sidenav">
 
-        {# Alerts bell — kept OUTSIDE .app-nav-links so its dropdown isn't clipped by overflow #}
+      <!-- Brand + bell -->
+      <div class="sidenav-brand">
+        <a class="sidenav-brand-link" href="{{ url_for('main.summary_page') }}">
+          <span class="sidenav-brand-name">CUE Project</span>
+          <span class="sidenav-brand-sub">Analytics and Forecasting</span>
+        </a>
+
         {% set levels = nav_alerts | map(attribute='level') | list %}
         {% set sev = 'danger' if 'danger' in levels else ('warning' if 'warning' in levels else 'info') %}
-        <div class="dropdown app-nav-bell">
+        <div class="dropdown dropend">
           <button class="alerts-btn position-relative" type="button"
                   data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Alerts">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
               <path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2zM8 1.918l-.797.161A4 4 0 0 0 4 6c0 .628-.134 2.197-.459 3.742-.16.767-.376 1.566-.663 2.258h10.244c-.287-.692-.502-1.49-.663-2.258C12.134 8.197 12 6.628 12 6a4 4 0 0 0-3.203-3.92L8 1.917zM14.22 12c.223.447.481.801.78 1H1c.299-.199.557-.553.78-1C2.68 10.2 3 6.88 3 6c0-2.42 1.72-4.44 4.005-4.901a1 1 0 1 1 1.99 0A5.002 5.002 0 0 1 13 6c0 .88.32 4.2 1.22 6z"/>
             </svg>
             {% if nav_alerts %}
@@ -44,7 +47,7 @@
                   style="top:0; right:0; font-size:.55rem; padding:.2em .4em;">{{ nav_alerts | length }}</span>
             {% endif %}
           </button>
-          <ul class="dropdown-menu dropdown-menu-end shadow" style="min-width:320px; max-height:440px; overflow-y:auto;">
+          <ul id="nav-alert-menu" class="dropdown-menu shadow" style="min-width:320px; max-height:440px; overflow-y:auto;">
             <li class="dropdown-header d-flex justify-content-between align-items-center">
               <span>Alerts</span>
               {% if nav_alerts %}
@@ -53,19 +56,20 @@
             </li>
             {% if nav_alerts %}
               {% for a in nav_alerts[:4] %}
-              <li>
+              <li class="nav-alert-li">
                 <a class="dropdown-item alert-item d-flex gap-2 py-2" style="white-space:normal;"
                    data-alert-id="{{ a.id }}" onclick="markAlertRead('{{ a.id }}')"
                    href="{{ url_for(a.link_endpoint, **a.link_args) if a.link_endpoint else '#' }}">
                   <span class="badge bg-{{ a.level }} mt-1" style="height:.55rem; width:.55rem; padding:0; border-radius:50%; flex-shrink:0;"></span>
                   <span>
-                    <div class="alert-title fw-semibold" style="font-size:.82rem; color:#1a1d23;">{{ a.title }}</div>
+                    <div class="alert-title fw-semibold" style="font-size:.82rem;">{{ a.title }}</div>
                     <div class="text-muted" style="font-size:.74rem;">{{ a.detail }}</div>
                   </span>
                   <span class="alert-unread-dot ms-auto align-self-center" title="Unread"></span>
                 </a>
               </li>
               {% endfor %}
+              <li id="nav-alert-empty" hidden><span class="dropdown-item-text text-muted small">You&rsquo;re all caught up. &#10003;</span></li>
               <li><hr class="dropdown-divider my-1"></li>
               <li>
                 <a class="dropdown-item text-center small text-primary" href="{{ url_for('main.notifications_page') }}">
@@ -76,29 +80,110 @@
               <li><span class="dropdown-item-text text-muted small">No alerts — all good. &#10003;</span></li>
             {% endif %}
           </ul>
-          {# All current alert ids (even those not shown in the capped dropdown) so
-             read-state tracking stays correct. #}
           <span id="all-alert-ids" hidden data-ids="{{ nav_alerts | map(attribute='id') | join(',') }}"></span>
         </div>
       </div>
-    </nav>
 
-    <!-- ── Flash messages ── -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <div class="flash-container">
-          {% for category, message in messages %}
-            <div class="alert alert-{{ category }} alert-dismissible fade show mb-2" role="alert">
-              {{ message }}
-              <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-          {% endfor %}
-        </div>
-      {% endif %}
-    {% endwith %}
+      <!-- Nav links -->
+      <nav class="sidenav-links">
+
+        <a class="sidenav-link {% if request.endpoint == 'main.summary_page' %}active{% endif %}"
+           href="{{ url_for('main.summary_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3zm8 0A1.5 1.5 0 0 1 10.5 9h3A1.5 1.5 0 0 1 15 10.5v3A1.5 1.5 0 0 1 13.5 15h-3A1.5 1.5 0 0 1 9 13.5v-3z"/>
+          </svg>
+          Summary
+        </a>
+
+        <a class="sidenav-link {% if request.endpoint == 'main.records_page' %}active{% endif %}"
+           href="{{ url_for('main.records_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2zm15 2h-4v3h4V4zm0 4h-4v3h4V8zm0 4h-4v3h3a1 1 0 0 0 1-1v-2zm-5 3v-3H6v3h4zm-5 0v-3H1v2a1 1 0 0 0 1 1h3zm-4-4h4V8H1v3zm0-4h4V4H1v3zm5-3v3h4V4H6zm4 4H6v3h4V8z"/>
+          </svg>
+          Records
+        </a>
+
+        <a class="sidenav-link {% if request.endpoint == 'analytics.tiers_page' %}active{% endif %}"
+           href="{{ url_for('analytics.tiers_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M4 11H2v3h2v-3zm5-4H7v7h2V7zm5-5v12h-2V2h2zm-2-1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1h-2zM6 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm-5 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-3z"/>
+          </svg>
+          Tiers
+        </a>
+
+        <a class="sidenav-link {% if request.endpoint in ('analytics.user_cards_page', 'analytics.user_summary') %}active{% endif %}"
+           href="{{ url_for('analytics.user_cards_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M15 14s1 0 1-1-1-4-5-4-5 3-5 4 1 1 1 1h8zm-7.978-1A.261.261 0 0 1 7 12.996c.001-.264.167-1.03.76-1.72C8.312 10.629 9.282 10 11 10c1.717 0 2.687.63 3.24 1.276.593.69.758 1.457.76 1.72l-.008.002-.014.002H7.022zM11 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm3-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM6.936 9.28a5.88 5.88 0 0 0-1.23-.247A7.35 7.35 0 0 0 5 9c-4 0-5 3-5 4 0 .667.333 1 1 1h4.216A2.238 2.238 0 0 1 5 13c0-1.01.377-2.042 1.09-2.904.243-.294.526-.569.846-.816zM4.92 10A5.493 5.493 0 0 0 4 13H1c0-.26.164-1.03.76-1.724.545-.636 1.492-1.256 3.16-1.275zM1.5 5.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0zm3-2a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/>
+          </svg>
+          Users
+        </a>
+
+        <a class="sidenav-link {% if request.endpoint == 'main.alerts_page' %}active{% endif %}"
+           href="{{ url_for('main.alerts_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+          </svg>
+          Alerts
+        </a>
+
+        <a class="sidenav-link {% if request.endpoint == 'forecast.forecast_page' %}active{% endif %}"
+           href="{{ url_for('forecast.forecast_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path fill-rule="evenodd" d="M0 0h1v15h15v1H0V0Zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07z"/>
+          </svg>
+          Forecast
+        </a>
+
+        <div class="sidenav-sep"></div>
+
+        <a class="sidenav-link {% if request.endpoint and request.endpoint.startswith('settings.') %}active{% endif %}"
+           href="{{ url_for('settings.settings_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.892 3.433-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.892-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+            <path d="M8 5.754a2.246 2.246 0 1 0 0 4.492 2.246 2.246 0 0 0 0-4.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+          </svg>
+          Settings
+        </a>
+
+      </nav>
+
+      <!-- put upload button here -->
+       
+      <!-- Footer: theme toggle only -->
+      <!-- <div class="sidenav-footer">
+        <button class="theme-toggle" type="button" onclick="toggleTheme()"
+                title="Toggle light / dark" aria-label="Toggle light or dark theme">
+          <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M6 .278a.77.77 0 0 1 .08.858 7.2 7.2 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277q.792-.001 1.533-.16a.79.79 0 0 1 .81.316.73.73 0 0 1-.031.893A8.35 8.35 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.75.75 0 0 1 6 .278"/>
+          </svg>
+          <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6m0 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8M8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0m0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13m8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5M3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8m10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0m-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0m9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707M4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708"/>
+          </svg>
+        </button> -->
+      <!-- </div> -->
+
+    </aside>
 
     <!-- ── Page content ── -->
-    {% block body %}{% endblock %}
+    <div class="app-content">
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-container">
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }} alert-dismissible fade show mb-2" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      {% block body %}{% endblock %}
+
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/alerts.js') }}"></script>
