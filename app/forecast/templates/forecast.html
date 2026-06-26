@@ -689,7 +689,7 @@
       </div>
     </div>
 
-    <!-- Snapshot bar: overlay selector + generate controls -->
+    <!-- Snapshot bar: overlay selector for comparing saved snapshots -->
     <div class="forecast-snapshot-rail">
       <div class="forecast-snapshot-left">
       {% if forecast_history %}
@@ -723,28 +723,6 @@
       <span class="text-muted">No snapshots yet</span>
       {% endif %}
 
-      </div>
-      <div class="forecast-snapshot-right">
-        <form method="post" action="{{ url_for('forecast.generate_weekly_snapshots') }}" class="d-inline">
-          <div class="btn-group btn-group-sm" role="group">
-            <button type="submit" name="include_mc" value="0" class="btn btn-outline-secondary"
-                    style="font-size:.7rem; padding:.1rem .45rem;"
-                    title="Generate one snapshot per operational week">&#x1F4C5; Generate</button>
-            <button type="submit" name="include_mc" value="1" class="btn btn-outline-secondary"
-                    style="font-size:.7rem; padding:.1rem .45rem;"
-                    title="Generate with Monte Carlo bands (slower)">+ MC</button>
-          </div>
-        </form>
-        <a href="{{ url_for('forecast.snapshot_generating_page') }}" class="btn btn-outline-primary btn-sm"
-           style="font-size:.7rem; padding:.1rem .45rem;"
-           title="Auto-generate all weekly snapshots with progress tracking">&#x26A1; Auto-generate all</a>
-        {% if forecast_history %}
-        <form method="post" action="{{ url_for('forecast.delete_all_forecast_snapshots') }}" class="d-inline"
-              onsubmit="return confirm('Delete ALL {{ forecast_history | length }} snapshots?');">
-          <button type="submit" class="btn btn-outline-danger btn-sm" style="font-size:.7rem; padding:.1rem .4rem;"
-                  title="Delete all snapshots">&#x1F5D1;</button>
-        </form>
-        {% endif %}
       </div>
     </div>
   </div>
