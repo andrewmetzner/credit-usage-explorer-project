@@ -78,8 +78,7 @@ def create_app() -> Flask:
             for a in alerts:
                 a["read"] = a["id"] in read
             unread_levels = [a["level"] for a in alerts if not a["read"]]
-            sev = ("danger" if "danger" in unread_levels
-                   else "warning" if "warning" in unread_levels else "info")
+            sev = "danger" if unread_levels else "info"
             return {
                 "nav_alerts": alerts,
                 "nav_unread_count": len(unread_levels),
