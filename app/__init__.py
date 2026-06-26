@@ -69,10 +69,24 @@ def create_app() -> Flask:
     @app.context_processor
     def inject_nav_alerts() -> dict:
         from .shared.alerts import compute_alerts
+        empty = {"nav_alerts": [], "nav_unread_count": 0, "nav_unread_sev": "info"}
         try:
-            return {"nav_alerts": compute_alerts(services)}
+            alerts = compute_alerts(services)
+            # Read-state lives server-side; prune resolved conditions so they
+            # re-notify if they recur, then flag each alert for the templates.
+            read = config_svc.prune_read_alerts(a["id"] for a in alerts)
+            for a in alerts:
+                a["read"] = a["id"] in read
+            unread_levels = [a["level"] for a in alerts if not a["read"]]
+            sev = ("danger" if "danger" in unread_levels
+                   else "warning" if "warning" in unread_levels else "info")
+            return {
+                "nav_alerts": alerts,
+                "nav_unread_count": len(unread_levels),
+                "nav_unread_sev": sev,
+            }
         except Exception:
-            return {"nav_alerts": []}
+            return empty
 
     # First-run guard: with no contract config yet, steer to the setup wizard
     # (unless the user skipped it). Static + setup/upload endpoints are exempt.

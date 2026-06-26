@@ -5,10 +5,10 @@ advanced outlier search (analytics.user_cards_page?mode=advanced).
 """
 from __future__ import annotations
 
-from flask import flash, redirect, render_template, request, url_for
+from flask import flash, jsonify, redirect, render_template, request, url_for
 
 from app.shared.alert_rules import AlertRule
-from app.shared.alerts import evaluate_rules
+from app.shared.alerts import compute_alerts, evaluate_rules
 
 
 def register_alerts_routes(bp, services) -> None:
@@ -19,6 +19,22 @@ def register_alerts_routes(bp, services) -> None:
     def notifications_page() -> str:
         # nav_alerts is supplied by the app-wide context processor.
         return render_template("notifications.html")
+
+    @bp.route("/alerts/read", methods=["POST"])
+    def mark_alerts_read() -> object:
+        """Persist which navbar alerts the user has read. Body: {"all": true}
+        or {"ids": [...]}. Returns the resulting unread count + severity so the
+        client can repaint the badge without a reload."""
+        payload = request.get_json(silent=True) or {}
+        active = compute_alerts(services)
+        active_ids = {a["id"] for a in active}
+        ids = active_ids if payload.get("all") else \
+            [i for i in (payload.get("ids") or []) if i in active_ids]
+        read = config_svc.mark_read_alerts(ids, active_ids)
+        unread_levels = [a["level"] for a in active if a["id"] not in read]
+        sev = ("danger" if "danger" in unread_levels
+               else "warning" if "warning" in unread_levels else "info")
+        return jsonify({"unread_count": len(unread_levels), "sev": sev})
 
     @bp.route("/alerts", methods=["GET"])
     def alerts_page() -> str:

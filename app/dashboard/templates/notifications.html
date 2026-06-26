@@ -22,7 +22,7 @@
     {% if nav_alerts %}
     <div class="dash-section p-0" style="overflow:hidden;">
       {% for a in nav_alerts %}
-      <a class="alert-item d-flex gap-3 align-items-start p-3 text-decoration-none"
+      <a class="alert-item d-flex gap-3 align-items-start p-3 text-decoration-none{% if a.read %} read{% endif %}"
          style="border-bottom:1px solid var(--border-soft); color:inherit;"
          data-alert-id="{{ a.id }}" onclick="markAlertRead('{{ a.id }}')"
          href="{{ url_for(a.link_endpoint, **a.link_args) if a.link_endpoint else '#' }}">

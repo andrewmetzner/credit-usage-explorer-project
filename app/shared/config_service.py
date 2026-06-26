@@ -43,6 +43,10 @@ class AppConfig:
         self.contract_path = config_dir / "contract_config.yaml"
         self.tier_path = config_dir / "tier_policy_config.yaml"
         self.alert_rules_path = config_dir / "alert_rules.json"
+        # Which alert conditions the user has dismissed/read (the navbar bell
+        # "inbox"). Persisted server-side so read-state survives across browsers
+        # and machines, unlike the old per-browser localStorage approach.
+        self.read_alerts_path = config_dir / "alert_read_state.json"
 
     def contract_exists(self) -> bool:
         return self.contract_path.exists()
@@ -93,3 +97,37 @@ class AppConfig:
         # Normalize whatever we're handed (AlertRule or dict) to clean dicts.
         serializable = [AlertRule.from_dict(r).to_dict() for r in rules]
         self.alert_rules_path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+
+    # ── Alert read-state (navbar bell "inbox") ──────────────────────────────
+    def load_read_alerts(self) -> set[str]:
+        """The set of alert ids the user has marked read."""
+        if not self.read_alerts_path.exists():
+            return set()
+        try:
+            data = json.loads(self.read_alerts_path.read_text(encoding="utf-8"))
+            return {str(x) for x in data} if isinstance(data, list) else set()
+        except Exception:
+            return set()
+
+    def save_read_alerts(self, ids) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.read_alerts_path.write_text(
+            json.dumps(sorted(str(i) for i in ids), indent=2), encoding="utf-8"
+        )
+
+    def prune_read_alerts(self, active_ids) -> set[str]:
+        """Drop read ids that no longer match an active alert, so a resolved
+        condition that later recurs re-notifies. Returns the surviving set;
+        only rewrites the file when something actually changed."""
+        read = self.load_read_alerts()
+        kept = read & {str(i) for i in active_ids}
+        if kept != read:
+            self.save_read_alerts(kept)
+        return kept
+
+    def mark_read_alerts(self, ids, active_ids) -> set[str]:
+        """Add `ids` to the read set (pruned to `active_ids`) and persist."""
+        active = {str(i) for i in active_ids}
+        read = (self.load_read_alerts() | {str(i) for i in ids}) & active
+        self.save_read_alerts(read)
+        return read

@@ -1,79 +1,82 @@
 /**
  * Notification read/unread state for the navbar alerts bell.
- * Read state is kept client-side (localStorage) keyed by each alert's stable id.
- * The badge shows the UNREAD count; read items are dimmed. Resolved conditions
- * are pruned, so a condition that recurs later re-notifies.
+ *
+ * Read state is persisted SERVER-SIDE (config/alert_read_state.json) so it
+ * survives across browsers and machines. The server renders the correct unread
+ * count, badge color, and read/hidden items on every page load; this script
+ * only handles the "mark read" actions and repaints the bell in place.
+ *
+ * The badge shows the UNREAD count; read items are hidden from the bell and
+ * dimmed on the Notifications page. Resolved conditions are pruned server-side,
+ * so a condition that recurs later re-notifies.
  */
 'use strict';
 
 (function () {
-  const KEY = 'bnl-read-alerts';
+  const ENDPOINT = '/alerts/read';
 
-  function getRead() {
-    try { return new Set(JSON.parse(localStorage.getItem(KEY) || '[]')); }
-    catch (_) { return new Set(); }
-  }
-  function setRead(s) { localStorage.setItem(KEY, JSON.stringify([...s])); }
-
-  function currentIds() {
-    // Prefer the complete list (the dropdown only shows the first few).
-    const holder = document.getElementById('all-alert-ids');
-    if (holder && holder.dataset.ids) return holder.dataset.ids.split(',').filter(Boolean);
-    return [...document.querySelectorAll('.alert-item[data-alert-id]')].map(e => e.dataset.alertId);
-  }
-
-  function paint() {
-    const read = getRead();
-    document.querySelectorAll('.alert-item[data-alert-id]').forEach(el => {
-      el.classList.toggle('read', read.has(el.dataset.alertId));
-    });
-
-    // The navbar bell is an "inbox": surface only UNREAD alerts there, so items
-    // the user has already read don't linger. (The Notifications page still
-    // lists everything as a history.)
-    const menu = document.getElementById('nav-alert-menu');
-    if (menu) {
-      let anyUnread = false;
-      menu.querySelectorAll('.nav-alert-li').forEach(li => {
-        const item = li.querySelector('.alert-item[data-alert-id]');
-        const isRead = item && read.has(item.dataset.alertId);
-        li.hidden = !!isRead;
-        if (!isRead) anyUnread = true;
-      });
-      const empty = document.getElementById('nav-alert-empty');
-      if (empty) empty.hidden = anyUnread;
-    }
-
-    const unread = currentIds().filter(id => !read.has(id)).length;
+  // Repaint the badge from a server response ({unread_count, sev}).
+  function paintBadge(res) {
     const badge = document.getElementById('alert-badge');
-    if (badge) {
-      badge.textContent = unread;
-      badge.style.display = unread > 0 ? '' : 'none';
+    if (!badge || !res) return;
+    badge.textContent = res.unread_count;
+    badge.hidden = res.unread_count <= 0;
+    if (res.sev) {
+      badge.classList.remove('bg-danger', 'bg-warning', 'bg-info');
+      badge.classList.add('bg-' + res.sev);
     }
   }
 
-  // Prune read ids that no longer correspond to an active alert, so a resolved
-  // condition that recurs later re-notifies.
-  //
-  // Guard: only prune when this page actually rendered a non-empty alert list.
-  // The bell is fed by a global context processor, but if it ever yields an
-  // empty list on a given page (e.g. a transient failure building the forecast
-  // service on the Records page), pruning against an empty set would wipe ALL
-  // read-state — making already-read alerts pop back as unread elsewhere.
-  (function prune() {
-    const ids = new Set(currentIds());
-    if (ids.size === 0) return;            // nothing to prune against — leave read-state intact
-    const read = new Set([...getRead()].filter(id => ids.has(id)));
-    setRead(read);
-  })();
+  // Reflect the empty-state row once the dropdown has no visible alerts left.
+  function refreshEmptyState() {
+    const menu = document.getElementById('nav-alert-menu');
+    if (!menu) return;
+    const anyUnread = [...menu.querySelectorAll('.nav-alert-li')].some(li => !li.hidden);
+    const empty = document.getElementById('nav-alert-empty');
+    if (empty) empty.hidden = anyUnread;
+  }
+
+  // Dim + hide every rendering of a given alert id (bell + Notifications page).
+  function applyReadUI(id) {
+    document.querySelectorAll('.alert-item[data-alert-id]').forEach(el => {
+      if (el.dataset.alertId !== id) return;
+      el.classList.add('read');
+      const li = el.closest('.nav-alert-li');
+      if (li) li.hidden = true;
+    });
+    refreshEmptyState();
+  }
+
+  // Fire a beacon so the write survives a click that also navigates away.
+  function persist(body) {
+    const data = JSON.stringify(body);
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(ENDPOINT, new Blob([data], { type: 'application/json' }));
+      return Promise.resolve(null);
+    }
+    return fetch(ENDPOINT, {
+      method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json' }, body: data,
+    }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+  }
 
   window.markAlertRead = function (id) {
-    const s = getRead(); s.add(id); setRead(s); paint();
-  };
-  window.markAllAlertsRead = function (ev) {
-    if (ev) ev.preventDefault();
-    const s = getRead(); currentIds().forEach(id => s.add(id)); setRead(s); paint();
+    // Optimistic UI; the link itself usually navigates, and the next page render
+    // reflects the persisted read-state. The beacon makes the write reliable.
+    applyReadUI(id);
+    persist({ ids: [id] });
   };
 
-  paint();
+  window.markAllAlertsRead = function (ev) {
+    if (ev) ev.preventDefault();
+    document.querySelectorAll('.alert-item[data-alert-id]').forEach(el => el.classList.add('read'));
+    document.querySelectorAll('#nav-alert-menu .nav-alert-li').forEach(li => { li.hidden = true; });
+    refreshEmptyState();
+    // No navigation here, so use fetch and repaint the badge from the response.
+    fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true }),
+    }).then(r => (r.ok ? r.json() : null)).then(paintBadge).catch(() => {});
+  };
 })();
