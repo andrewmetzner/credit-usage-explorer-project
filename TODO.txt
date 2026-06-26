@@ -1,5 +1,3 @@
-urgent:
-- bug fix: Notification Bell: Red 3 notification comes up when initially on page, why is that
 
 Fine tuning:
 - condensed GUI for records pages, outliers, users, etc
