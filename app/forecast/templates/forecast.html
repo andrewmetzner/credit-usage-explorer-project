@@ -1,5 +1,12 @@
 {% extends "base.html" %}
 {% from "macros/charts.html" import chart_card %}
+{% macro summary_metric(label, value, strong_class="", strong_id="", strong_style="") -%}
+  <div class="summary-metric">
+    <span>{{ label }}</span>
+    <strong{% if strong_class %} class="{{ strong_class }}"{% endif %}{% if strong_id %} id="{{ strong_id }}"{% endif %}{% if strong_style %} style="{{ strong_style }}"{% endif %}>{{ value }}</strong>
+  </div>
+{%- endmacro %}
+
 {% block title %}Forecast - CUE Project{% endblock %}
 
 {% block extra_head %}
@@ -487,10 +494,10 @@
         <span class="badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}">{{ fc.forecast_status | fmt_status }}</span>
       </div>
       <div class="summary-metrics">
-        <div class="summary-metric"><span>Pace ratio</span><strong>{{ "{:.2f}".format(cs.burn_pace_ratio) }}</strong></div>
-        <div class="summary-metric"><span>Exhaustion</span><strong>{{ fc.forecast_exhaustion_date or "None" }}</strong></div>
-        <div class="summary-metric"><span>Used</span><strong>{{ "{:.1%}".format(cs.percent_credits_used) }}</strong></div>
-        <div class="summary-metric"><span>By end</span><strong>{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }}</strong></div>
+        {{ summary_metric("Pace ratio", "{:.2f}".format(cs.burn_pace_ratio)) }}
+        {{ summary_metric("Exhaustion", fc.forecast_exhaustion_date or "None") }}
+        {{ summary_metric("Used", "{:.1%}".format(cs.percent_credits_used)) }}
+        {{ summary_metric("By end", "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end)) }}
       </div>
     </div>
 
@@ -499,8 +506,8 @@
       <div class="summary-main">{{ "{:,.0f}".format(cs.credits_remaining) }}</div>
       <div class="summary-sub">remaining of {{ "{:,.0f}".format(cs.purchased_credits) }} credits available</div>
       <div class="summary-metrics">
-        <div class="summary-metric"><span>Used</span><strong>{{ "{:,.0f}".format(cs.total_credits_used) }}</strong></div>
-        <div class="summary-metric"><span>End balance</span><strong class="{{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">{{ "{:+,.0f}".format(fc.forecast_contract_end_balance) }}</strong></div>
+        {{ summary_metric("Used", "{:,.0f}".format(cs.total_credits_used)) }}
+        {{ summary_metric("End balance", "{:+,.0f}".format(fc.forecast_contract_end_balance), 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success') }}
       </div>
     </div>
 
@@ -509,10 +516,10 @@
       <div class="summary-main">{{ "{:,.0f}".format(fc.forecast_weekly_burn) }}</div>
       <div class="summary-sub">credits / week · {{ "{:,.0f}".format(fc.forecast_monthly_burn) }} / month</div>
       <div class="summary-metrics">
-        <div class="summary-metric"><span>Start</span><strong>{{ cs.contract_start_date }}</strong></div>
-        <div class="summary-metric"><span>End</span><strong>{{ cs.contract_end_date }}</strong></div>
-        <div class="summary-metric"><span>Latest data</span><strong>{{ cs.latest_usage_date }}</strong></div>
-        <div class="summary-metric"><span>Weeks left</span><strong>{{ cs.weeks_remaining | round(1) }}</strong></div>
+        {{ summary_metric("Start", cs.contract_start_date) }}
+        {{ summary_metric("End", cs.contract_end_date) }}
+        {{ summary_metric("Latest data", cs.latest_usage_date) }}
+        {{ summary_metric("Weeks left", cs.weeks_remaining | round(1)) }}
       </div>
     </div>
 
@@ -521,8 +528,8 @@
       <div class="summary-main" id="mc-kpi-prob" style="color:var(--fc-faint);">—</div>
       <div class="summary-sub" id="mc-kpi-sub">Monte Carlo risk loading</div>
       <div class="summary-metrics">
-        <div class="summary-metric"><span>ML trend</span><strong id="ml-kpi-slope" style="color:var(--fc-faint);">—</strong></div>
-        <div class="summary-metric"><span>Fit</span><strong id="ml-kpi-sub">Loading</strong></div>
+        {{ summary_metric("ML trend", "—", "", "ml-kpi-slope", "color:var(--fc-faint);") }}
+        {{ summary_metric("Fit", "Loading", "", "ml-kpi-sub") }}
       </div>
     </div>
   </div>

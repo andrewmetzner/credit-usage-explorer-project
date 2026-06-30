@@ -179,7 +179,9 @@ async function fetchSnapSeries(snap) {
   } catch (_) {}
 }
 
-function interpSeriesData(pts, allLabels, dateKey, valKey) {
+function interpDateSeries(pts, allLabels, dateKey, valKey) {
+  dateKey = dateKey || 'date';
+  valKey = valKey || 'value';
   if (!pts || !pts.length) return allLabels.map(() => null);
   const start = pts[0][dateKey], end = pts[pts.length - 1][dateKey];
   return allLabels.map(l => {
@@ -218,7 +220,7 @@ function updateBurndownOverlays() {
 
     if (fb) {
       if (!snapBaseOff.has(key)) {
-        const forecastData = interpSeriesData(fb, allLabels, 'date', 'remaining');
+        const forecastData = interpDateSeries(fb, allLabels, 'date', 'remaining');
         const startIdx = forecastData.findIndex(v => v !== null);
         bc.data.datasets.push({
           label: snapLabel + ' · forecast',
@@ -233,9 +235,9 @@ function updateBurndownOverlays() {
 
       const mc = series && series.mc;
       if (snapMcKeys.has(key) && mc && mc.p50 && mc.p50.length) {
-        const p10d = interpSeriesData(mc.p10 || [], allLabels, 'date', 'value');
-        const p50d = interpSeriesData(mc.p50,       allLabels, 'date', 'value');
-        const p90d = interpSeriesData(mc.p90 || [], allLabels, 'date', 'value');
+        const p10d = interpDateSeries(mc.p10 || [], allLabels);
+        const p50d = interpDateSeries(mc.p50,       allLabels);
+        const p90d = interpDateSeries(mc.p90 || [], allLabels);
         const alpha = hexToRgba(color, 0.12);
         bc.data.datasets.push({
           label: snapLabel + ' · MC P90', data: p90d,
@@ -256,9 +258,9 @@ function updateBurndownOverlays() {
 
       const ml = series && series.ml;
       if (snapMlKeys.has(key) && ml && ml.p50 && ml.p50.length) {
-        const m10 = interpSeriesData(ml.p10 || [], allLabels, 'date', 'value');
-        const m50 = interpSeriesData(ml.p50,       allLabels, 'date', 'value');
-        const m90 = interpSeriesData(ml.p90 || [], allLabels, 'date', 'value');
+        const m10 = interpDateSeries(ml.p10 || [], allLabels);
+        const m50 = interpDateSeries(ml.p50,       allLabels);
+        const m90 = interpDateSeries(ml.p90 || [], allLabels);
         bc.data.datasets.push({
           label: snapLabel + ' · ML P90', data: m90,
           borderColor: hexToRgba(color, 0.4), borderWidth: 1, borderDash: [1, 3],
@@ -1107,37 +1109,23 @@ window.setBurndownColor = function(key, val) {
     return lrLoading;
   }
 
-  function interpPts(pts, allLabels) {
-    if (!pts || !pts.length) return allLabels.map(() => null);
-    const start = pts[0].date, end = pts[pts.length - 1].date;
-    return allLabels.map(l => {
-      if (l < start || l > end) return null;
-      const idx = pts.findIndex(p => p.date > l);
-      if (idx === -1) return pts[pts.length - 1].value;
-      if (idx === 0)  return pts[0].value;
-      const a = pts[idx - 1], b = pts[idx];
-      const t = (new Date(l) - new Date(a.date)) / (new Date(b.date) - new Date(a.date));
-      return a.value + t * (b.value - a.value);
-    });
-  }
-
   function applyLrToChart(data) {
     const bc = window.burndownChart;
     if (!bc) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
     const allLabels = bc.data.labels;
     const C = '#198754';
-    const p50 = interpPts(data.burndown, allLabels);
+    const p50 = interpDateSeries(data.burndown, allLabels);
     const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
     if (hasBand) {
       bc.data.datasets.push({
-        label: 'LR P90', data: interpPts(data.p90, allLabels),
+        label: 'LR P90', data: interpDateSeries(data.p90, allLabels),
         borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
         backgroundColor: hexToRgba(C, 0.10), fill: '+1', tension: 0.1, pointRadius: 0,
         spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
       });
       bc.data.datasets.push({
-        label: 'LR P10', data: interpPts(data.p10, allLabels),
+        label: 'LR P10', data: interpDateSeries(data.p10, allLabels),
         borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
         backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0,
         spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
@@ -1301,23 +1289,9 @@ window.setBurndownColor = function(key, val) {
     const data      = mcCache;
     const allLabels = bc.data.labels;
 
-    function interpMc(pts) {
-      if (!pts || !pts.length) return allLabels.map(() => null);
-      const start = pts[0].date, end = pts[pts.length - 1].date;
-      return allLabels.map(l => {
-        if (l < start || l > end) return null;
-        const idx = pts.findIndex(p => p.date > l);
-        if (idx === -1) return pts[pts.length - 1].value;
-        if (idx === 0)  return pts[0].value;
-        const a = pts[idx - 1], b = pts[idx];
-        const t = (new Date(l) - new Date(a.date)) / (new Date(b.date) - new Date(a.date));
-        return a.value + t * (b.value - a.value);
-      });
-    }
-
-    const p90data = interpMc(data.p90);
-    const p50data = interpMc(data.burndown);
-    const p10data = interpMc(data.p10);
+    const p90data = interpDateSeries(data.p90, allLabels);
+    const p50data = interpDateSeries(data.burndown, allLabels);
+    const p10data = interpDateSeries(data.p10, allLabels);
 
     const showP90 = localStorage.getItem('forecast-mc-p90') !== '0';
     const showP10 = localStorage.getItem('forecast-mc-p10') !== '0';
