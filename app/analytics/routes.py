@@ -5,7 +5,7 @@ from io import BytesIO
 from urllib.parse import urlencode
 
 import pandas as pd
-from flask import Blueprint, render_template, request, send_file
+from flask import Blueprint, current_app, render_template, request, send_file
 
 from app.shared.chart_data import usage_type_weekly_json
 from app.shared.data_store import CreditUsageData
@@ -15,6 +15,7 @@ from .service import Leaderboards
 
 def create_analytics_blueprint(services) -> Blueprint:
     store = services.store
+    config_svc = services.config_svc
     bp = Blueprint("analytics", __name__, template_folder="templates", url_prefix="")
     max_result_limit = 10_000
 
@@ -27,6 +28,120 @@ def create_analytics_blueprint(services) -> Blueprint:
         except (TypeError, ValueError):
             return default
         return max(min_value, min(value, max_result_limit))
+
+    def _tier_caps() -> dict[str, float]:
+        tiers = config_svc.load_tiers().get("tiers") or {}
+        caps = {str(name): float(cfg.get("weekly_credit_cap", 0) or 0) for name, cfg in tiers.items()}
+        if "Baseline" not in caps:
+            caps["Baseline"] = min(caps.values()) if caps else 100.0
+        return caps
+
+    def _next_tier(current: str, caps: dict[str, float], direction: int) -> tuple[str, float]:
+        ordered = sorted(caps.items(), key=lambda item: item[1])
+        names = [name for name, _ in ordered]
+        if current not in names:
+            current = "Baseline"
+        idx = names.index(current)
+        idx = max(0, min(len(ordered) - 1, idx + direction))
+        return ordered[idx]
+
+    def _pressure_flag(utilization: float) -> str:
+        if utilization >= 1.10:
+            return "ABOVE_CAP_110_PLUS"
+        if utilization >= 1.00:
+            return "AT_OR_ABOVE_CAP"
+        if utilization >= 0.90:
+            return "HIGH_PRESSURE_90_PLUS"
+        if utilization >= 0.80:
+            return "ELEVATED_PRESSURE_80_PLUS"
+        return "NORMAL"
+
+    def _optimization_for_user(records_df: pd.DataFrame, name: str, email: str) -> tuple[dict | None, list[dict], str]:
+        required = {"email", "date_partition", "usage_credits"}
+        if records_df is None or records_df.empty or not required.issubset(records_df.columns):
+            return None, [], ""
+
+        user_df = records_df.copy()
+        if email:
+            user_df = user_df[user_df["email"].astype(str).str.lower() == email.strip().lower()]
+        elif name and "name" in user_df.columns:
+            user_df = user_df[user_df["name"].astype(str).str.contains(name.strip(), case=False, na=False, regex=False)]
+        else:
+            return None, [], ""
+        if user_df.empty:
+            return None, [], "current project records"
+
+        caps = _tier_caps()
+        current_tier = "Baseline"
+        current_cap = caps.get(current_tier, min(caps.values()) if caps else 100.0) or 1.0
+
+        wdf = user_df.copy()
+        wdf["_date"] = pd.to_datetime(wdf["date_partition"], errors="coerce")
+        wdf = wdf.dropna(subset=["_date"])
+        if wdf.empty:
+            return None, [], "current project records"
+        wdf["week_start"] = wdf["_date"] - pd.to_timedelta(wdf["_date"].dt.dayofweek, unit="D")
+        wdf["credits_used"] = pd.to_numeric(wdf["usage_credits"], errors="coerce").fillna(0)
+        weekly = (
+            wdf.groupby("week_start", as_index=False)
+            .agg(credits_used=("credits_used", "sum"))
+            .sort_values("week_start")
+        )
+        weekly["week_end"] = weekly["week_start"] + pd.Timedelta(days=6)
+        weekly["governance_tier"] = current_tier
+        weekly["weekly_credit_cap"] = current_cap
+        weekly["cap_utilization"] = weekly["credits_used"] / current_cap
+        weekly["pressure_flag"] = weekly["cap_utilization"].apply(_pressure_flag)
+
+        weeks_observed = int(weekly["week_start"].nunique())
+        latest_util = float(weekly["cap_utilization"].iloc[-1])
+        first_util = float(weekly["cap_utilization"].iloc[0])
+        avg_util = float(weekly["cap_utilization"].mean())
+        share_over_90 = float((weekly["cap_utilization"] >= 0.90).sum() / max(weeks_observed, 1))
+
+        if weeks_observed < 2:
+            action = "MONITOR_MORE_HISTORY_NEEDED"
+        elif weeks_observed >= 3 and share_over_90 >= 0.50:
+            action = "CONSIDER_MOVE_UP_TIER"
+        elif weeks_observed >= 4 and avg_util <= 0.25 and latest_util <= 0.25:
+            action = "CONSIDER_MOVE_DOWN_TIER"
+        elif latest_util >= 0.90:
+            action = "MONITOR_RECENT_SPIKE"
+        else:
+            action = "NO_CHANGE"
+
+        direction = 1 if action == "CONSIDER_MOVE_UP_TIER" else (-1 if action == "CONSIDER_MOVE_DOWN_TIER" else 0)
+        recommended_tier, recommended_cap = _next_tier(current_tier, caps, direction)
+        if latest_util - first_util >= 0.20:
+            trend = "INCREASING_PRESSURE"
+        elif latest_util - first_util <= -0.20:
+            trend = "DECREASING_PRESSURE"
+        else:
+            trend = "STABLE_PRESSURE"
+
+        priority = {
+            "CONSIDER_MOVE_UP_TIER": "ACTIONABLE",
+            "CONSIDER_MOVE_DOWN_TIER": "ACTIONABLE",
+            "MONITOR_RECENT_SPIKE": "MONITOR",
+            "MONITOR_MORE_HISTORY_NEEDED": "MONITOR",
+            "NO_CHANGE": "INFORMATIONAL",
+        }.get(action, "INFORMATIONAL")
+        recommendation = {
+            "recommended_action": action,
+            "review_priority": priority,
+            "latest_governance_tier": current_tier,
+            "recommended_tier": recommended_tier,
+            "latest_weekly_credit_cap": current_cap,
+            "recommended_weekly_credit_cap": recommended_cap,
+            "latest_cap_utilization": latest_util,
+            "pressure_trend": trend,
+            "avg_weekly_credits_used": float(weekly["credits_used"].mean()),
+            "recommended_cap_change": recommended_cap - current_cap,
+        }
+        history = weekly.sort_values("week_start", ascending=False).head(12).copy()
+        history["week_start"] = history["week_start"].dt.date.astype(str)
+        history["week_end"] = history["week_end"].dt.date.astype(str)
+        return recommendation, history.to_dict(orient="records"), "current project records"
 
     @bp.route("/leaderboard", methods=["GET"])
     def leaderboard_page() -> str:
@@ -213,6 +328,9 @@ def create_analytics_blueprint(services) -> Blueprint:
             if float(s.get("total_credits", 0)) > 0
         ])
 
+        optimization_user, optimization_history, optimization_source = _optimization_for_user(d.df, name, email)
+        optimization_page_available = "optimization.optimization_page" in current_app.view_functions
+
         return render_template(
             "user_summary.html",
             name=name,
@@ -246,6 +364,10 @@ def create_analytics_blueprint(services) -> Blueprint:
             user_weekly_json=user_weekly_json,
             user_usage_type_weekly=usage_type_weekly_json(df),
             type_chart_json=type_chart_json,
+            optimization_user=optimization_user,
+            optimization_history=optimization_history,
+            optimization_source=optimization_source,
+            optimization_page_available=optimization_page_available,
         )
 
     @bp.route("/user-cards", methods=["GET"])
