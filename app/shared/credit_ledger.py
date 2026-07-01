@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha1
 from uuid import uuid4
 from typing import Any
 
@@ -20,7 +21,7 @@ def normalize_credit_entries(contract: dict[str, Any] | None) -> list[dict[str, 
     raw_entries = contract.get("credit_entries") or []
     entries: list[dict[str, Any]] = []
 
-    for raw in raw_entries if isinstance(raw_entries, list) else []:
+    for idx, raw in enumerate(raw_entries if isinstance(raw_entries, list) else []):
         if not isinstance(raw, dict):
             continue
         credits = _to_float(raw.get("credits", raw.get("amount", 0)))
@@ -32,19 +33,21 @@ def normalize_credit_entries(contract: dict[str, Any] | None) -> list[dict[str, 
             or contract.get("contract_start_date")
             or ""
         ).strip()
+        kind = _normalize_kind(str(raw.get("kind") or raw.get("type") or "purchased"))
+        notes = str(raw.get("notes") or "").strip()
         entries.append({
-            "id": str(raw.get("id") or uuid4().hex[:8]),
+            "id": str(raw.get("id") or _stable_entry_id(idx, date, credits, kind, notes)),
             "date": date,
             "credits": credits,
-            "kind": _normalize_kind(str(raw.get("kind") or raw.get("type") or "purchased")),
-            "notes": str(raw.get("notes") or "").strip(),
+            "kind": kind,
+            "notes": notes,
         })
 
     if not entries:
         credits = _to_float(contract.get("purchased_credits", 0))
         if credits > 0:
             entries = [{
-                "id": uuid4().hex[:8],
+                "id": "initial",
                 "date": str(contract.get("purchased_credits_date") or contract.get("contract_start_date") or "").strip(),
                 "credits": credits,
                 "kind": "purchased",
@@ -99,6 +102,11 @@ def _normalize_kind(kind: str) -> str:
     if k in {"adjustment", "adjust", "correction"}:
         return "adjustment"
     return "adjustment"
+
+
+def _stable_entry_id(idx: int, date: str, credits: float, kind: str, notes: str) -> str:
+    basis = f"{idx}|{date}|{credits:.2f}|{kind}|{notes}"
+    return sha1(basis.encode("utf-8")).hexdigest()[:8]
 
 
 def _to_float(value: Any) -> float:

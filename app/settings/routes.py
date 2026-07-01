@@ -145,6 +145,32 @@ def create_settings_blueprint(services) -> Blueprint:
             flash(f"Error adding credit entry: {exc}", "danger")
         return redirect(url_for("settings.settings_page"))
 
+    @bp.route("/credits/remove", methods=["POST"])
+    def remove_credit_entry() -> object:
+        try:
+            entry_id = request.form.get("entry_id", "").strip()
+            if not entry_id:
+                flash("No credit entry selected for removal.", "warning")
+                return redirect(url_for("settings.settings_page"))
+
+            data = config_svc.load_contract()
+            contract = data.setdefault("contract", {})
+            entries = normalize_credit_entries(contract)
+            kept = [e for e in entries if str(e.get("id", "")) != entry_id]
+            if len(kept) == len(entries):
+                flash("Could not find that credit entry.", "warning")
+                return redirect(url_for("settings.settings_page"))
+
+            contract["credit_entries"] = kept
+            if not kept:
+                contract["purchased_credits"] = 0
+            sync_credit_ledger(contract)
+            config_svc.save_contract(data)
+            flash("Credit entry removed.", "success")
+        except Exception as exc:
+            flash(f"Error removing credit entry: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
+
     @bp.route("/tiers", methods=["POST"])
     def update_tiers() -> object:
         try:

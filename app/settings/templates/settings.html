@@ -324,6 +324,7 @@
                   <th>Type</th>
                   <th class="text-end">Credits</th>
                   <th>Notes</th>
+                  <th class="text-end">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -339,11 +340,23 @@
                     <td style="max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ entry.notes or '' }}">
                       {{ entry.notes or '—' }}
                     </td>
+                    <td class="text-end">
+                      <button class="btn btn-outline-danger btn-sm py-0 px-2"
+                              type="submit"
+                              name="entry_id"
+                              value="{{ entry.id }}"
+                              formaction="{{ url_for('settings.remove_credit_entry') }}"
+                              formmethod="post"
+                              formnovalidate
+                              onclick="return confirm('Remove this credit entry? This only changes the credit ledger, not your uploaded usage data.');">
+                        Remove
+                      </button>
+                    </td>
                   </tr>
                   {% endfor %}
                 {% else %}
                   <tr>
-                    <td colspan="4" class="text-muted small">No credit entries yet.</td>
+                    <td colspan="5" class="text-muted small">No credit entries yet.</td>
                   </tr>
                 {% endif %}
               </tbody>
