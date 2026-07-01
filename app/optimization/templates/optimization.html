@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Optimization - Credit Usage Explorer{% endblock %}
+
+{% block body %}
+<div class="container py-4" style="max-width: 1280px;">
+  <div class="mb-4 d-flex justify-content-between align-items-end flex-wrap gap-2">
+    <div>
+      <h1 class="page-title">Optimization</h1>
+      <p class="page-subtitle">Review tier pressure, cap utilization, and recommended actions from current project records.</p>
+    </div>
+    <a class="btn btn-outline-success btn-sm" href="{{ url_for('optimization.optimization_export_csv',
+      q=filters.q, action=filters.action, priority=filters.priority,
+      current_tier=filters.current_tier, recommended_tier=filters.recommended_tier,
+      min_util=filters.min_util, max_util=filters.max_util,
+      min_avg_credits=filters.min_avg_credits, max_avg_credits=filters.max_avg_credits) }}">Export filtered CSV</a>
+  </div>
+
+  {% if not result.user_week_history.empty %}
+  {% set s = result.latest_summary %}
+  <div class="muted-help mb-3">
+    Source: <strong>{{ result.source_label }}</strong>
+    <span class="field-badge ms-2">Baseline tier assumed</span>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-md-3">
+      <div class="stat-card h-100">
+        <div class="stat-label">Latest Week Credits</div>
+        <div class="stat-value">{{ "{:,.0f}".format(s.total_credits_used) }}</div>
+        <div class="text-muted small mt-1">{{ s.week_start }} to {{ s.week_end }}</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card h-100">
+        <div class="stat-label">Credit-Active Users</div>
+        <div class="stat-value">{{ "{:,}".format(s.credit_active_users) }}</div>
+        <div class="text-muted small mt-1">{{ "{:,}".format(s.users) }} users observed</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card h-100">
+        <div class="stat-label">Users Near Cap</div>
+        <div class="stat-value">{{ "{:,}".format(s.users_over_90_percent_cap) }}</div>
+        <div class="text-muted small mt-1">{{ "{:,}".format(s.users_at_or_over_cap) }} at or over cap</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card h-100">
+        <div class="stat-label">Actionable Reviews</div>
+        <div class="stat-value">{{ "{:,}".format(actionable) }}</div>
+        <div class="text-muted small mt-1">{{ "{:.1%}".format(s.top_10_percent_consumption_share) }} from top 10%</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-lg-7">
+      <div class="section-card h-100 mb-0">
+        <h5>Recommendation Summary</h5>
+        <div class="table-responsive">
+          <table class="table table-sm records-table mb-0">
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Priority</th>
+                <th class="text-end">Users</th>
+                <th class="text-end">Net cap change</th>
+                <th class="text-end">Avg latest util.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in rec_summary %}
+              <tr>
+                <td>{{ r.recommended_action | fmt_status }}</td>
+                <td>{{ r.review_priority }}</td>
+                <td class="text-end">{{ "{:,}".format(r.users) }}</td>
+                <td class="text-end">{{ "{:+,.0f}".format(r.total_recommended_cap_change) }}</td>
+                <td class="text-end">{{ "{:.0%}".format(r.avg_latest_utilization) }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="5" class="text-center text-muted py-3">No recommendations yet</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-5">
+      <div class="section-card h-100 mb-0">
+        <h5>Tier Summary</h5>
+        <div class="table-responsive">
+          <table class="table table-sm records-table mb-0">
+            <thead>
+              <tr>
+                <th>Tier</th>
+                <th class="text-end">Users</th>
+                <th class="text-end">Credits</th>
+                <th class="text-end">Avg util.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for t in tier_summary %}
+              <tr>
+                <td>{{ t.governance_tier }}</td>
+                <td class="text-end">{{ "{:,}".format(t.unique_users) }}</td>
+                <td class="text-end">{{ "{:,.0f}".format(t.total_credits_used) }}</td>
+                <td class="text-end">{{ "{:.0%}".format(t.avg_cap_utilization) }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="text-center text-muted py-3">No tier data</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <form class="section-card mb-3" method="get" action="{{ url_for('optimization.optimization_page') }}">
+    <h5>Search &amp; Filters</h5>
+    <div class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label tight">User / department</label>
+        <input class="form-control form-control-sm" name="q" value="{{ filters.q }}" placeholder="Name, email, department">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label tight">Action</label>
+        <select class="form-select form-select-sm" name="action">
+          <option value="">All actions</option>
+          {% for a in actions %}
+          <option value="{{ a }}" {% if filters.action == a %}selected{% endif %}>{{ a | fmt_status }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label tight">Priority</label>
+        <select class="form-select form-select-sm" name="priority">
+          <option value="">All priorities</option>
+          {% for p in priorities %}
+          <option value="{{ p }}" {% if filters.priority == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary btn-sm w-100">Apply</button>
+      </div>
+    </div>
+    <div class="row g-2 align-items-end mt-1">
+      <div class="col-md-2">
+        <label class="form-label tight">Current tier</label>
+        <select class="form-select form-select-sm" name="current_tier">
+          <option value="">All current</option>
+          {% for t in current_tiers %}
+          <option value="{{ t }}" {% if filters.current_tier == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label tight">Recommended tier</label>
+        <select class="form-select form-select-sm" name="recommended_tier">
+          <option value="">All recommended</option>
+          {% for t in recommended_tiers %}
+          <option value="{{ t }}" {% if filters.recommended_tier == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label tight">Min latest util.</label>
+        <input class="form-control form-control-sm" type="number" step="0.01" name="min_util" value="{{ filters.min_util }}" placeholder="0.90">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label tight">Max latest util.</label>
+        <input class="form-control form-control-sm" type="number" step="0.01" name="max_util" value="{{ filters.max_util }}" placeholder="1.25">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label tight">Min avg credits</label>
+        <input class="form-control form-control-sm" type="number" step="any" name="min_avg_credits" value="{{ filters.min_avg_credits }}" placeholder="100">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label tight">Max avg credits</label>
+        <input class="form-control form-control-sm" type="number" step="any" name="max_avg_credits" value="{{ filters.max_avg_credits }}" placeholder="500">
+      </div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center mt-2">
+      <div class="muted-help">{{ "{:,}".format(recommendation_count) }} users match</div>
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('optimization.optimization_page') }}">Clear</a>
+    </div>
+  </form>
+
+  <div class="section-card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">Recommended Tier Actions</h5>
+      <span class="badge bg-secondary">{{ "{:,}".format(recommendation_count) }}</span>
+    </div>
+    <div class="table-responsive" style="max-height:72vh; overflow:auto;">
+      <table class="table table-sm table-hover records-table mb-0">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Current</th>
+            <th>Recommended</th>
+            <th>Action</th>
+            <th>Priority</th>
+            <th class="text-end">Latest util.</th>
+            <th class="text-end">Avg weekly</th>
+            <th class="text-end">Cap change</th>
+            <th>Trend</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in recommendations %}
+          <tr>
+            <td>
+              <div class="fw-semibold">{{ r.latest_name or r.email }}</div>
+              <div class="text-muted small">{{ r.email }}</div>
+            </td>
+            <td>{{ r.latest_governance_tier }}</td>
+            <td>{{ r.recommended_tier }}</td>
+            <td>{{ r.recommended_action | fmt_status }}</td>
+            <td>{{ r.review_priority }}</td>
+            <td class="text-end">{{ "{:.0%}".format(r.latest_cap_utilization) }}</td>
+            <td class="text-end">{{ "{:,.0f}".format(r.avg_weekly_credits_used) }}</td>
+            <td class="text-end">{{ "{:+,.0f}".format(r.recommended_cap_change) }}</td>
+            <td>{{ r.pressure_trend | fmt_status }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" class="text-center text-muted py-4">No matching recommendations</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="section-card">
+    <div class="text-muted">No optimization data is available yet. Upload records for this project so weekly totals can be derived.</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll('select[name="action"], select[name="priority"], select[name="current_tier"], select[name="recommended_tier"]').forEach(function (el) {
+    el.addEventListener('change', function () { el.closest('form').submit(); });
+  });
+</script>
+{% endblock %}
+

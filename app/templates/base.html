@@ -131,6 +131,15 @@
           Users
         </a>
 
+        <a class="sidenav-link {% if request.endpoint and request.endpoint.startswith('optimization.') %}active{% endif %}"
+           href="{{ url_for('optimization.optimization_page') }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8 1a.5.5 0 0 1 .5.5v1.02a5.5 5.5 0 0 1 4.98 4.98h1.02a.5.5 0 0 1 0 1h-1.02a5.5 5.5 0 0 1-4.98 4.98v1.02a.5.5 0 0 1-1 0v-1.02A5.5 5.5 0 0 1 2.52 8.5H1.5a.5.5 0 0 1 0-1h1.02A5.5 5.5 0 0 1 7.5 2.52V1.5A.5.5 0 0 1 8 1zm0 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z"/>
+            <path d="M8 5.25a2.75 2.75 0 1 1 0 5.5 2.75 2.75 0 0 1 0-5.5zm0 1a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5z"/>
+          </svg>
+          Optimization
+        </a>
+
         <a class="sidenav-link {% if request.endpoint == 'main.alerts_page' %}active{% endif %}"
            href="{{ url_for('main.alerts_page') }}">
           <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="currentColor" viewBox="0 0 16 16">

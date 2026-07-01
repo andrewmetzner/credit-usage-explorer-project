@@ -11,6 +11,7 @@ from .shared.services import Services
 from .dashboard.routes import create_dashboard_blueprint
 from .analytics.routes import create_analytics_blueprint
 from .forecast.routes import create_forecast_blueprint
+from .optimization.routes import create_optimization_blueprint
 from .settings.routes import create_settings_blueprint
 
 
@@ -63,6 +64,7 @@ def create_app() -> Flask:
     app.register_blueprint(create_dashboard_blueprint(services))
     app.register_blueprint(create_analytics_blueprint(services))
     app.register_blueprint(create_forecast_blueprint(services))
+    app.register_blueprint(create_optimization_blueprint(services))
     app.register_blueprint(create_settings_blueprint(services))
     app.jinja_env.filters["fmt_status"] = _fmt_status
 
