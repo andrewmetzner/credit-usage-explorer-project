@@ -61,6 +61,27 @@
                 </div>
               </div>
             </div>
+
+            <div class="stat-card mt-2">
+              <div class="d-flex justify-content-between align-items-start gap-2">
+                <div>
+                  <div class="stat-label">Optimization Action</div>
+                  {% if optimization_user %}
+                  <div class="stat-value" style="font-size:1rem;">{{ optimization_user.recommended_action | fmt_status }}</div>
+                  <div class="text-muted small mt-1">
+                    {{ optimization_user.review_priority }} &middot;
+                    {{ optimization_user.latest_governance_tier }} &rarr; {{ optimization_user.recommended_tier }}
+                  </div>
+                  {% else %}
+                  <div class="stat-value" style="font-size:1rem;">No Recommendation</div>
+                  <div class="text-muted small mt-1">No matching optimization row</div>
+                  {% endif %}
+                </div>
+                <button class="btn btn-outline-primary btn-sm" type="button" onclick="document.getElementById('optimization-tab').click()">
+                  Details
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- Middle: credits by usage type per week (stacked) -->
@@ -92,92 +113,17 @@
         </div>
       </div>
 
-      <!-- OPTIMIZATION SNAPSHOT -->
-      <div class="section-card">
-        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
-          <h5 class="mb-0">Optimization</h5>
-          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('optimization.optimization_page', q=email or name) }}">Open in Optimization</a>
-        </div>
-
-        {% if optimization_user %}
-        <div class="muted-help mb-3">
-          Source: <strong>{{ optimization_source }}</strong>
-          {% if optimization_source == 'current project records' %}
-          <span class="field-badge ms-2">Baseline tier assumed</span>
-          {% endif %}
-        </div>
-
-        <div class="row g-3">
-          <div class="col-md-3">
-            <div class="stat-card h-100">
-              <div class="stat-label">Action</div>
-              <div class="stat-value" style="font-size:1rem;">{{ optimization_user.recommended_action | fmt_status }}</div>
-              <div class="text-muted small mt-1">{{ optimization_user.review_priority }}</div>
-            </div>
-          </div>
-          <div class="col-md-3">
-            <div class="stat-card h-100">
-              <div class="stat-label">Tier</div>
-              <div class="stat-value" style="font-size:1rem;">{{ optimization_user.latest_governance_tier }} &rarr; {{ optimization_user.recommended_tier }}</div>
-              <div class="text-muted small mt-1">cap {{ "{:,.0f}".format(optimization_user.latest_weekly_credit_cap|float) }} &rarr; {{ "{:,.0f}".format(optimization_user.recommended_weekly_credit_cap|float) }}</div>
-            </div>
-          </div>
-          <div class="col-md-3">
-            <div class="stat-card h-100">
-              <div class="stat-label">Latest Utilization</div>
-              <div class="stat-value" style="font-size:1.15rem;">{{ "{:.0%}".format(optimization_user.latest_cap_utilization|float) }}</div>
-              <div class="text-muted small mt-1">{{ optimization_user.pressure_trend | fmt_status }}</div>
-            </div>
-          </div>
-          <div class="col-md-3">
-            <div class="stat-card h-100">
-              <div class="stat-label">Avg Weekly Credits</div>
-              <div class="stat-value" style="font-size:1.15rem;">{{ "{:,.0f}".format(optimization_user.avg_weekly_credits_used|float) }}</div>
-              <div class="text-muted small mt-1">cap change {{ "{:+,.0f}".format(optimization_user.recommended_cap_change|float) }}</div>
-            </div>
-          </div>
-        </div>
-
-        {% if optimization_history %}
-        <div class="mt-3" style="max-height:220px; overflow:auto;">
-          <table class="table table-sm records-table mb-0">
-            <thead>
-              <tr>
-                <th>Week</th>
-                <th>Tier</th>
-                <th class="text-end">Credits</th>
-                <th class="text-end">Cap</th>
-                <th class="text-end">Utilization</th>
-                <th>Pressure</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for h in optimization_history %}
-              <tr>
-                <td>{{ h.week_start }}</td>
-                <td>{{ h.governance_tier }}</td>
-                <td class="text-end">{{ "{:,.0f}".format(h.credits_used|float) }}</td>
-                <td class="text-end">{{ "{:,.0f}".format(h.weekly_credit_cap|float) }}</td>
-                <td class="text-end">{{ "{:.0%}".format(h.cap_utilization|float) }}</td>
-                <td>{{ h.pressure_flag | fmt_status }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="text-muted small">
-          No optimization recommendation is available for this user yet. Upload records for this project so weekly totals can be derived, or add a project weekly operational upload in Settings.
-        </div>
-        {% endif %}
-      </div>
-
       <!-- TABS -->
       <ul class="nav nav-tabs" role="tablist">
         <li class="nav-item" role="presentation">
-          <button class="nav-link {% if active_tab != 'records' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#overview" type="button" role="tab">
+          <button class="nav-link {% if active_tab not in ['records', 'optimization'] %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#overview" type="button" role="tab">
             Overview
+          </button>
+        </li>
+
+        <li class="nav-item" role="presentation">
+          <button class="nav-link {% if active_tab == 'optimization' %}active{% endif %}" id="optimization-tab" data-bs-toggle="tab" data-bs-target="#optimization" type="button" role="tab">
+            Optimization
           </button>
         </li>
 
@@ -191,7 +137,7 @@
       <div class="tab-content">
 
         <!-- OVERVIEW TAB -->
-        <div class="tab-pane fade {% if active_tab != 'records' %}show active{% endif %}" id="overview" role="tabpanel">
+        <div class="tab-pane fade {% if active_tab not in ['records', 'optimization'] %}show active{% endif %}" id="overview" role="tabpanel">
           <div class="section-card">
             <h5>Filters</h5>
 
