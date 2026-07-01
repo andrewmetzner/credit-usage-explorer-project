@@ -19,10 +19,17 @@
     </div>
 
     {% set metric_labels = {
-      'per_user_window': 'User total over the window',
-      'per_user_day':    'User total in a single day',
-      'per_record':      'Single prompt (one record)'
+      'per_user_window':     'User total over the window',
+      'per_user_day':        'User total in a single day',
+      'per_record':          'Single prompt (one record)',
+      'total_window':        'Total spend over the window',
+      'total_day':           'Total spend in a single day',
+      'active_users_window': 'Active users over the window'
     } %}
+    {# Per-item metrics drill into the outlier search; spend metrics open the
+       window's records; other org-wide metrics open Summary. #}
+    {% set outlier_metrics = ['per_user_window', 'per_user_day', 'per_record'] %}
+    {% set spend_records_metrics = ['total_window', 'total_day'] %}
 
     <div class="dash-section" id="alert-rules">
       <div class="dash-section-header">
@@ -33,9 +40,10 @@
       </div>
       <div class="dash-section-body">
         <p class="text-muted small mb-3">
-          Define your own alerts &mdash; e.g. a user burning over 1,000 credits in one prompt, or
-          anyone spending over 1,000 in a single day. Triggering rules show in the notification bell;
-          clicking one opens the matching records in the advanced outlier search.
+          Define your own alerts &mdash; per user/prompt (a user burning over 1,000 credits in one
+          prompt) or org-wide (total spend over 50,000 this week, or more than 40 active users).
+          Triggering rules show in the notification bell; per-item rules open the matching records in
+          the advanced outlier search, org-wide rules open the Summary overview.
         </p>
 
         {% if alert_rules %}
@@ -54,7 +62,10 @@
             {% for r in alert_rules %}
             {% set search_url = url_for('analytics.user_cards_page', mode='advanced',
                 metric=r.metric, credit_threshold=r.threshold|int, lookback_days=r.window_days,
-                usage_type_filter=r.usage_type, model_filter=r.model) %}
+                usage_type_filter=r.usage_type, model_filter=r.model) if r.metric in outlier_metrics
+                else url_for('main.records_page', lookback_days=r.window_days,
+                usage_type=r.usage_type, model=r.model) if r.metric in spend_records_metrics
+                else url_for('main.summary_page') %}
             <tr class="{% if not r.enabled %}rule-row-off{% endif %}">
               <td class="fw-semibold">{{ r.name }}</td>
               <td style="font-size:.8rem; color:var(--text-soft);">
@@ -75,7 +86,7 @@
                 {% endif %}
               </td>
               <td class="text-nowrap text-end">
-                <a class="btn btn-link btn-sm p-0 me-2" href="{{ search_url }}">View</a>
+                <a class="btn btn-link btn-sm p-0 me-2" href="{{ search_url }}">{{ 'View records' if r.metric in spend_records_metrics else 'View' }}</a>
                 <form method="post" action="{{ url_for('main.toggle_alert_rule', rule_id=r.id) }}" class="d-inline">
                   <button class="btn btn-link btn-sm p-0 me-2" type="submit">{{ 'Disable' if r.enabled else 'Enable' }}</button>
                 </form>
@@ -100,10 +111,17 @@
             </div>
             <div class="col-md-3">
               <label class="form-label">When</label>
-              <select class="form-select form-select-sm" name="metric">
-                <option value="per_user_window">User total over the window</option>
-                <option value="per_user_day">User total in a single day</option>
-                <option value="per_record">Single prompt (one record)</option>
+              <select class="form-select form-select-sm" name="metric" id="alert-metric">
+                <optgroup label="Per user / prompt">
+                  <option value="per_user_window">User total over the window</option>
+                  <option value="per_user_day">User total in a single day</option>
+                  <option value="per_record">Single prompt (one record)</option>
+                </optgroup>
+                <optgroup label="Org-wide">
+                  <option value="total_window">Total spend over the window</option>
+                  <option value="total_day">Total spend in a single day</option>
+                  <option value="active_users_window">Active users over the window</option>
+                </optgroup>
               </select>
             </div>
             <div class="col-md-3">
@@ -127,7 +145,7 @@
           </div>
           <div class="row g-2 align-items-end">
             <div class="col-md-3">
-              <label class="form-label">Over (credits)</label>
+              <label class="form-label" id="threshold-label">Over (credits)</label>
               <input class="form-control form-control-sm" type="number" name="threshold" value="1000" min="0" step="1" required>
             </div>
             <div class="col-md-3">
@@ -144,4 +162,20 @@
     </div>
 
   </div>
+
+  {# The "active users" metric counts people, not credits — swap the unit label. #}
+  <script>
+    (function () {
+      var sel = document.getElementById('alert-metric');
+      var lbl = document.getElementById('threshold-label');
+      if (!sel || !lbl) return;
+      var userCountMetrics = ['active_users_window'];
+      function sync() {
+        lbl.textContent = userCountMetrics.indexOf(sel.value) >= 0
+          ? 'Over (users)' : 'Over (credits)';
+      }
+      sel.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
 {% endblock %}

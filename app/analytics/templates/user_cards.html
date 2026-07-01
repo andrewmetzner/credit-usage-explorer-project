@@ -106,11 +106,12 @@
           {% endif %}
           {% if outlier_rows %}
           <a class="btn btn-outline-success btn-sm ms-auto"
-             href="{{ url_for('analytics.export_outliers', name_query=name_query, email_query=email_query,
+             href="{{ url_for('analytics.user_cards_export_csv', mode='advanced',
+               name_query=name_query, email_query=email_query,
                metric=metric, credit_threshold=credit_threshold|int, lookback_days=lookback_days,
                usage_type_filter=usage_type_filter, model_filter=model_filter,
                start_date=start_date, end_date=end_date, top_n=top_n) }}"
-             title="Download these outliers as an Excel sheet">&#8681; Export to Excel</a>
+             title="Download these outliers as a CSV file">Export CSV</a>
           {% endif %}
         </div>
         {% if window_start %}
@@ -202,6 +203,13 @@
           {% endif %}
         </div>
         <div class="d-flex gap-2 view-controls">
+          <a class="btn btn-sm btn-outline-success"
+             href="{{ url_for('analytics.user_cards_export_csv', mode='basic',
+               name_query=name_query, email_query=email_query, date_field=date_field,
+               start_date=start_date, end_date=end_date, top_n=top_n,
+               min_credits=min_credits, max_credits=max_credits, zero_credits=zero_credits) }}">
+            Export CSV
+          </a>
           <div class="btn-group btn-group-sm" role="group" aria-label="Result view">
             <a class="btn {{ 'btn-primary' if view == 'cards' else 'btn-outline-primary' }}" href="{{ view_base }}&view=cards" title="Card view">
               <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5z"/></svg>
@@ -241,7 +249,7 @@
           </thead>
           <tbody>
             {% for u in users %}
-            {% set link = url_for('analytics.user_summary', name=u.name or '', email=u.email or '', date_field=date_field, start_date=start_date, end_date=end_date) %}
+            {% set link = url_for('analytics.user_summary', name=u.name or '', email=u.email or '', date_field=date_field, start_date=start_date, end_date=end_date, min_credits=min_credits, max_credits=max_credits, zero_credits=zero_credits) %}
             <tr onclick="window.location='{{ link }}'">
               <td>
                 <div class="vt-name">{{ u.name or u.email or 'Unknown user' }}</div>
@@ -261,7 +269,7 @@
       <!-- LIST VIEW (compact) -->
       <div class="dash-section p-0">
         {% for u in users %}
-        {% set link = url_for('analytics.user_summary', name=u.name or '', email=u.email or '', date_field=date_field, start_date=start_date, end_date=end_date) %}
+        {% set link = url_for('analytics.user_summary', name=u.name or '', email=u.email or '', date_field=date_field, start_date=start_date, end_date=end_date, min_credits=min_credits, max_credits=max_credits, zero_credits=zero_credits) %}
         <a class="view-list-row" href="{{ link }}">
           <span class="avatar avatar-sm">{{ (u.name or u.email or '?')[:2] }}</span>
           <span class="vlr-id">
@@ -285,7 +293,8 @@
         <div class="col-md-4">
           <a class="user-card-link"
              href="{{ url_for('analytics.user_summary', name=u.name or '', email=u.email or '',
-               date_field=date_field, start_date=start_date, end_date=end_date) }}">
+               date_field=date_field, start_date=start_date, end_date=end_date,
+               min_credits=min_credits, max_credits=max_credits, zero_credits=zero_credits) }}">
             <div class="user-card">
               <div class="user-card-body">
                 <div class="user-cell mb-2">

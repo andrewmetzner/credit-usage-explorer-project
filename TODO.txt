@@ -1,2 +1,1 @@
-- optimize axis/window shifts for graphing forecasts
 - curl script for downloading new data, auto uploaded to program

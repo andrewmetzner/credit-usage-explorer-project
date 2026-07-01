@@ -94,6 +94,13 @@
            class="tier-tab {% if active_tab == 'daily' %}active{% endif %}">Daily</a>
       </div>
 
+      <div class="view-toolbar justify-content-end">
+        <a class="btn btn-outline-success btn-sm"
+           href="{{ url_for('analytics.leaderboard_export_csv') }}?{{ base_query }}{% if base_query %}&{% endif %}active_tab={{ active_tab }}">
+          Export CSV
+        </a>
+      </div>
+
       <!-- USERS TAB -->
       <div class="tab-panel {% if active_tab == 'users' %}active{% endif %}">
         <div class="lb-card">
@@ -132,6 +139,9 @@
                         date_field='date_partition',
                         start_date=start_date,
                         end_date=end_date,
+                        min_credits=min_credits,
+                        max_credits=max_credits,
+                        zero_credits=zero_credits,
                         active_tab='records',
                         fs='1'
                       ) }}">View &rarr;</a>
@@ -182,6 +192,9 @@
                         date_field='date_partition',
                         start_date=start_date,
                         end_date=end_date,
+                        min_credits=min_credits,
+                        max_credits=max_credits,
+                        zero_credits=zero_credits,
                         active_tab='records',
                         filter_types=[item.usage_type_parsed_type],
                         fs='1'
@@ -341,6 +354,9 @@
                         date_field='date_partition',
                         start_date=start_date,
                         end_date=end_date,
+                        min_credits=min_credits,
+                        max_credits=max_credits,
+                        zero_credits=zero_credits,
                         active_tab='records',
                         filter_types=[item.usage_type_parsed_type] if item.usage_type_parsed_type else [],
                         filter_models=[item.usage_type_model] if item.usage_type_model else [],

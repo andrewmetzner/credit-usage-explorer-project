@@ -4,6 +4,93 @@ import json
 
 import pandas as pd
 
+# ── Records-page column model ───────────────────────────────────────────────
+# One place that decides how each column is labeled, aligned, clipped, and
+# formatted so the template can render generically (no per-column if/elif) and
+# the wall of raw columns collapses to a clean, condensed default view.
+
+# Friendly units for the merged "Quantity" cell (raw values are terse codes).
+UNIT_LABELS = {"tokens": "tokens", "counts": "counts", "duration_s": "sec"}
+
+# (label, align, clip) per known column. Unknown columns fall back to a
+# title-cased label, left-aligned and clipped (safe for long id/text fields).
+_RECORD_COLUMN_META: dict[str, tuple[str, str, bool]] = {
+    "date_partition":         ("Date", "left", False),
+    "name":                   ("User", "left", True),
+    "email":                  ("Email", "left", True),
+    "usage_type_parsed_type": ("Usage Type", "left", False),
+    "usage_type_model":       ("Model", "left", True),
+    "usage_quantity":         ("Quantity", "right", False),
+    "usage_credits":          ("Credits", "right", False),
+    "usage_units":            ("Units", "left", False),
+    "usage_type":             ("Raw usage type", "left", True),
+    "usage_type_io":          ("IO", "left", False),
+    "usage_type_medium":      ("Medium", "left", False),
+    "usage_type_date":        ("Usage Date", "left", False),
+    "account_id":             ("Account ID", "left", True),
+    "account_user_id":        ("Account User ID", "left", True),
+    "public_id":              ("Public ID", "left", True),
+}
+
+# Curated, clean default view — parsed/corrected fields over the raw ones, so
+# there's no horizontal scroll on first load (raw + id columns stay opt-in).
+DEFAULT_RECORD_COLUMNS = [
+    "date_partition", "name", "email",
+    "usage_type_parsed_type", "usage_type_model",
+    "usage_quantity", "usage_credits",
+]
+
+
+def record_column_meta(col: str) -> dict:
+    """Render descriptor ({key, label, align, clip}) for one records column."""
+    label, align, clip = _RECORD_COLUMN_META.get(
+        col, (col.replace("_", " ").title(), "left", True)
+    )
+    return {"key": col, "label": label, "align": align, "clip": clip}
+
+
+def _fmt_number(value, decimals: int = 2) -> str:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(f):
+        return ""
+    if f == int(f):
+        return f"{int(f):,}"
+    # Non-integer: fixed decimals, then drop trailing zeros (73.70 -> 73.7).
+    return f"{f:,.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def _format_record_cell(col: str, row: dict, units_present: bool) -> str:
+    """Display string for one cell — numbers get thousands separators, Quantity
+    absorbs its unit, and empty/"N/A" values render as an em dash."""
+    value = row.get(col)
+    if col == "usage_credits":
+        return _fmt_number(value, 2)
+    if col == "usage_quantity":
+        qty = _fmt_number(value, 2)
+        if units_present:
+            unit = str(row.get("usage_units") or "").strip()
+            return f"{qty} {UNIT_LABELS.get(unit, unit)}".strip()
+        return qty
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
+    text = str(value).strip()
+    return "—" if text in ("", "N/A", "nan") else text
+
+
+def build_record_view(df: pd.DataFrame, selected_fields: list[str]) -> tuple[list[dict], list[dict]]:
+    """(columns, rows) for the records table: column descriptors + formatted rows
+    keyed by column, so the template renders every cell the same way."""
+    columns = [record_column_meta(c) for c in selected_fields]
+    units_present = "usage_units" in df.columns
+    rows = [
+        {c: _format_record_cell(c, rec, units_present) for c in selected_fields}
+        for rec in df.to_dict(orient="records")
+    ]
+    return columns, rows
+
 
 def compute_summary_metrics(df: pd.DataFrame) -> dict:
     total_credits = float(df["usage_credits"].sum()) if "usage_credits" in df.columns else 0.0

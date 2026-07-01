@@ -12,6 +12,8 @@
 
       <!-- SEARCH -->
       <form method="get" action="{{ url_for('main.records_page') }}">
+        {% if sort_by %}<input type="hidden" name="sort_by" value="{{ sort_by }}">{% endif %}
+        {% if sort_order %}<input type="hidden" name="sort_order" value="{{ sort_order }}">{% endif %}
         <div class="filter-card">
           <div class="section-label">Record Search</div>
 
@@ -52,7 +54,29 @@
             </div>
           </div>
 
-          <!-- Row 2: credits filter -->
+          <!-- Row 2: usage-type / model scope -->
+          <div class="row g-2 align-items-end mt-1">
+            <div class="col-md-3">
+              <label class="form-label">Usage type</label>
+              <select class="form-select form-select-sm" name="usage_type">
+                <option value="">All usage types</option>
+                {% for t in usage_type_options %}
+                <option value="{{ t }}" {% if usage_type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Model</label>
+              <select class="form-select form-select-sm" name="model">
+                <option value="">All models</option>
+                {% for m in model_options %}
+                <option value="{{ m }}" {% if model == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <!-- Row 3: credits filter -->
           <div class="row g-2 align-items-end credits-filter-row">
             <div class="col-md-2">
               <label class="form-label">Min credits</label>
@@ -106,39 +130,25 @@
         <div class="columns-card">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <div class="section-label mb-0">Display Columns</div>
-            <div class="muted-help">{{ display_columns | length }} selected</div>
+            <div class="muted-help">{{ selected_fields | length }} selected</div>
           </div>
 
           <div class="column-grid">
             <div class="row g-1">
-              {% for col in headers %}
-              {% set display_name = col %}
-
-              {% if col == 'usage_type' %}{% set display_name = 'Raw usage type' %}
-              {% elif col == 'usage_type_parsed_type' %}{% set display_name = 'Usage Type' %}
-              {% elif col == 'usage_type_model' %}{% set display_name = 'Model' %}
-              {% elif col == 'usage_type_io' %}{% set display_name = 'IO' %}
-              {% elif col == 'usage_type_medium' %}{% set display_name = 'Medium' %}
-              {% elif col == 'usage_type_date' %}{% set display_name = 'Usage Date' %}
-              {% elif col == 'usage_credits' %}{% set display_name = 'Credits' %}
-              {% elif col == 'usage_quantity' %}{% set display_name = 'Quantity' %}
-              {% elif col == 'usage_units' %}{% set display_name = 'Units' %}
-              {% elif col == 'date_partition' %}{% set display_name = 'Date' %}
-              {% endif %}
-
+              {% for c in toggle_columns %}
               <div class="col-md-3 col-lg-2">
                 <div class="form-check">
                   <input
                     class="form-check-input"
                     type="checkbox"
                     name="selected_fields"
-                    value="{{ col }}"
+                    value="{{ c.key }}"
                     id="col_{{ loop.index }}"
-                    {% if col in selected_fields %}checked{% endif %}
+                    {% if c.key in selected_fields %}checked{% endif %}
                     onchange="this.form.submit()"
                   >
                   <label class="form-check-label" for="col_{{ loop.index }}">
-                    {{ display_name }}
+                    {{ c.label }}
                   </label>
                 </div>
               </div>
@@ -156,6 +166,12 @@
             {% if search_query %}
             <span class="field-badge ms-2">{{ search_field }}</span>
             {% endif %}
+            {% if usage_type %}
+            <span class="field-badge ms-2">{{ usage_type }}</span>
+            {% endif %}
+            {% if model %}
+            <span class="field-badge ms-2">{{ model }}</span>
+            {% endif %}
             {% if min_credits or max_credits %}
             <span class="field-badge ms-2">credits: {{ min_credits or '0' }}–{{ max_credits or '∞' }}</span>
             {% endif %}
@@ -163,29 +179,28 @@
             <span class="field-badge ms-2">zero credits</span>
             {% endif %}
           </div>
-          <span class="count">{{ '{:,}'.format(row_count) }} records</span>
+          <div class="d-flex align-items-center gap-2">
+            <span class="count">{{ '{:,}'.format(row_count) }} records</span>
+            <a class="btn btn-outline-success btn-sm" href="{{ export_url }}">Export CSV</a>
+          </div>
         </div>
 
         <div class="table-scroll">
           <table class="table table-sm table-hover records-table">
             <thead>
               <tr>
-                {% for col in display_columns %}
-                {% set display_name = col %}
-
-                {% if col == 'usage_type' %}{% set display_name = 'Raw usage type' %}
-                {% elif col == 'usage_type_parsed_type' %}{% set display_name = 'Usage Type' %}
-                {% elif col == 'usage_type_model' %}{% set display_name = 'Model' %}
-                {% elif col == 'usage_type_io' %}{% set display_name = 'IO' %}
-                {% elif col == 'usage_type_medium' %}{% set display_name = 'Medium' %}
-                {% elif col == 'usage_type_date' %}{% set display_name = 'Usage Date' %}
-                {% elif col == 'usage_credits' %}{% set display_name = 'Credits' %}
-                {% elif col == 'usage_quantity' %}{% set display_name = 'Quantity' %}
-                {% elif col == 'usage_units' %}{% set display_name = 'Units' %}
-                {% elif col == 'date_partition' %}{% set display_name = 'Date' %}
-                {% endif %}
-
-                <th>{{ display_name }}</th>
+                {% for c in columns %}
+                <th
+                  class="{% if c.align == 'right' %}text-end{% endif %}{% if sort_by == c.key %} sorted{% endif %}"
+                  data-col="{{ c.key }}"
+                >
+                  <a class="sort-link" href="{{ sort_urls[c.key] }}">
+                    {{ c.label }}
+                    {% if sort_by == c.key %}
+                    <span class="sort-indicator active">{{ '▲' if sort_order == 'asc' else '▼' }}</span>
+                    {% endif %}
+                  </a>
+                </th>
                 {% endfor %}
               </tr>
             </thead>
@@ -193,13 +208,19 @@
             <tbody>
               {% for row in rows %}
               <tr>
-                {% for col in display_columns %}
-                <td title="{{ row[col] }}">{{ row[col] }}</td>
+                {% for c in columns %}
+                <td class="{% if c.align == 'right' %}text-end tnum{% endif %}">
+                  {%- if c.clip -%}
+                    <span class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</span>
+                  {%- else -%}
+                    {{ row[c.key] }}
+                  {%- endif -%}
+                </td>
                 {% endfor %}
               </tr>
               {% else %}
               <tr>
-                <td colspan="{{ display_columns|length or 1 }}" class="text-center text-muted py-4">
+                <td colspan="{{ columns|length or 1 }}" class="text-center text-muted py-4">
                   No records found
                 </td>
               </tr>
@@ -214,7 +235,7 @@
 
 {% block scripts %}
     <script>
-      document.querySelectorAll('input[type="date"], select[name="search_field"]').forEach(el => {
+      document.querySelectorAll('input[type="date"], select[name="search_field"], select[name="usage_type"], select[name="model"]').forEach(el => {
         el.addEventListener('change', () => el.closest('form').submit());
       });
     </script>

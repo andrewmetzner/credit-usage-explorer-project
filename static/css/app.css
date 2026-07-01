@@ -338,9 +338,22 @@ body { display: flex; min-height: 100vh; background: var(--bg); color: var(--tex
   white-space: nowrap;
 }
 .records-table tbody tr:hover { background: var(--hover); }
+.cell-clip {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
 .records-table thead th[data-col] { cursor: pointer; user-select: none; }
 .records-table thead th[data-col]:hover { background: var(--border-soft); }
 .records-table thead th.sorted { background: var(--accent-soft); color: var(--ink); }
+.records-table thead th .sort-link {
+  color: inherit;
+  display: block;
+  text-decoration: none;
+}
 .sort-indicator {
   display: inline-block;
   margin-left: .2rem;
@@ -352,6 +365,41 @@ body { display: flex; min-height: 100vh; background: var(--bg); color: var(--tex
 }
 .sort-indicator.active { opacity: 1; color: var(--accent); }
 th[data-col]:hover .sort-indicator { opacity: .55; }
+
+/* Optimization page */
+.optimization-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: .85rem;
+  margin-bottom: 1rem;
+}
+.optimization-kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-height: 116px;
+  padding: .9rem 1rem;
+}
+.optimization-kpi .label {
+  color: var(--muted);
+  font-size: .66rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.optimization-kpi .value {
+  color: var(--ink);
+  font-size: 1.45rem;
+  font-weight: 800;
+  line-height: 1.1;
+  margin-top: .25rem;
+}
+.optimization-kpi .sub {
+  color: var(--text-soft);
+  font-size: .76rem;
+  margin-top: .25rem;
+}
 
 /* ── Tiers page ── */
 .filter-bar {

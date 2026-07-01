@@ -26,7 +26,8 @@ def _resolve_window(dates, lookback_days, start_date, end_date):
         if pd.isna(end):
             end = max_date
         return (dates >= start) & (dates <= end), str(start.date()), str(end.date())
-    cutoff = max_date - pd.Timedelta(days=lookback_days)
+    lookback_days = max(int(lookback_days or 1), 1)
+    cutoff = max_date - pd.Timedelta(days=lookback_days - 1)
     return dates >= cutoff, str(cutoff.date()), str(max_date.date())
 
 

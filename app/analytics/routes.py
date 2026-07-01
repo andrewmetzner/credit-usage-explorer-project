@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from io import BytesIO
 from urllib.parse import urlencode
 
 import pandas as pd
-from flask import Blueprint, render_template, request, send_file
+from flask import Blueprint, render_template, request
 
 from app.shared.chart_data import usage_type_weekly_json
+from app.shared.csv_export import csv_response
 from app.shared.data_store import CreditUsageData
 from app.shared.outliers import OUTLIER_VIEWS, compute_outliers
 from .service import Leaderboards
@@ -15,6 +15,8 @@ from .service import Leaderboards
 
 def create_analytics_blueprint(services) -> Blueprint:
     store = services.store
+    pipeline = services.pipeline
+    config_svc = services.config_svc
     bp = Blueprint("analytics", __name__, template_folder="templates", url_prefix="")
     max_result_limit = 10_000
 
@@ -27,6 +29,71 @@ def create_analytics_blueprint(services) -> Blueprint:
         except (TypeError, ValueError):
             return default
         return max(min_value, min(value, max_result_limit))
+
+    def _leaderboard_filtered_df(d: CreditUsageData) -> pd.DataFrame:
+        usage_type_filter = request.args.get("usage_type_filter", "")
+        model_filter = request.args.get("model_filter", "")
+        start_date = request.args.get("start_date", "")
+        end_date = request.args.get("end_date", "")
+        min_credits = request.args.get("min_credits", "").strip()
+        max_credits = request.args.get("max_credits", "").strip()
+        zero_credits = request.args.get("zero_credits", "")
+
+        df = d.df.copy()
+        df = d.filter_by_date(df, start_date, end_date)
+
+        if usage_type_filter and "usage_type_parsed_type" in df.columns:
+            df = df[df["usage_type_parsed_type"] == usage_type_filter]
+        if model_filter and "usage_type_model" in df.columns:
+            df = df[df["usage_type_model"] == model_filter]
+
+        return d.filter_by_credits(df, min_credits, max_credits, zero_credits)
+
+    def _basic_user_rows(d: CreditUsageData) -> list[dict]:
+        name_query = request.args.get("name_query", "").strip()
+        email_query = request.args.get("email_query", "").strip()
+        date_field = request.args.get("date_field", "date_partition")
+        start_date = request.args.get("start_date", "")
+        end_date = request.args.get("end_date", "")
+        top_n = result_limit("top_n", 50)
+        min_credits = request.args.get("min_credits", "").strip()
+        max_credits = request.args.get("max_credits", "").strip()
+        zero_credits = request.args.get("zero_credits", "")
+
+        df = d.df.copy()
+        if name_query and "name" in df.columns:
+            df = df[df["name"].astype(str).str.contains(name_query, case=False, na=False, regex=False)]
+        if email_query and "email" in df.columns:
+            df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
+        if date_field and (start_date or end_date):
+            df = d.filter_by_date(df, start_date, end_date, col=date_field)
+        df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
+
+        group_cols = [c for c in ["name", "email"] if c in df.columns]
+        if not group_cols:
+            return []
+        df = df.copy()
+        if "usage_units" in df.columns and "usage_quantity" in df.columns:
+            df["tokens_qty"] = df["usage_quantity"].where(df["usage_units"] == "tokens", 0.0)
+            df["counts_qty"] = df["usage_quantity"].where(df["usage_units"] == "counts", 0.0)
+            df["duration_qty"] = df["usage_quantity"].where(df["usage_units"] == "duration_s", 0.0)
+        else:
+            df["tokens_qty"] = df["counts_qty"] = df["duration_qty"] = 0.0
+        agg = (
+            df.groupby(group_cols)
+            .agg(
+                rows=("usage_credits", "count"),
+                total_credits=("usage_credits", "sum"),
+                total_quantity=("usage_quantity", "sum"),
+                total_tokens=("tokens_qty", "sum"),
+                total_counts=("counts_qty", "sum"),
+                total_duration_s=("duration_qty", "sum"),
+            )
+            .reset_index()
+            .sort_values("total_credits", ascending=False)
+            .head(top_n)
+        )
+        return agg.to_dict(orient="records")
 
     @bp.route("/leaderboard", methods=["GET"])
     def leaderboard_page() -> str:
@@ -41,15 +108,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         max_credits = request.args.get("max_credits", "").strip()
         zero_credits = request.args.get("zero_credits", "")
 
-        df = d.df.copy()
-        df = d.filter_by_date(df, start_date, end_date)
-
-        if usage_type_filter and "usage_type_parsed_type" in df.columns:
-            df = df[df["usage_type_parsed_type"] == usage_type_filter]
-        if model_filter and "usage_type_model" in df.columns:
-            df = df[df["usage_type_model"] == model_filter]
-
-        df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
+        df = _leaderboard_filtered_df(d)
 
         all_usage_types = (
             sorted(d.df["usage_type_parsed_type"].dropna().unique().tolist())
@@ -108,6 +167,111 @@ def create_analytics_blueprint(services) -> Blueprint:
             zero_credits=zero_credits,
         )
 
+    @bp.route("/leaderboard/export.csv", methods=["GET"])
+    def leaderboard_export_csv() -> object:
+        d = data()
+        active_tab = request.args.get("active_tab", "users")
+        top_n = result_limit("top_n", 25, 5)
+        lb = Leaderboards(_leaderboard_filtered_df(d), top_n)
+
+        boards: dict[str, tuple[list[dict], list[tuple[str, str]]]] = {
+            "users": (
+                lb.by_user(),
+                [
+                    ("Rank", "_rank"), ("Name", "name"), ("Email", "email"),
+                    ("Credits", "total_credits"), ("Records", "rows"),
+                    ("Tokens", "total_tokens"),
+                ],
+            ),
+            "users_by_type": (
+                lb.by_user_type(),
+                [
+                    ("Rank", "_rank"), ("Name", "name"), ("Email", "email"),
+                    ("Usage Type", "usage_type_parsed_type"), ("Credits", "total_credits"),
+                    ("Records", "rows"),
+                ],
+            ),
+            "models": (
+                lb.by_model(),
+                [
+                    ("Rank", "_rank"), ("Model", "usage_type_model"),
+                    ("Credits", "total_credits"), ("Records", "rows"),
+                    ("Unique users", "unique_users"),
+                ],
+            ),
+            "usage_types": (
+                lb.by_usage_type(),
+                [
+                    ("Rank", "_rank"), ("Usage Type", "usage_type_parsed_type"),
+                    ("Credits", "total_credits"), ("Records", "rows"),
+                    ("Unique users", "unique_users"),
+                ],
+            ),
+            "biggest_single": (
+                lb.biggest_single(),
+                [
+                    ("Rank", "_rank"), ("Name", "name"), ("Email", "email"),
+                    ("Credits", "usage_credits"), ("Usage Type", "usage_type_parsed_type"),
+                    ("Model", "usage_type_model"), ("IO", "usage_type_io"),
+                    ("Quantity", "usage_quantity"), ("Units", "usage_units"),
+                    ("Date", "date_partition"), ("Raw usage type", "usage_type"),
+                ],
+            ),
+            "yearly": (
+                lb.yearly(),
+                [
+                    ("Rank", "_rank"), ("Year", "year"), ("Credits", "total_credits"),
+                    ("Records", "rows"), ("Unique users", "unique_users"),
+                ],
+            ),
+            "monthly": (
+                lb.monthly(),
+                [
+                    ("Rank", "_rank"), ("Month", "month"), ("Credits", "total_credits"),
+                    ("Records", "rows"), ("Unique users", "unique_users"),
+                ],
+            ),
+            "weekly": (
+                lb.weekly(),
+                [
+                    ("Rank", "_rank"), ("Week of", "week"), ("Credits", "total_credits"),
+                    ("Records", "rows"), ("Unique users", "unique_users"),
+                ],
+            ),
+            "daily": (
+                lb.daily(),
+                [
+                    ("Rank", "_rank"), ("Date", "date_partition"), ("Credits", "total_credits"),
+                    ("Records", "rows"), ("Unique users", "unique_users"),
+                ],
+            ),
+        }
+        rows, columns = boards.get(active_tab, boards["users"])
+        export_rows = []
+        for idx, row in enumerate(rows, start=1):
+            row = dict(row)
+            row["_rank"] = idx
+            export_rows.append({label: row.get(key, "") for label, key in columns})
+        date_range = (
+            f"{request.args.get('start_date', '')}_to_{request.args.get('end_date', '')}"
+            if request.args.get("start_date", "") or request.args.get("end_date", "") else ""
+        )
+        credit_range = (
+            f"{request.args.get('min_credits', '').strip() or '0'}_to_"
+            f"{request.args.get('max_credits', '').strip() or 'max'}"
+            if request.args.get("min_credits", "").strip() or request.args.get("max_credits", "").strip()
+            else ""
+        )
+        return csv_response(pd.DataFrame(export_rows, columns=[label for label, _ in columns]),
+                            f"leaderboard_{active_tab}.csv", filters=[
+                                ("type", request.args.get("usage_type_filter", "")),
+                                ("model", request.args.get("model_filter", "")),
+                                ("dates", date_range),
+                                ("credits", credit_range),
+                                ("zero", "only" if request.args.get("zero_credits") == "1" else ""),
+                                ("top", top_n if top_n != 25 else ""),
+                            ])
+
     @bp.route("/user-summary", methods=["GET"])
     def user_summary() -> str:
         d = data()
@@ -121,6 +285,9 @@ def create_analytics_blueprint(services) -> Blueprint:
         active_tab = request.args.get("active_tab", "overview")
         is_form_submission = bool(request.args.get("fs", ""))
         models_explicitly_set = bool(request.args.get("mfs", ""))
+        min_credits = request.args.get("min_credits", "").strip()
+        max_credits = request.args.get("max_credits", "").strip()
+        zero_credits = request.args.get("zero_credits", "")
 
         df = d.df.copy()
         if name and "name" in df.columns:
@@ -129,6 +296,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             df = df[df["email"].astype(str).str.contains(email.strip(), case=False, na=False, regex=False)]
         if date_field and (start_date or end_date):
             df = d.filter_by_date(df, start_date, end_date, col=date_field)
+        df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
 
         user_types = (
             sorted(df["usage_type_parsed_type"].dropna().unique().tolist())
@@ -213,6 +381,45 @@ def create_analytics_blueprint(services) -> Blueprint:
             if float(s.get("total_credits", 0)) > 0
         ])
 
+        optimization_user = None
+        optimization_history = []
+        optimization_source = ""
+        try:
+            from app.optimization.service import build_optimization_result
+
+            opt = build_optimization_result(pipeline.processed_dir, d.df, config_svc.load_tiers())
+            optimization_source = opt.source_label
+            rec = opt.recommendations
+            if rec is not None and not rec.empty:
+                if email and "email" in rec.columns:
+                    matches = rec[rec["email"].astype(str).str.lower() == email.lower()]
+                elif name and "latest_name" in rec.columns:
+                    matches = rec[rec["latest_name"].astype(str).str.contains(name, case=False, na=False, regex=False)]
+                else:
+                    matches = pd.DataFrame()
+                if not matches.empty:
+                    optimization_user = matches.iloc[0].fillna("").to_dict()
+
+            hist = opt.user_week_history
+            if hist is not None and not hist.empty:
+                if email and "email" in hist.columns:
+                    hist = hist[hist["email"].astype(str).str.lower() == email.lower()]
+                elif name and "name" in hist.columns:
+                    hist = hist[hist["name"].astype(str).str.contains(name, case=False, na=False, regex=False)]
+                else:
+                    hist = pd.DataFrame()
+                if not hist.empty:
+                    optimization_history = (
+                        hist.sort_values("week_start", ascending=False)
+                        .head(12)
+                        .fillna("")
+                        .to_dict(orient="records")
+                    )
+        except Exception:
+            optimization_user = None
+            optimization_history = []
+            optimization_source = ""
+
         return render_template(
             "user_summary.html",
             name=name,
@@ -227,6 +434,9 @@ def create_analytics_blueprint(services) -> Blueprint:
             date_field=date_field,
             start_date=start_date,
             end_date=end_date,
+            min_credits=min_credits,
+            max_credits=max_credits,
+            zero_credits=zero_credits,
             selected_fields=selected_fields,
             summary_usage_type=summ_usage_type,
             summary_model=summ_model,
@@ -246,6 +456,9 @@ def create_analytics_blueprint(services) -> Blueprint:
             user_weekly_json=user_weekly_json,
             user_usage_type_weekly=usage_type_weekly_json(df),
             type_chart_json=type_chart_json,
+            optimization_user=optimization_user,
+            optimization_history=optimization_history,
+            optimization_source=optimization_source,
         )
 
     @bp.route("/user-cards", methods=["GET"])
@@ -306,33 +519,7 @@ def create_analytics_blueprint(services) -> Blueprint:
                 top_n=top_n,
             )
         else:
-            if date_field and (start_date or end_date):
-                df = d.filter_by_date(df, start_date, end_date, col=date_field)
-            df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
-            group_cols = [c for c in ["name", "email"] if c in df.columns]
-            if group_cols:
-                df = df.copy()
-                if "usage_units" in df.columns and "usage_quantity" in df.columns:
-                    df["tokens_qty"] = df["usage_quantity"].where(df["usage_units"] == "tokens", 0.0)
-                    df["counts_qty"] = df["usage_quantity"].where(df["usage_units"] == "counts", 0.0)
-                    df["duration_qty"] = df["usage_quantity"].where(df["usage_units"] == "duration_s", 0.0)
-                else:
-                    df["tokens_qty"] = df["counts_qty"] = df["duration_qty"] = 0.0
-                agg = (
-                    df.groupby(group_cols)
-                    .agg(
-                        rows=("usage_credits", "count"),
-                        total_credits=("usage_credits", "sum"),
-                        total_quantity=("usage_quantity", "sum"),
-                        total_tokens=("tokens_qty", "sum"),
-                        total_counts=("counts_qty", "sum"),
-                        total_duration_s=("duration_qty", "sum"),
-                    )
-                    .reset_index()
-                    .sort_values("total_credits", ascending=False)
-                    .head(top_n)
-                )
-                user_list = agg.to_dict(orient="records")
+            user_list = _basic_user_rows(d)
 
         # Query string (minus `view`) so the cards/table/list toggle can switch
         # the view while preserving the active search/filters.
@@ -382,13 +569,42 @@ def create_analytics_blueprint(services) -> Blueprint:
             window_end=window_end,
         )
 
-    @bp.route("/user-cards/export", methods=["GET"])
-    def export_outliers() -> object:
-        """Download the current advanced-search outlier result as an .xlsx,
-        for pasting into emails/discussions. Mirrors user_cards_page's advanced
-        params so the export matches what's on screen.
-        """
+    @bp.route("/user-cards/export.csv", methods=["GET"])
+    def user_cards_export_csv() -> object:
+        """Download the current Users result as CSV."""
         d = data()
+        mode = "advanced" if request.args.get("mode", "basic").strip() == "advanced" else "basic"
+        if mode != "advanced":
+            columns = [
+                ("Name", "name"), ("Email", "email"), ("Records", "rows"),
+                ("Credits", "total_credits"), ("Quantity", "total_quantity"),
+                ("Tokens", "total_tokens"), ("Counts", "total_counts"),
+                ("Duration seconds", "total_duration_s"),
+            ]
+            rows = _basic_user_rows(d)
+            export_df = pd.DataFrame(
+                [{label: row.get(key, "") for label, key in columns} for row in rows],
+                columns=[label for label, _ in columns],
+            )
+            date_range = (
+                f"{request.args.get('start_date', '')}_to_{request.args.get('end_date', '')}"
+                if request.args.get("start_date", "") or request.args.get("end_date", "") else ""
+            )
+            credit_range = (
+                f"{request.args.get('min_credits', '').strip() or '0'}_to_"
+                f"{request.args.get('max_credits', '').strip() or 'max'}"
+                if request.args.get("min_credits", "").strip() or request.args.get("max_credits", "").strip()
+                else ""
+            )
+            return csv_response(export_df, "users.csv", filters=[
+                ("name", request.args.get("name_query", "").strip()),
+                ("email", request.args.get("email_query", "").strip()),
+                ("dates", date_range),
+                ("credits", credit_range),
+                ("zero", "only" if request.args.get("zero_credits") == "1" else ""),
+                ("top", request.args.get("top_n", "") if request.args.get("top_n", "") != "50" else ""),
+            ])
+
         name_query = request.args.get("name_query", "").strip()
         email_query = request.args.get("email_query", "").strip()
         metric = request.args.get("metric", "per_user_window").strip()
@@ -422,14 +638,20 @@ def create_analytics_blueprint(services) -> Blueprint:
             columns=labels,
         )
 
-        bio = BytesIO()
-        with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-            export_df.to_excel(writer, index=False, sheet_name="Outliers")
-        bio.seek(0)
-        fname = f"outliers_{metric}_{win_start}_to_{win_end}.xlsx"
-        return send_file(
-            bio, as_attachment=True, download_name=fname,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        fname = f"outliers_{metric}_{win_start}_to_{win_end}.csv"
+        threshold = int(credit_threshold) if credit_threshold == int(credit_threshold) else credit_threshold
+        return csv_response(export_df, fname, filters=[
+            ("name", name_query),
+            ("email", email_query),
+            ("type", adv_usage_type),
+            ("model", adv_model),
+            ("over", threshold),
+            ("top", top_n if top_n != 200 else ""),
+        ])
+
+    @bp.route("/user-cards/export", methods=["GET"])
+    def export_outliers() -> object:
+        """Legacy URL: keep old links working, but return CSV now."""
+        return user_cards_export_csv()
 
     return bp

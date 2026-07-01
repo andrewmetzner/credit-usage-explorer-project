@@ -14,7 +14,22 @@ from dataclasses import asdict, dataclass
 from .typed import DictMixin
 
 # Metrics the outlier/alert engine knows how to evaluate.
-VALID_METRICS = ("per_record", "per_user_day", "per_user_window")
+#   per_record          — one record (prompt) over the threshold
+#   per_user_day        — one user's single-day total over the threshold
+#   per_user_window     — one user's window total over the threshold
+#   total_window        — org-wide spend over the window exceeds the threshold
+#   total_day           — org-wide spend on any single day exceeds the threshold
+#   active_users_window — distinct active users in the window exceed the threshold
+# The first three drill down to the advanced outlier search (which shares these
+# names); the org-wide three deep-link to the Summary spend overview instead.
+VALID_METRICS = (
+    "per_record",
+    "per_user_day",
+    "per_user_window",
+    "total_window",
+    "total_day",
+    "active_users_window",
+)
 
 
 def _num(value, default, cast):
