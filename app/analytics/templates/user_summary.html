@@ -182,6 +182,10 @@
               <input type="hidden" name="date_field" value="date_partition">
               <input type="hidden" name="fs" value="1">
               <input type="hidden" name="mfs" value="1">
+              {# Which model checkboxes this form displays — lets the server
+                 tell "unchecked on purpose" from "not shown at all" when a
+                 usage type is re-checked (its models default back to on). #}
+              {% for m in user_models %}<input type="hidden" name="models_shown" value="{{ m }}">{% endfor %}
 
               {% for field in selected_fields %}
               <input type="hidden" name="selected_fields" value="{{ field }}">
@@ -687,6 +691,10 @@
               <input type="hidden" name="active_tab" value="records">
               <input type="hidden" name="fs" value="1">
               <input type="hidden" name="mfs" value="1">
+              {# Which model checkboxes this form displays — lets the server
+                 tell "unchecked on purpose" from "not shown at all" when a
+                 usage type is re-checked (its models default back to on). #}
+              {% for m in user_models %}<input type="hidden" name="models_shown" value="{{ m }}">{% endfor %}
 
               <div class="row g-2 align-items-end">
                 <div class="col-xl-2 col-lg-3 col-md-4">
@@ -874,7 +882,10 @@
               data: types.map(d => d.value),
               backgroundColor: CHART_COLORS.slice(0, types.length),
               borderWidth: 2,
-              borderColor: '#fff',
+              // Segment separators match the card background in either theme;
+              // _surfaceBorder lets the theme toggle re-color them live.
+              borderColor: bnlChartThemeColors().surface,
+              _surfaceBorder: true,
               hoverOffset: 4,
             }]
           },

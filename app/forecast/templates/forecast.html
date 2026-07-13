@@ -489,26 +489,15 @@
 
   {% set cs = contract_status %}
   {% set fc = forecast %}
-  {% set pacing_colors = {
-    'ON_PACE': 'success',
-    'UNDERUSING': 'warning',
-    'ELEVATED_BURN': 'warning',
-    'OVERBURNING': 'danger'
-  } %}
-  {% set forecast_colors = {
-    'ON_TARGET': 'success',
-    'EXHAUSTION_RISK': 'danger',
-    'MODERATE_UNDERUSE': 'warning',
-    'HIGH_UNDERUSE': 'info'
-  } %}
 
   <!-- Executive Forecast Summary -->
   <div class="forecast-summary-grid">
     <div class="forecast-summary-card">
       <div class="summary-label">Status</div>
       <div class="d-flex flex-wrap gap-2 align-items-center">
-        <span class="badge bg-{{ pacing_colors.get(cs.pacing_status, 'secondary') }}">{{ cs.pacing_status | fmt_status }}</span>
-        <span class="badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}">{{ fc.forecast_status | fmt_status }}</span>
+        {# Same status pills as the Summary page (soft tint + dark text). #}
+        <span class="pacing-pill {{ cs.pacing_status }}">{{ cs.pacing_status | fmt_status }}</span>
+        <span class="pacing-pill {{ fc.forecast_status }}">{{ fc.forecast_status | fmt_status }}</span>
       </div>
       <div class="summary-metrics">
         {{ summary_metric("Pace ratio", "{:.2f}".format(cs.burn_pace_ratio)) }}
@@ -800,7 +789,7 @@
                 data-bs-toggle="collapse" data-bs-target="#acc-contract"
                >
           Contract &amp; Pacing
-          <span class="ms-2 badge bg-{{ pacing_colors.get(cs.pacing_status, 'secondary') }}" style="font-size:.72rem;">{{ cs.pacing_status | fmt_status }}</span>
+          <span class="ms-2 pacing-pill {{ cs.pacing_status }}" style="font-size:.66rem;">{{ cs.pacing_status | fmt_status }}</span>
         </button>
       </h2>
       <div id="acc-contract" class="accordion-collapse collapse">
@@ -859,7 +848,7 @@
                 data-bs-toggle="collapse" data-bs-target="#acc-forecast"
                >
           Forecast Projection
-          <span class="ms-2 badge bg-{{ forecast_colors.get(fc.forecast_status, 'secondary') }}" style="font-size:.72rem;">{{ fc.forecast_status | fmt_status }}</span>
+          <span class="ms-2 pacing-pill {{ fc.forecast_status }}" style="font-size:.66rem;">{{ fc.forecast_status | fmt_status }}</span>
         </button>
       </h2>
       <div id="acc-forecast" class="accordion-collapse collapse">

@@ -320,12 +320,17 @@ def create_analytics_blueprint(services) -> Blueprint:
             if "usage_type_model" in df.columns else []
         )
         requested_models = request.args.getlist("filter_models")
-        if not is_form_submission:
-            filter_models = user_models
-        elif not models_explicitly_set:
+        if not is_form_submission or not models_explicitly_set:
             filter_models = user_models
         else:
             valid = [m for m in requested_models if m in user_models]
+            # Model checkboxes only submit when rendered: a model whose usage
+            # type was just re-checked wasn't on the submitting form at all,
+            # so it defaults to selected instead of counting as deliberately
+            # unchecked. models_shown lists what the form actually displayed.
+            shown = set(request.args.getlist("models_shown"))
+            if shown:
+                valid += [m for m in user_models if m not in shown and m not in valid]
             filter_models = valid if (not requested_models or valid) else user_models
         if "usage_type_model" in df.columns:
             df = df[df["usage_type_model"].isin(filter_models)]

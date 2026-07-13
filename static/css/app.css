@@ -296,8 +296,8 @@ body { display: flex; min-height: 100vh; background: var(--bg); color: var(--tex
   font-weight: 600;
   padding: .15rem .45rem;
   border-radius: 4px;
-  background: #eef2ff;
-  color: #3730a3;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .table-scroll { max-height: 68vh; overflow: auto; }
 .records-table { margin: 0; }
@@ -1044,11 +1044,47 @@ th[data-col]:hover .sort-indicator { opacity: .55; }
 [data-theme="dark"] .table { color: var(--text); border-color: var(--border); }
 [data-theme="dark"] .text-muted { color: var(--muted) !important; }
 [data-theme="dark"] .text-dark { color: var(--text) !important; }
+/* Colored badges (bg-warning/bg-info + text-dark) keep genuinely dark text —
+   their backgrounds stay bright in dark mode, so light text would wash out. */
+[data-theme="dark"] .badge.text-dark { color: #1a1d23 !important; }
+/* Yellow / cyan are light backgrounds in BOTH themes — Bootstrap defaults
+   badges to white text, which is unreadable on them (e.g. the forecast
+   pacing badge and JS-built risk badges that don't add text-dark). */
+.badge.bg-warning, .badge.bg-info { color: #1a1d23 !important; }
 [data-theme="dark"] .badge.bg-light {
   background-color: var(--surface-2) !important;
   color: var(--text) !important;
   border-color: var(--border) !important;
 }
+/* Light utility backgrounds (Settings panels etc.) follow the surface vars. */
+[data-theme="dark"] .bg-light { background-color: var(--surface-2) !important; }
+[data-theme="dark"] .bg-white { background-color: var(--surface) !important; }
+[data-theme="dark"] .bg-warning-subtle {
+  background-color: rgba(255, 193, 7, .14) !important;
+  color: var(--text);
+}
+/* Accordions (forecast model drawers) */
+[data-theme="dark"] .accordion-item {
+  background-color: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+[data-theme="dark"] .accordion-button {
+  background-color: var(--surface);
+  color: var(--text);
+}
+[data-theme="dark"] .accordion-button:not(.collapsed) {
+  background-color: var(--surface-2);
+  color: var(--ink);
+  box-shadow: none;
+}
+[data-theme="dark"] .accordion-button::after { filter: invert(1) grayscale(1) brightness(1.6); }
+[data-theme="dark"] .accordion-body { color: var(--text); }
+/* Bootstrap alerts / flash messages: keep the severity tint, dark backing. */
+[data-theme="dark"] .alert-success { background-color: rgba(25, 135, 84, .16); color: #7ee2b8; border-color: rgba(25, 135, 84, .4); }
+[data-theme="dark"] .alert-danger  { background-color: rgba(220, 53, 69, .16); color: #f1aeb5; border-color: rgba(220, 53, 69, .4); }
+[data-theme="dark"] .alert-warning { background-color: rgba(255, 193, 7, .13); color: #ffda6a; border-color: rgba(255, 193, 7, .35); }
+[data-theme="dark"] .alert-info    { background-color: rgba(13, 202, 240, .13); color: #6edff6; border-color: rgba(13, 202, 240, .35); }
 [data-theme="dark"] .btn-outline-secondary { color: var(--text-soft); border-color: var(--border); }
 [data-theme="dark"] .btn-outline-secondary:hover { background-color: var(--hover); color: var(--ink); border-color: var(--muted); }
 [data-theme="dark"] .btn-close { filter: invert(1) grayscale(1) brightness(1.8); }
@@ -1062,6 +1098,8 @@ th[data-col]:hover .sort-indicator { opacity: .55; }
   --bs-table-striped-bg: var(--hover);
   --bs-table-striped-color: var(--text);
   --bs-table-border-color: var(--border);
+  --bs-table-hover-bg: var(--hover);
+  --bs-table-hover-color: var(--ink);
 }
 
 .avatar {

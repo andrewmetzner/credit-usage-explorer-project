@@ -11,12 +11,13 @@ if (typeof Chart !== 'undefined') {
     afterDraw(chart) {
       if (chart._crosshairX == null) return;
       const { ctx, chartArea: { top, bottom } } = chart;
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(chart._crosshairX, top);
       ctx.lineTo(chart._crosshairX, bottom);
       ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(0,0,0,.18)';
+      ctx.strokeStyle = dark ? 'rgba(255,255,255,.28)' : 'rgba(0,0,0,.18)';
       ctx.setLineDash([4, 3]);
       ctx.stroke();
       ctx.restore();
@@ -39,6 +40,7 @@ function bnlChartThemeColors() {
     text: css.getPropertyValue('--text').trim() || '#2c3140',
     muted: css.getPropertyValue('--muted').trim() || '#8a92a0',
     grid: dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.05)',
+    surface: css.getPropertyValue('--surface').trim() || '#fff',
   };
 }
 
@@ -56,6 +58,11 @@ function bnlApplyChartTheme() {
     });
     const legend = ch.options.plugins && ch.options.plugins.legend;
     if (legend && legend.labels) legend.labels.color = t.text;
+    // Datasets whose borders should match the card background (e.g. donut
+    // segment separators) — flagged with _surfaceBorder at creation.
+    (ch.data.datasets || []).forEach(ds => {
+      if (ds._surfaceBorder) ds.borderColor = t.surface;
+    });
     ch.update('none');
   });
 }
