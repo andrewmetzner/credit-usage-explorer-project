@@ -392,6 +392,16 @@ def create_analytics_blueprint(services) -> Blueprint:
         display_columns = state["display_columns"]
         active_tab = request.args.get("active_tab", "overview")
 
+        # Header display name: the query param when given, else the latest
+        # non-empty name in this user's records — email-only deep links
+        # (alerts, story pages, hand-typed URLs) land here without a name.
+        display_name = name
+        if not display_name and "name" in user_scope_df.columns and len(user_scope_df):
+            known = user_scope_df["name"].dropna().astype(str).str.strip()
+            known = known[known != ""]
+            if not known.empty:
+                display_name = known.iloc[-1]
+
         record_columns, rows_data = build_record_view(df, display_columns)
         total_credits = float(df["usage_credits"].sum()) if "usage_credits" in df.columns else 0.0
 
@@ -466,6 +476,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         return render_template(
             "user_summary.html",
             name=name,
+            display_name=display_name,
             email=email,
             rows=len(df),
             total_credits=total_credits,

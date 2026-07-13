@@ -1,24 +1,32 @@
 {#- Records table body. Rendered separately from index.html so the route can
     cache the (large) result per dataset + query — see records_page. -#}
+{#- Click-through params shared by every row: the records page's active
+    filters mapped onto user-summary's equivalents. Type/model only when set —
+    an empty filter_types= param would filter the user page down to nothing. -#}
+{%- set link_params = {
+      'date_field': 'date_partition',
+      'start_date': request.args.get('start_date', ''),
+      'end_date': request.args.get('end_date', ''),
+      'min_credits': request.args.get('min_credits', ''),
+      'max_credits': request.args.get('max_credits', ''),
+      'zero_credits': request.args.get('zero_credits', ''),
+      'active_tab': 'records',
+      'fs': '1',
+    } -%}
+{%- if request.args.get('usage_type') -%}
+  {%- set _ = link_params.update({'filter_types': request.args.get('usage_type')}) -%}
+{%- endif -%}
+{%- if request.args.get('model') -%}
+  {%- set _ = link_params.update({'filter_models': request.args.get('model'), 'mfs': '1'}) -%}
+{%- endif -%}
 {% for row in rows %}
 <tr>
   {% for c in columns %}
   <td class="{% if c.align == 'right' %}text-end tnum{% endif %}">
     {%- if c.key == 'name' and row._email -%}
-      {#- Same click-through shape as the leaderboard: name for the page
-          header, current date/credit filters carried along, landing on the
-          user's Records tab. -#}
       <a href="{{ url_for('analytics.user_summary',
-                          name=row[c.key] or '',
-                          email=row._email,
-                          date_field='date_partition',
-                          start_date=request.args.get('start_date', ''),
-                          end_date=request.args.get('end_date', ''),
-                          min_credits=request.args.get('min_credits', ''),
-                          max_credits=request.args.get('max_credits', ''),
-                          zero_credits=request.args.get('zero_credits', ''),
-                          active_tab='records',
-                          fs='1') }}" class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</a>
+                          name=row[c.key] or '', email=row._email,
+                          **link_params) }}" class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</a>
     {%- elif c.clip -%}
       <span class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</span>
     {%- else -%}

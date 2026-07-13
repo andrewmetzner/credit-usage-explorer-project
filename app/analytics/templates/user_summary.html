@@ -15,15 +15,15 @@
 
         <!-- Identity -->
         <div class="d-flex align-items-center flex-wrap gap-2">
-          <div class="user-name-hero mb-0">{{ name or email or 'User' }}</div>
+          <div class="user-name-hero mb-0">{{ display_name or email or 'User' }}</div>
           {% if has_codex_access %}
           <span class="badge bg-info text-dark" title="This user belongs to a Codex group. Codex is treated as product access, not a credit tier.">&#129302; Codex access</span>
           {% endif %}
         </div>
 
-        {% if (email and email != name) or account_id or account_user_id or public_id %}
+        {% if (email and email != display_name) or account_id or account_user_id or public_id %}
         <div class="user-meta-row">
-          {% if email and email != name %}<span>{{ email }}</span>{% endif %}
+          {% if email and email != display_name %}<span>{{ email }}</span>{% endif %}
           {% if account_id %}<span class="meta-sep">&middot;</span><span class="meta-id" title="Account ID">{{ account_id }}</span>{% endif %}
           {% if account_user_id %}<span class="meta-sep">&middot;</span><span class="meta-id" title="Account User ID">{{ account_user_id }}</span>{% endif %}
           {% if public_id %}<span class="meta-sep">&middot;</span><span class="meta-id" title="Public ID">{{ public_id }}</span>{% endif %}
