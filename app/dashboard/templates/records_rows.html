@@ -5,7 +5,20 @@
   {% for c in columns %}
   <td class="{% if c.align == 'right' %}text-end tnum{% endif %}">
     {%- if c.key == 'name' and row._email -%}
-      <a href="{{ url_for('analytics.user_summary', email=row._email) }}" class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</a>
+      {#- Same click-through shape as the leaderboard: name for the page
+          header, current date/credit filters carried along, landing on the
+          user's Records tab. -#}
+      <a href="{{ url_for('analytics.user_summary',
+                          name=row[c.key] or '',
+                          email=row._email,
+                          date_field='date_partition',
+                          start_date=request.args.get('start_date', ''),
+                          end_date=request.args.get('end_date', ''),
+                          min_credits=request.args.get('min_credits', ''),
+                          max_credits=request.args.get('max_credits', ''),
+                          zero_credits=request.args.get('zero_credits', ''),
+                          active_tab='records',
+                          fs='1') }}" class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</a>
     {%- elif c.clip -%}
       <span class="cell-clip" title="{{ row[c.key] }}">{{ row[c.key] }}</span>
     {%- else -%}
