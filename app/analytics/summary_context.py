@@ -27,6 +27,7 @@ def build_user_summary_context(
         "optimization_user": None,
         "optimization_history": [],
         "optimization_tier_history": [],
+        "optimization_tierlist_tier": "",
         "optimization_tier_moves": [],
         "optimization_source": "",
         "optimization_assigned_tier_count": 0,
@@ -44,8 +45,14 @@ def build_user_summary_context(
     def resolve_tier_history(key: str) -> None:
         """Tier history + Codex badge: cheap JSON lookups, filled in first so
         they still render even if the heavier optimization build fails."""
+        from app.optimization.service import highest_cap_tier
+
         history = config_svc.load_user_tier_history().get(key, [])
         ctx["optimization_tier_history"] = history
+        # The tierlist value a reset restores: the highest-allotment group.
+        ctx["optimization_tierlist_tier"] = (
+            highest_cap_tier(history, gov.weekly_caps()) if history else ""
+        )
         ctx["has_codex_access"] = gov.has_codex_access(key)
         ctx["optimization_tier_moves"] = [
             {

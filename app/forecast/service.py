@@ -84,6 +84,12 @@ class ForecastingService:
         self.config = config
         self._as_of: pd.Timestamp | None = None
         self._forecast_op_df: pd.DataFrame | None = None
+        # "Now" reference for lag-aware anchoring. Live routes set this to
+        # today so projections start from the present (uploads lag the
+        # calendar; ledger entries through today are already available).
+        # Left None for snapshot backfill / reconstruction, where forecasts
+        # must stay anchored to their historical as-of date.
+        self._today: pd.Timestamp | None = None
 
         if historical_df is None and operational_df is None and daily_df is not None:
             historical_df, operational_df = self._derive_from_daily(daily_df)
@@ -305,7 +311,13 @@ class ForecastingService:
         exhaustion_date = None
         if forecast_weekly > 0:
             weeks_until_exhaustion = credits_remaining / forecast_weekly
-            exhaustion_date = (latest_date + timedelta(days=weeks_until_exhaustion * 7)).date()
+            # Uploads lag the calendar: no burn is recorded after
+            # latest_usage_date, so when data is stale the countdown starts
+            # from the _today reference (set by live routes), matching the
+            # chart's bridged actual line. Snapshot backfill leaves _today
+            # unset and stays anchored to its historical as-of date.
+            anchor = latest_date if self._today is None else max(latest_date, self._today)
+            exhaustion_date = (anchor + timedelta(days=weeks_until_exhaustion * 7)).date()
 
         future_usage = forecast_weekly * weeks_remaining
         end_balance = credits_remaining - future_usage
@@ -380,9 +392,34 @@ class ForecastingService:
             else _dt.date.fromisoformat(str(raw_date)[:10])
         )
 
+        credits_remaining = float(cs["credits_remaining"])
+        weeks_remaining = float(cs["weeks_remaining"])
+        # Lag-aware anchor (matches the chart's known-facts bridge): when a
+        # _today reference is set and the data ends before it, models start
+        # from today — remaining counts ledger entries effective through
+        # today (not ones dated later), no burn is assumed in the no-data
+        # gap, and the projection horizon runs today -> contract end.
+        if self._today is not None and self._today.date() > latest_date:
+            from app.shared.credit_ledger import normalize_credit_entries
+
+            anchor = self._today.normalize()
+            contract = self.config.get("contract", {})
+            start = pd.to_datetime(contract.get("contract_start_date"), errors="coerce")
+            available = 0.0
+            for entry in normalize_credit_entries(contract):
+                ed = pd.to_datetime(entry.get("date"), errors="coerce")
+                if pd.isna(ed) or (not pd.isna(start) and ed < start):
+                    ed = start
+                if pd.isna(ed) or ed <= anchor:
+                    available += float(entry.get("credits") or 0)
+            credits_remaining = max(available - float(cs["total_credits_used"]), 0.0)
+            end = pd.to_datetime(cs["contract_end_date"])
+            weeks_remaining = max((end - anchor).days, 0) / 7
+            latest_date = anchor.date()
+
         return ForecastContext(
-            credits_remaining=float(cs["credits_remaining"]),
-            weeks_remaining=float(cs["weeks_remaining"]),
+            credits_remaining=credits_remaining,
+            weeks_remaining=weeks_remaining,
             latest_usage_date=latest_date,
             purchased_credits=float(cs["purchased_credits"]),
             forecast_weekly_burn=float(fc["forecast_weekly_burn"]),

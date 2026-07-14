@@ -152,6 +152,23 @@ def tier_monthly_caps(tier_config: dict) -> dict[str, float]:
     return out
 
 
+def highest_cap_tier(history: list[str], caps: dict[str, float]) -> str:
+    """The group in `history` granting the largest credit allotment.
+
+    Users can belong to several groups at once; their governance tier is the
+    most generous one (ties break toward the most recent entry). Groups not
+    in the cap config rank lowest; falls back to the last entry when none
+    match the config at all."""
+    known = [
+        (float(caps[name]), idx, name)
+        for idx, name in enumerate(history)
+        if name in caps
+    ]
+    if known:
+        return max(known)[2]
+    return history[-1] if history else ""
+
+
 def is_codex_access_tier(tier: object) -> bool:
     """Codex groups grant product access, not a credit-governance tier.
 
@@ -166,12 +183,14 @@ def resolve_governance_assignments(
     histories: dict[str, list[str]] | None,
     caps: dict[str, float],
 ) -> dict[str, str]:
-    """Drop Codex-access tiers from governance assignments.
+    """Resolve stored assignments to effective governance tiers.
 
-    When a user's assigned tier is a Codex access flag, fall back to their most
-    recent real (non-Codex) tier from the tierlist history. If they have no
-    other tier at all, Codex access IS their tier -- kept as-is rather than
-    silently dropped to Baseline default.
+    Codex groups count as real tiers when the policy gives them a cap (e.g.
+    "Codex Users" at 3,000/month) — the Codex-access badge is tracked
+    separately and survives either way. Only a Codex-flagged assignment with
+    NO configured cap falls back to the user's most generous configured tier
+    from the tierlist history; if they have no other tier at all, Codex
+    access IS their tier — kept as-is rather than dropped to Baseline.
     """
     histories = histories or {}
     resolved: dict[str, str] = {}
@@ -179,16 +198,15 @@ def resolve_governance_assignments(
         key = str(email).strip().lower()
         if not key:
             continue
-        if not is_codex_access_tier(tier):
-            resolved[key] = str(tier).strip()
+        name = str(tier).strip()
+        if not is_codex_access_tier(name) or name in caps:
+            resolved[key] = name
             continue
-        real = ""
-        for past in reversed(histories.get(key, [])):
-            candidate = str(past).strip()
-            if candidate and not is_codex_access_tier(candidate) and candidate in caps:
-                real = candidate
-                break
-        resolved[key] = real or str(tier).strip()
+        candidates = [
+            str(past).strip() for past in histories.get(key, [])
+            if str(past).strip() in caps
+        ]
+        resolved[key] = (highest_cap_tier(candidates, caps) if candidates else "") or name
     return resolved
 
 

@@ -647,6 +647,17 @@
           <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearBurndownViewRange()">Clear</button>
         </div>
 
+        <div class="d-flex align-items-end flex-wrap gap-1" style="font-size:.72rem;"
+             title="Fix the y-axis window (credits). Leave blank for auto. Carries into fullscreen and Export PNG.">
+          <span class="fc-control-label align-self-center me-1">Y-axis</span>
+          <input type="number" id="chart-view-ymin" class="form-control form-control-sm" style="width:110px;"
+                 placeholder="auto" step="any" onchange="applyBurndownYRange()">
+          <span class="text-muted align-self-center">to</span>
+          <input type="number" id="chart-view-ymax" class="form-control form-control-sm" style="width:110px;"
+                 placeholder="auto" step="any" onchange="applyBurndownYRange()">
+          <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearBurndownYRange()">Clear</button>
+        </div>
+
         <details class="fc-native-details fc-colors-details ms-auto" {% if data_from or data_to %}open{% endif %}>
           <summary>Advanced settings{% if data_from or data_to %} &middot; burn window active{% endif %}</summary>
           <div class="fc-advanced-panel">
@@ -961,6 +972,7 @@
     "granularity": "{{ granularity }}",
     "weeklyChartData": {{ weekly_chart_data | safe }},
     "dailyActualData": {{ daily_actual_data | safe }},
+    "today": "{{ today | default('') }}",
     "creditEvents": {{ credit_events | default('[]') | safe }},
     "activeUsers": {{ active_users_data | safe }},
     "cumulative": {{ cumulative_chart_data | safe }},

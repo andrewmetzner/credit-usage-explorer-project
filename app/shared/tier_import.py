@@ -183,7 +183,12 @@ def clean_tier_name(value: object) -> str:
     return _readable_group_token(str(value)).strip()
 
 
-def read_tier_assignments_csv(file_obj: Any) -> TierImportResult:
+def read_tier_assignments_csv(file_obj: Any, tier_caps: dict[str, float] | None = None) -> TierImportResult:
+    """Parse a tierlist users export into assignments + histories.
+
+    When ``tier_caps`` (tier name -> cap) is provided, a user belonging to
+    several groups is assigned the group with the HIGHEST credit allotment;
+    without caps it falls back to the most recent (last) group."""
     raw = file_obj.read()
     if isinstance(raw, str):
         raw = raw.encode("utf-8")
@@ -223,22 +228,23 @@ def read_tier_assignments_csv(file_obj: Any) -> TierImportResult:
     codex_access: dict[str, bool] = {}
     tiers: set[str] = set()
     skipped_rows = 0
+    from app.optimization.service import highest_cap_tier
+
     for _, row in df.iterrows():
         email = str(row.get(email_col, "") or "").strip().lower()
         # The groups cell lists a user's groups oldest-first, most-recent-last.
-        # Codex access is product access, not a governance tier, so it's kept
-        # out of the history entirely rather than treated as "their tier" --
-        # unless it's the ONLY group they have, in which case there is no
-        # other tier to fall back to, so Codex access becomes their tier.
+        # Codex groups are governance tiers too when the policy gives them a
+        # cap (e.g. "Codex Users" at 3,000/month); membership additionally
+        # surfaces as the Codex-access badge on the user profile.
         raw_labels = extract_tier_names(row.get(tier_col, ""))
-        codex_labels = [label for label in raw_labels if is_codex_group_label(label)]
-        if email and codex_labels:
+        if email and any(is_codex_group_label(label) for label in raw_labels):
             codex_access[email] = True
-        history = [label for label in raw_labels if not is_codex_group_label(label)]
-        if not history and codex_labels:
-            history = [codex_labels[-1]]
+        history = list(raw_labels)
         tiers.update(history)
-        tier = history[-1] if history else ""
+        tier = (
+            highest_cap_tier(history, tier_caps) if tier_caps
+            else (history[-1] if history else "")
+        )
         if not email or not tier:
             skipped_rows += 1
             continue

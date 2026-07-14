@@ -802,16 +802,69 @@ if (typeof Chart !== 'undefined') {
     }
   });
   if (!actualPts.length || actualPts[actualPts.length - 1][0] !== latestDate) {
-    actualPts.push([latestDate, remaining]);
+    // Ledger-aware: only entries effective by the last data day count here —
+    // future-dated grants step up inside the bridge below instead.
+    actualPts.push([latestDate, Math.max(addedBy(latestDate) - cumUsed, 0)]);
   }
   const dailyActualPts = dailyActualRaw
     .filter(d => d && d.date)
     .map(d => [d.date, Number(d.remaining)])
     .filter(p => Number.isFinite(p[1]));
 
+  // Known-facts bridge: usage uploads lag the calendar, so past the LAST REAL
+  // data point of a series, remaining is flat except for ledger entries
+  // landing in the gap (each +N steps up on its date). Runs to today; newly
+  // uploaded data simply shortens it. Built per series from that series' own
+  // last point, so the line is always continuous.
+  const todayStr = D.today || '';
+  const addDaysStr = (dstr, n) => {
+    const d = new Date(dstr + 'T12:00:00');
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  function buildBridgePts(lastPt) {
+    if (!lastPt || !todayStr || todayStr <= lastPt[0]) return [];
+    const pts = [];
+    let level = lastPt[1];
+    let prev = lastPt[0];
+    creditEvents
+      .filter(e => e.effective_date > lastPt[0] && e.effective_date <= todayStr)
+      .sort((a, b) => (a.effective_date < b.effective_date ? -1 : 1))
+      .forEach(e => {
+        const dayBefore = addDaysStr(e.effective_date, -1);
+        if (dayBefore > prev) pts.push([dayBefore, level]);
+        level += e.credits;
+        pts.push([e.effective_date, level]);
+        prev = e.effective_date;
+      });
+    if (!pts.length || pts[pts.length - 1][0] !== todayStr) pts.push([todayStr, level]);
+    return pts;
+  }
+  function extendWithBridge(pts) {
+    if (!pts.length) return null;
+    const lastReal = pts[pts.length - 1];
+    buildBridgePts(lastReal).forEach(pt => {
+      if (pt[0] > pts[pts.length - 1][0]) pts.push(pt);
+    });
+    return lastReal;
+  }
+  const weeklyLastReal = extendWithBridge(actualPts);
+  const dailyLastReal = extendWithBridge(dailyActualPts);
+  const useDaily = (D.granularity || 'weekly') === 'daily' && dailyActualPts.length > 0;
+  // Boundary between solid (recorded usage) and dashed (bridge) on the chart,
+  // and the anchor the projection continues from.
+  const lastRealDate = (useDaily ? dailyLastReal : weeklyLastReal)?.[0] || latestDate;
+  const activeSeries = useDaily ? dailyActualPts : actualPts;
+  const activeLast = activeSeries.length ? activeSeries[activeSeries.length - 1] : [latestDate, remaining];
+  const projAnchorDate = activeLast[0];
+  const projAnchorRemaining = activeLast[1];
+
   function buildProjPts(granularity) {
-    const pts = [[latestDate, remaining]];
-    const base = new Date(latestDate);
+    // Anchored at the end of the known-facts bridge (today, when data lags)
+    // so the grant steps stay on the actual line and the decline starts from
+    // what is actually known now.
+    const pts = [[projAnchorDate, projAnchorRemaining]];
+    const base = new Date(projAnchorDate);
     const dateAfterDays = days => {
       const d = new Date(base);
       d.setDate(d.getDate() + days);
@@ -819,12 +872,12 @@ if (typeof Chart !== 'undefined') {
     };
     const dailyBurn = weeklyBurn / 7;
     // Calendar day the projection crosses zero — same floor convention as the
-    // stated exhaustion date (latest + remaining/burn, truncated to a date).
+    // stated exhaustion date (anchor + remaining/burn, truncated to a date).
     // Every point from that day on reads 0, so hovering the exhaustion date
     // says 0 rather than the few-hundred-credit remainder of the last whole
     // step before the crossing.
-    const crossDateStr = (dailyBurn > 0 && remaining > 0)
-      ? dateAfterDays(Math.floor(remaining / dailyBurn))
+    const crossDateStr = (dailyBurn > 0 && projAnchorRemaining > 0)
+      ? dateAfterDays(Math.floor(projAnchorRemaining / dailyBurn))
       : null;
     let crossInserted = false;
     const stepDays = granularity === 'daily' ? 1 : 7;
@@ -840,7 +893,7 @@ if (typeof Chart !== 'undefined') {
       }
       const rem = (crossDateStr && dstr >= crossDateStr)
         ? 0
-        : Math.max(remaining - dailyBurn * days, 0);
+        : Math.max(projAnchorRemaining - dailyBurn * days, 0);
       pts.push([dstr, rem]);
     }
     return pts;
@@ -858,7 +911,7 @@ if (typeof Chart !== 'undefined') {
     ds.label === 'Projected remaining' || ds._mcOverlay || ds._lrOverlay
   );
   const isLatestActualProjectionHover = item =>
-    latestDate && item.label === latestDate && isProjectionDataset(item.dataset);
+    projAnchorDate && item.label === projAnchorDate && isProjectionDataset(item.dataset);
 
   function buildAllLabels(ppts) {
     return [...new Set([...activeActualPts(), ...ppts].map(p => p[0]))].sort();
@@ -984,8 +1037,51 @@ if (typeof Chart !== 'undefined') {
     applyAxisWindow(def.min, def.max);
   };
 
+  // Y-axis window ("calculator" style): fixed min/max in credits so exports
+  // can be framed exactly; blank = auto. Persisted per browser and cloned
+  // into the fullscreen chart (and therefore its PNG export) via options.
+  window.applyBurndownYRange = function (persist = true) {
+    const bc = window.burndownChart;
+    if (!bc) return;
+    const minEl = document.getElementById('chart-view-ymin');
+    const maxEl = document.getElementById('chart-view-ymax');
+    const yMin = minEl && minEl.value !== '' ? Number(minEl.value) : null;
+    const yMax = maxEl && maxEl.value !== '' ? Number(maxEl.value) : null;
+    if (yMin != null && yMax != null && yMin >= yMax) {
+      alert('Y-axis min must be below max.');
+      return;
+    }
+    const scale = bc.chart.options.scales.y;
+    if (yMin != null) scale.min = yMin; else delete scale.min;
+    if (yMax != null) { scale.max = yMax; delete scale.suggestedMax; }
+    else { delete scale.max; scale.suggestedMax = purchased; }
+    if (persist) {
+      if (yMin != null) localStorage.setItem('fc-view-ymin', String(yMin));
+      else localStorage.removeItem('fc-view-ymin');
+      if (yMax != null) localStorage.setItem('fc-view-ymax', String(yMax));
+      else localStorage.removeItem('fc-view-ymax');
+    }
+    bc.chart.update('none');
+  };
+  window.clearBurndownYRange = function () {
+    ['chart-view-ymin', 'chart-view-ymax'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    window.applyBurndownYRange();
+  };
+  function initBurndownYRange() {
+    const minEl = document.getElementById('chart-view-ymin');
+    const maxEl = document.getElementById('chart-view-ymax');
+    if (!minEl || !maxEl) return;
+    minEl.value = localStorage.getItem('fc-view-ymin') || '';
+    maxEl.value = localStorage.getItem('fc-view-ymax') || '';
+    if (minEl.value !== '' || maxEl.value !== '') window.applyBurndownYRange(false);
+  }
+
   window.resetBurndownView = function() {
     window.clearBurndownViewRange();
+    window.clearBurndownYRange();
   };
 
   function initBurndownViewRange() {
@@ -1013,6 +1109,14 @@ if (typeof Chart !== 'undefined') {
           data: allLabels.map(l => lookup(activeActualPts(), l)),
           borderColor: getChartColor('actual'), backgroundColor: hexToRgba(getChartColor('actual'), 0.07),
           fill: true, tension: 0.1, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
+          // The bridge portion (past the last real data point) draws dashed:
+          // the level is known from the ledger, the flatness is "no data yet".
+          segment: {
+            borderDash: ctx => {
+              const lbl = allLabels[ctx.p1DataIndex];
+              return lbl && lastRealDate && lbl > lastRealDate ? [4, 4] : undefined;
+            },
+          },
         },
         {
           label: 'Projected remaining',
@@ -1218,6 +1322,7 @@ if (typeof Chart !== 'undefined') {
   }
   applyBurndownXAxisStyle(window.burndownChart, currentGranularity);
   initBurndownViewRange();
+  initBurndownYRange();
   restorePendingSnapshotSelections();
 })();
 

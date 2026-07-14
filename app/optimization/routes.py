@@ -9,6 +9,7 @@ from flask import Blueprint, Response, flash, redirect, render_template, request
 
 from .service import (
     build_optimization_result,
+    highest_cap_tier,
     is_codex_access_tier,
     tier_caps,
 )
@@ -290,8 +291,8 @@ def create_optimization_blueprint(services) -> Blueprint:
         """Restore a user's tier to the value from the imported tierlist.
 
         Manual tier changes only overwrite ``user_tier_assignments.json``; the
-        tierlist import also records ``user_tier_history.json``, so the last
-        entry there is the original tierlist assignment we reset back to.
+        tierlist import also records ``user_tier_history.json`` (the user's
+        groups), so the reset re-picks their HIGHEST-allotment group.
         """
         email = request.form.get("email", "").strip().lower()
         next_url = _safe_next()
@@ -302,7 +303,7 @@ def create_optimization_blueprint(services) -> Blueprint:
         tiers = tier_caps(config_svc.load_tiers())
         assignments = config_svc.load_user_tiers()
         history = config_svc.load_user_tier_history().get(email, [])
-        tierlist_tier = history[-1] if history else ""
+        tierlist_tier = highest_cap_tier(history, tiers) if history else ""
 
         if tierlist_tier and tierlist_tier in tiers:
             assignments[email] = tierlist_tier
@@ -328,15 +329,15 @@ def create_optimization_blueprint(services) -> Blueprint:
     @bp.route("/optimization/user-tier/reset-all", methods=["POST"])
     def reset_all_user_tiers() -> object:
         """Discard every manual tier override and rebuild assignments from the
-        imported tierlist history (each user's last recorded tier)."""
+        imported tierlist history (each user's highest-allotment group)."""
         next_url = _safe_next("settings.settings_page")
         tiers = tier_caps(config_svc.load_tiers())
         histories = config_svc.load_user_tier_history()
         previous = config_svc.load_user_tiers()
         rebuilt = {
-            email: hist[-1]
+            email: highest_cap_tier(hist, tiers)
             for email, hist in histories.items()
-            if hist and hist[-1] in tiers
+            if hist and highest_cap_tier(hist, tiers) in tiers
         }
         config_svc.save_user_tiers(rebuilt)
         for email, tier in rebuilt.items():

@@ -289,7 +289,13 @@ def create_settings_blueprint(services) -> Blueprint:
             return redirect(url_for("settings.settings_page"))
 
         try:
-            result = read_tier_assignments_csv(file.stream)
+            # Caps let the import pick each user's HIGHEST-allotment group as
+            # their tier when they belong to several.
+            from app.optimization.service import tier_caps as _tier_caps
+
+            result = read_tier_assignments_csv(
+                file.stream, tier_caps=_tier_caps(config_svc.load_tiers())
+            )
             if not result.assignments:
                 flash("No tier assignments were found in that CSV.", "warning")
                 return redirect(url_for("settings.settings_page"))

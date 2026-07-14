@@ -60,19 +60,25 @@ def create_forecast_blueprint(services) -> Blueprint:
             })
         return events
 
-    def _daily_actual_burndown_json(df, contract_status: dict | None) -> str:
+    def _daily_actual_burndown_json(df, contract_status: dict | None, as_of=None) -> str:
         """Daily actual remaining points for the burndown chart.
 
         Remaining honors the credit ledger: each purchased/gifted entry only
         counts from its recorded date, so a mid-contract grant appears as a
-        step up on that day instead of inflating the whole history."""
+        step up on that day instead of inflating the whole history.
+
+        `as_of` (the newest date present in the uploaded data) bounds the
+        series; it can run past latest_usage_date, which follows the weekly
+        summaries and lags freshly-merged daily rows."""
         if df is None or df.empty or "date_partition" not in df.columns or "usage_credits" not in df.columns:
             return "[]"
         if not contract_status:
             return "[]"
 
         start = _pd.to_datetime(contract_status.get("contract_start_date"), errors="coerce")
-        end = _pd.to_datetime(contract_status.get("latest_usage_date"), errors="coerce")
+        end = _pd.to_datetime(as_of, errors="coerce")
+        if _pd.isna(end):
+            end = _pd.to_datetime(contract_status.get("latest_usage_date"), errors="coerce")
         purchased = float(contract_status.get("purchased_credits") or 0)
         if _pd.isna(start) or _pd.isna(end) or purchased <= 0:
             return "[]"
@@ -166,6 +172,9 @@ def create_forecast_blueprint(services) -> Blueprint:
             (hist_df, "period_end"),
         )
         forecasting._as_of = data_as_of
+        # Live view: anchor projections at today (lag-aware). Snapshot
+        # backfill constructs its own service and leaves this unset.
+        forecasting._today = _pd.Timestamp.today().normalize()
         if exclude_partial:
             if forecasting.operational_df is not None and not forecasting.operational_df.empty:
                 forecasting.operational_df = forecasting.operational_df[
@@ -195,6 +204,7 @@ def create_forecast_blueprint(services) -> Blueprint:
                 forecast=None,
                 weekly_chart_data="[]",
                 daily_actual_data="[]",
+                today=str(_pd.Timestamp.today().date()),
                 credit_events="[]",
                 cumulative_chart_data="[]",
                 active_users_data="[]",
@@ -218,7 +228,7 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         chart_builder = ChartDataBuilder(forecasting, forecasting.historical_df, forecasting.operational_df)
         weekly_chart_data = chart_builder.weekly_burn_json()
-        daily_actual_data = _daily_actual_burndown_json(daily_fallback_df, contract_status)
+        daily_actual_data = _daily_actual_burndown_json(daily_fallback_df, contract_status, data_as_of)
         credit_events = json.dumps(_credit_events(contract_status.get("contract_start_date")))
         cumulative_chart_data = chart_builder.cumulative_burn_json()
         contract_start_str = str(contract_status.get("contract_start_date", ""))
@@ -232,6 +242,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             forecast=forecast_data,
             weekly_chart_data=weekly_chart_data,
             daily_actual_data=daily_actual_data,
+            today=str(_pd.Timestamp.today().date()),
             credit_events=credit_events,
             cumulative_chart_data=cumulative_chart_data,
             active_users_data=active_users_data,
@@ -593,6 +604,9 @@ def create_forecast_blueprint(services) -> Blueprint:
             (hist_df, "period_end"),
         )
         svc._as_of = data_as_of
+        # Same lag-aware anchor as the page, so MC/ML overlays line up with
+        # the bridged actual line and the deterministic projection.
+        svc._today = _pd.Timestamp.today().normalize()
         if exclude_partial:
             if svc.operational_df is not None and not svc.operational_df.empty:
                 svc.operational_df = svc.operational_df[
