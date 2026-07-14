@@ -32,6 +32,10 @@ class ForecastContext:
     # Chronological in-contract weekly burns (for trend models); falls back to
     # `observations` when not supplied.
     weekly_series: pd.Series | None = None
+    # Display horizon in weeks: lets models keep projecting past contract end
+    # (to exhaustion) like the deterministic line. Risk stats stay pinned to
+    # the contract-end step regardless. None -> weeks_remaining.
+    projection_weeks: float | None = None
 
 
 @dataclass
@@ -144,7 +148,13 @@ class MonteCarloModel(PredictionModel):
 
         full_weeks = int(math.floor(ctx.weeks_remaining))
         partial = ctx.weeks_remaining - full_weeks
-        fracs = np.array([1.0] * full_weeks + ([partial] if partial > 1e-6 else []))
+        fracs_list = [1.0] * full_weeks + ([partial] if partial > 1e-6 else [])
+        # The contract-end column: risk stats read here even when the display
+        # horizon keeps simulating past contract end (to exhaustion).
+        contract_steps = len(fracs_list)
+        proj_weeks = ctx.projection_weeks or ctx.weeks_remaining
+        extra_weeks = max(int(math.ceil(proj_weeks - ctx.weeks_remaining)), 0)
+        fracs = np.array(fracs_list + [1.0] * extra_weeks)
         n_steps = len(fracs)
 
         if n_steps == 0:
@@ -165,15 +175,23 @@ class MonteCarloModel(PredictionModel):
         start_col = np.full((self.runs, 1), ctx.credits_remaining)
         all_rem = np.hstack([start_col, remaining])   # (runs × steps+1)
 
+        # Each step lands frac*7 days after the previous one, so the final
+        # partial week spans its true length (ending at contract end) instead
+        # of a full 7 days — which drew a near-flat artificial tail.
+        offsets = [0.0]
+        for frac in fracs:
+            offsets.append(offsets[-1] + float(frac) * 7)
         dates = [
-            str(ctx.latest_usage_date + timedelta(days=i * 7))
-            for i in range(n_steps + 1)
+            str(ctx.latest_usage_date + timedelta(days=round(off)))
+            for off in offsets
         ]
 
         p10 = np.percentile(all_rem, 10, axis=0)
         p50 = np.percentile(all_rem, 50, axis=0)
         p90 = np.percentile(all_rem, 90, axis=0)
-        exhaustion_prob = float(np.mean(remaining[:, -1] <= 0))
+        # "Exhausted by CONTRACT END" — not by the (longer) display horizon.
+        end_i = min(contract_steps, all_rem.shape[1] - 1)
+        exhaustion_prob = float(np.mean(all_rem[:, end_i] <= 0))
 
         def pts(arr: np.ndarray) -> list[dict]:
             return [{"date": d, "value": round(float(v), 1)} for d, v in zip(dates, arr)]
@@ -187,6 +205,10 @@ class MonteCarloModel(PredictionModel):
             metadata={
                 "runs": self.runs,
                 "exhaustion_probability": round(exhaustion_prob, 4),
+                "p10_end_balance": round(float(p10[end_i]), 1),
+                "p50_end_balance": round(float(p50[end_i]), 1),
+                "p90_end_balance": round(float(p90[end_i]), 1),
+                "contract_end_date": dates[end_i],
                 "observations_used": int(len(multipliers)),
                 "random_seed": self.random_seed,
             },
@@ -225,6 +247,12 @@ class LinearRegressionModel(PredictionModel):
         full_weeks = int(math.floor(ctx.weeks_remaining))
         partial = ctx.weeks_remaining - full_weeks
         fracs = [1.0] * full_weeks + ([partial] if partial > 1e-6 else [])
+        # Contract-end step: metadata stats read here; the display horizon may
+        # keep projecting past it (to exhaustion) like the base forecast.
+        contract_steps = len(fracs)
+        proj_weeks = ctx.projection_weeks or ctx.weeks_remaining
+        extra_weeks = max(int(math.ceil(proj_weeks - ctx.weeks_remaining)), 0)
+        fracs = fracs + [1.0] * extra_weeks
         n_steps = len(fracs)
 
         if len(y) < 2 or n_steps == 0:
@@ -272,6 +300,7 @@ class LinearRegressionModel(PredictionModel):
         last_idx = len(y) - 1
         exhaustion_date: str | None = None
 
+        cum_days = 0.0
         for k, frac in enumerate(fracs, start=1):
             raw_week_burn = float(intercept + slope * (last_idx + k))
             blended_week_burn = trend_weight * raw_week_burn + (1.0 - trend_weight) * float(ctx.forecast_weekly_burn)
@@ -282,7 +311,10 @@ class LinearRegressionModel(PredictionModel):
             remaining = max(remaining - week_burn, 0.0)
             cum_var += (resid_std * frac) ** 2
             band = self._Z_80 * math.sqrt(cum_var)
-            d = ctx.latest_usage_date + timedelta(days=k * 7)
+            # The final partial week spans its true length (ends at contract
+            # end) rather than a full 7 days, avoiding a flat tail segment.
+            cum_days += float(frac) * 7
+            d = ctx.latest_usage_date + timedelta(days=round(cum_days))
             dates.append(str(d))
             p50.append(round(remaining, 1))
             p90.append(round(min(max(remaining + band, 0.0), ctx.purchased_credits), 1))
@@ -311,7 +343,10 @@ class LinearRegressionModel(PredictionModel):
         else:
             model_quality = "weak_fit"
 
-        exhausted = p50[-1] <= 0.0
+        # Stats pin to the contract-end step (arrays include the start point at
+        # index 0; the loop may have broken early on exhaustion).
+        end_i = min(contract_steps, len(p50) - 1)
+        exhausted = p50[end_i] <= 0.0
         metadata = {
             "model_version": "stabilized_v2",
             "model_engine": engine,
@@ -336,9 +371,9 @@ class LinearRegressionModel(PredictionModel):
             "model_quality": model_quality,
             "projected_exhaustion": bool(exhausted),
             "projected_exhaustion_date": exhaustion_date,
-            "p10_end_balance": p10[-1] if p10 else None,
-            "p50_end_balance": p50[-1] if p50 else None,
-            "p90_end_balance": p90[-1] if p90 else None,
+            "p10_end_balance": p10[end_i] if p10 else None,
+            "p50_end_balance": p50[end_i] if p50 else None,
+            "p90_end_balance": p90[end_i] if p90 else None,
             "weekly_predictions": weekly_predictions[:26],
             "raw_weekly_predictions": raw_weekly_predictions[:26],
         }

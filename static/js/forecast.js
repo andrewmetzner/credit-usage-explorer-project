@@ -153,6 +153,17 @@ function refreshBurndownLegend() {
         () => toggleSnapMcFor(key), 'Monte Carlo bands for this snapshot'));
       trailing.appendChild(_snapBandBtn('ML', '#198754', snapMlKeys.has(key),
         () => toggleSnapMlFor(key), 'Linear-trend (ML) projection for this snapshot'));
+      // "As of this week" view: hide the actual line after the snapshot date.
+      const snapDay = String(h.snapshot_date || '').slice(0, 10);
+      const cutEl = document.getElementById('actual-cutoff-to');
+      trailing.appendChild(_snapBandBtn('Cut', '#d63384', !!(cutEl && snapDay && cutEl.value === snapDay),
+        () => toggleSnapCutFor(snapDay),
+        "Hide the actual line after this snapshot's week — view the chart as it looked back then"));
+      if (h.snapshot_ts) {
+        trailing.appendChild(_snapBandBtn('CSV', '#6c757d', false, () => {
+          window.location.href = D.urls.snapshotExport + '?ts=' + encodeURIComponent(h.snapshot_ts);
+        }, "Download this snapshot's full series as CSV — actual up to that week plus its forecast and bands"));
+      }
       // Row label is informational; the Base / MC / ML buttons do the per-snapshot work.
       const row = _menuRow(name, color, true, e => e.preventDefault(),
         'Add / remove snapshots from the Snapshots dropdown', trailing);
@@ -165,6 +176,27 @@ function refreshBurndownLegend() {
   }
 }
 window.refreshBurndownLegend = refreshBurndownLegend;
+
+// "Cut" toggle on a snapshot row: set the actual line's hide-after cutoff to
+// that snapshot's date (click again to clear) — the chart then shows what was
+// known as of that week, with the snapshot's forecast carrying on from there.
+function toggleSnapCutFor(snapDay) {
+  const toEl = document.getElementById('actual-cutoff-to');
+  if (!toEl || !snapDay) return;
+  toEl.value = toEl.value === snapDay ? '' : snapDay;
+  if (typeof window.applyActualCutoffs === 'function') window.applyActualCutoffs();
+  refreshBurndownLegend();
+}
+
+// Download the selected snapshots' history rows as CSV (all when none picked).
+window.exportSelectedSnapshots = function () {
+  const params = new URLSearchParams();
+  if (typeof selectedSnaps !== 'undefined') {
+    selectedSnaps.forEach((h, key) => params.append('key', key));
+  }
+  const qs = params.toString();
+  window.location.href = D.urls.historyExport + (qs ? '?' + qs : '');
+};
 
 function snapRemainingAt(h, dateStr) {
   const snap   = new Date(h.snapshot_date);
@@ -822,34 +854,45 @@ if (typeof Chart !== 'undefined') {
     d.setDate(d.getDate() + n);
     return d.toISOString().slice(0, 10);
   };
-  function buildBridgePts(lastPt) {
+  function buildBridgePts(lastPt, weekly) {
     if (!lastPt || !todayStr || todayStr <= lastPt[0]) return [];
-    const pts = [];
-    let level = lastPt[1];
-    let prev = lastPt[0];
-    creditEvents
+    const gapEvents = creditEvents
       .filter(e => e.effective_date > lastPt[0] && e.effective_date <= todayStr)
-      .sort((a, b) => (a.effective_date < b.effective_date ? -1 : 1))
-      .forEach(e => {
-        const dayBefore = addDaysStr(e.effective_date, -1);
-        if (dayBefore > prev) pts.push([dayBefore, level]);
-        level += e.credits;
-        pts.push([e.effective_date, level]);
-        prev = e.effective_date;
-      });
-    if (!pts.length || pts[pts.length - 1][0] !== todayStr) pts.push([todayStr, level]);
+      .sort((a, b) => (a.effective_date < b.effective_date ? -1 : 1));
+    const levelBy = dstr =>
+      lastPt[1] + gapEvents.reduce((s, e) => s + (e.effective_date <= dstr ? e.credits : 0), 0);
+    const pts = [];
+    if (weekly) {
+      // Weekly view stays on the series' weekly cadence: one point per
+      // elapsed week, the last landing on the week boundary on/after today —
+      // no single-day hover categories on a weekly chart.
+      let d = lastPt[0];
+      while (d < todayStr) {
+        d = addDaysStr(d, 7);
+        pts.push([d, levelBy(d)]);
+      }
+      return pts;
+    }
+    let prev = lastPt[0];
+    gapEvents.forEach(e => {
+      const dayBefore = addDaysStr(e.effective_date, -1);
+      if (dayBefore > prev) pts.push([dayBefore, levelBy(dayBefore)]);
+      pts.push([e.effective_date, levelBy(e.effective_date)]);
+      prev = e.effective_date;
+    });
+    if (!pts.length || pts[pts.length - 1][0] !== todayStr) pts.push([todayStr, levelBy(todayStr)]);
     return pts;
   }
-  function extendWithBridge(pts) {
+  function extendWithBridge(pts, weekly) {
     if (!pts.length) return null;
     const lastReal = pts[pts.length - 1];
-    buildBridgePts(lastReal).forEach(pt => {
+    buildBridgePts(lastReal, weekly).forEach(pt => {
       if (pt[0] > pts[pts.length - 1][0]) pts.push(pt);
     });
     return lastReal;
   }
-  const weeklyLastReal = extendWithBridge(actualPts);
-  const dailyLastReal = extendWithBridge(dailyActualPts);
+  const weeklyLastReal = extendWithBridge(actualPts, true);
+  const dailyLastReal = extendWithBridge(dailyActualPts, false);
   const useDaily = (D.granularity || 'weekly') === 'daily' && dailyActualPts.length > 0;
   // Boundary between solid (recorded usage) and dashed (bridge) on the chart,
   // and the anchor the projection continues from.
@@ -896,6 +939,20 @@ if (typeof Chart !== 'undefined') {
         : Math.max(projAnchorRemaining - dailyBurn * days, 0);
       pts.push([dstr, rem]);
     }
+    // Contract end is a chart label (see buildAllLabels); the projection uses
+    // exact-label lookup, so give it an interpolated point there to avoid a
+    // one-label gap in the line when the weekly cadence steps over it.
+    const endStr = D.contractEndDate || '';
+    if (endStr) {
+      for (let j = 1; j < pts.length; j++) {
+        if (pts[j - 1][0] < endStr && endStr < pts[j][0]) {
+          const t = (new Date(endStr) - new Date(pts[j - 1][0]))
+                  / (new Date(pts[j][0]) - new Date(pts[j - 1][0]));
+          pts.splice(j, 0, [endStr, pts[j - 1][1] + t * (pts[j][1] - pts[j - 1][1])]);
+          break;
+        }
+      }
+    }
     return pts;
   }
 
@@ -914,7 +971,11 @@ if (typeof Chart !== 'undefined') {
     projAnchorDate && item.label === projAnchorDate && isProjectionDataset(item.dataset);
 
   function buildAllLabels(ppts) {
-    return [...new Set([...activeActualPts(), ...ppts].map(p => p[0]))].sort();
+    const labels = new Set([...activeActualPts(), ...ppts].map(p => p[0]));
+    // Contract end is always a category so MC/ML overlays (which end exactly
+    // there) reach it even when the weekly cadence steps over it.
+    if (D.contractEndDate) labels.add(D.contractEndDate);
+    return [...labels].sort();
   }
 
   function formatBurndownTickLabel(value, index, ticks) {
@@ -959,7 +1020,10 @@ if (typeof Chart !== 'undefined') {
 
   function defaultViewRange() {
     const min = getNearestLabel(D.contractStartDate || allLabels[0], 'start') || allLabels[0];
-    return { min, max: allLabels[allLabels.length - 1] };
+    // Default view spans the contract; projections past contract end (to
+    // exhaustion) are there when the user widens the x-axis window.
+    const max = getNearestLabel(D.contractEndDate, 'end') || allLabels[allLabels.length - 1];
+    return { min, max };
   }
 
   function setViewInputBounds() {
@@ -1478,11 +1542,18 @@ if (typeof Chart !== 'undefined') {
   };
 
   function updateMcStats(data) {
-    const ep     = data.metadata && data.metadata.exhaustion_probability != null ? data.metadata.exhaustion_probability : null;
-    const runs   = (data.metadata && data.metadata.runs) || 0;
-    const p10End = data.p10     && data.p10.length     ? data.p10[data.p10.length - 1].value         : null;
-    const p50End = data.burndown && data.burndown.length ? data.burndown[data.burndown.length - 1].value : null;
-    const p90End = data.p90     && data.p90.length     ? data.p90[data.p90.length - 1].value         : null;
+    const md     = data.metadata || {};
+    const ep     = md.exhaustion_probability != null ? md.exhaustion_probability : null;
+    const runs   = md.runs || 0;
+    // Contract-end balances come from metadata now that the plotted series
+    // can extend past contract end (to exhaustion); fall back to series end
+    // for older snapshot payloads.
+    const p10End = md.p10_end_balance != null ? md.p10_end_balance
+      : (data.p10 && data.p10.length ? data.p10[data.p10.length - 1].value : null);
+    const p50End = md.p50_end_balance != null ? md.p50_end_balance
+      : (data.burndown && data.burndown.length ? data.burndown[data.burndown.length - 1].value : null);
+    const p90End = md.p90_end_balance != null ? md.p90_end_balance
+      : (data.p90 && data.p90.length ? data.p90[data.p90.length - 1].value : null);
 
     const riskCls = ep === null ? '' : ep > 0.5 ? 'text-danger' : ep > 0.1 ? 'text-warning' : 'text-success';
     const balCls  = v => v !== null && v < 0 ? 'text-danger' : v !== null ? 'text-success' : '';

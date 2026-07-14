@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros/ui.html" import export_csv_chip %}
 {% from "macros/charts.html" import chart_card %}
 {% macro summary_metric(label, value, strong_class="", strong_id="", strong_style="") -%}
   <div class="summary-metric">
@@ -442,9 +443,18 @@
       .fc-snap-band-btn.is-on { background: var(--band-color); color: #fff; }
 
       /* Advanced settings: stacked Colors + Burn window groups */
-      .fc-advanced-panel { display: flex; flex-direction: column; gap: .85rem; }
+      /* Advanced settings: titled groups in a responsive grid so axis
+         windows, colors, and data windows read as tidy columns. */
+      .fc-advanced-panel {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: .9rem 2rem;
+      }
       .fc-advanced-group .fc-control-label { display: block; margin-bottom: .35rem; }
       .fc-advanced-group .fc-color-panel { margin: 0; }
+      .fc-span-all { grid-column: 1 / -1; }
+      /* When open, the drawer takes its own full-width row under the bar. */
+      .fc-colors-details[open] { flex-basis: 100%; }
     </style>
 {% endblock %}
 
@@ -636,31 +646,36 @@
           <span>Credit markers</span>
         </label>
 
-        <div class="d-flex align-items-end flex-wrap gap-1 ms-md-2" style="font-size:.72rem;">
-          <span class="fc-control-label align-self-center me-1">X-axis</span>
-          <input type="date" id="chart-view-from" class="form-control form-control-sm" style="width:132px;" onchange="applyBurndownViewRange()">
-          <span class="text-muted align-self-center">to</span>
-          <input type="date" id="chart-view-to" class="form-control form-control-sm" style="width:132px;" onchange="applyBurndownViewRange()">
-          <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Shift x-axis window earlier" onclick="shiftBurndownViewWindow(-1)">&lsaquo;</button>
-          <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Shift x-axis window later" onclick="shiftBurndownViewWindow(1)">&rsaquo;</button>
-          <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="applyBurndownViewRange()">Apply</button>
-          <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearBurndownViewRange()">Clear</button>
-        </div>
-
-        <div class="d-flex align-items-end flex-wrap gap-1" style="font-size:.72rem;"
-             title="Fix the y-axis window (credits). Leave blank for auto. Carries into fullscreen and Export PNG.">
-          <span class="fc-control-label align-self-center me-1">Y-axis</span>
-          <input type="number" id="chart-view-ymin" class="form-control form-control-sm" style="width:110px;"
-                 placeholder="auto" step="any" onchange="applyBurndownYRange()">
-          <span class="text-muted align-self-center">to</span>
-          <input type="number" id="chart-view-ymax" class="form-control form-control-sm" style="width:110px;"
-                 placeholder="auto" step="any" onchange="applyBurndownYRange()">
-          <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearBurndownYRange()">Clear</button>
-        </div>
-
         <details class="fc-native-details fc-colors-details ms-auto" {% if data_from or data_to %}open{% endif %}>
-          <summary>Advanced settings{% if data_from or data_to %} &middot; burn window active{% endif %}</summary>
+          <summary>Chart settings{% if data_from or data_to %} &middot; burn window active{% endif %}</summary>
           <div class="fc-advanced-panel">
+
+            <!-- Axis windows: frame the view (and the PNG export) like a
+                 calculator graphing window. -->
+            <div class="fc-advanced-group">
+              <div class="fc-control-label">X-axis window</div>
+              <div class="d-flex align-items-center flex-wrap gap-1" style="font-size:.72rem;">
+                <input type="date" id="chart-view-from" class="form-control form-control-sm" style="width:140px;" onchange="applyBurndownViewRange()">
+                <span class="text-muted">to</span>
+                <input type="date" id="chart-view-to" class="form-control form-control-sm" style="width:140px;" onchange="applyBurndownViewRange()">
+                <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Shift window earlier" onclick="shiftBurndownViewWindow(-1)">&lsaquo;</button>
+                <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Shift window later" onclick="shiftBurndownViewWindow(1)">&rsaquo;</button>
+                <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearBurndownViewRange()">Clear</button>
+              </div>
+            </div>
+
+            <div class="fc-advanced-group"
+                 title="Fix the y-axis window (credits). Leave blank for auto. Carries into fullscreen and Export PNG.">
+              <div class="fc-control-label">Y-axis window</div>
+              <div class="d-flex align-items-center flex-wrap gap-1" style="font-size:.72rem;">
+                <input type="number" id="chart-view-ymin" class="form-control form-control-sm" style="width:120px;"
+                       placeholder="auto" step="any" onchange="applyBurndownYRange()">
+                <span class="text-muted">to</span>
+                <input type="number" id="chart-view-ymax" class="form-control form-control-sm" style="width:120px;"
+                       placeholder="auto" step="any" onchange="applyBurndownYRange()">
+                <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearBurndownYRange()">Clear</button>
+              </div>
+            </div>
 
             <!-- Colors -->
             <div class="fc-advanced-group">
@@ -713,7 +728,7 @@
             </div>
 
             <!-- Burn window -->
-            <div class="fc-advanced-group">
+            <div class="fc-advanced-group fc-span-all">
               <div class="fc-control-label">Burn window{% if data_from or data_to %} &middot; active{% endif %}</div>
               <div class="fc-color-panel" style="display:flex; align-items:flex-end; gap:.6rem; flex-wrap:wrap;">
                 <div>
@@ -778,6 +793,9 @@
         </ul>
       </div>
       <span id="quick-select-pills" class="d-flex gap-1 flex-wrap align-items-center"></span>
+      <button class="btn btn-outline-success btn-sm py-0 px-2" style="font-size:.74rem;"
+              title="Download the selected snapshots' full forecast details as CSV — one row per snapshot week (all snapshots when none are selected)."
+              onclick="exportSelectedSnapshots()">Export CSV</button>
       {% else %}
       <span class="text-muted">No snapshots yet</span>
       {% endif %}
@@ -790,7 +808,11 @@
      they live on the Summary page; the Forecast page focuses on the burndown. #}
 
   <!-- Details Accordion -->
-  <div class="section-label">Details</div>
+  <div class="section-label d-flex align-items-center gap-2">
+    <span>Details</span>
+    {{ export_csv_chip(url_for('forecast.forecast_details_export_csv') ~ ('?' ~ request.query_string.decode() if request.query_string else ''),
+                       'Download these details — contract & pacing, forecast, and model statistics for the current view') }}
+  </div>
   <div class="accordion mb-4" id="detailsAccordion">
 
     <!-- Contract & Pacing -->
@@ -994,7 +1016,9 @@
       "color": "{{ url_for('forecast.set_snapshot_color') }}",
       "delete": "{{ url_for('forecast.delete_forecast_snapshot') }}",
       "forecastPage": "{{ url_for('forecast.forecast_page') }}",
-      "modelData": "{{ url_for('forecast.model_data') }}"
+      "modelData": "{{ url_for('forecast.model_data') }}",
+      "historyExport": "{{ url_for('forecast.forecast_history_export_csv') }}",
+      "snapshotExport": "{{ url_for('forecast.forecast_snapshot_series_export_csv') }}"
     }
   }
   </script>

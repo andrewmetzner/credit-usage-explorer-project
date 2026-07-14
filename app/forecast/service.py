@@ -417,6 +417,13 @@ class ForecastingService:
             weeks_remaining = max((end - anchor).days, 0) / 7
             latest_date = anchor.date()
 
+        # Display horizon: keep projecting past contract end to exhaustion,
+        # like the deterministic line (generous margin for the optimistic
+        # band, capped at three years). Risk stats stay at contract end.
+        burn = float(fc["forecast_weekly_burn"])
+        weeks_to_zero = credits_remaining / burn if burn > 0 else 0.0
+        projection_weeks = min(max(weeks_remaining, weeks_to_zero * 1.5 + 2), 156.0)
+
         return ForecastContext(
             credits_remaining=credits_remaining,
             weeks_remaining=weeks_remaining,
@@ -425,6 +432,7 @@ class ForecastingService:
             forecast_weekly_burn=float(fc["forecast_weekly_burn"]),
             observations=observations,
             weekly_series=weekly_series,
+            projection_weeks=projection_weeks,
         )
 
     def _run_mc(self, cs: dict, fc: dict):
@@ -580,12 +588,18 @@ class ForecastingService:
         if not skip_mc:
             try:
                 mc_result = self._run_mc(cs, fc)
+                md = mc_result.metadata or {}
                 mc_stats = {
-                    "mc_runs": mc_result.metadata.get("runs"),
-                    "mc_exhaustion_prob": mc_result.metadata.get("exhaustion_probability"),
-                    "mc_p10_end_balance": round(mc_result.p10[-1]["value"], 1) if mc_result.p10 else None,
-                    "mc_p50_end_balance": round(mc_result.burndown[-1]["value"], 1) if mc_result.burndown else None,
-                    "mc_p90_end_balance": round(mc_result.p90[-1]["value"], 1) if mc_result.p90 else None,
+                    "mc_runs": md.get("runs"),
+                    "mc_exhaustion_prob": md.get("exhaustion_probability"),
+                    # Contract-end balances come from metadata now that the
+                    # series can extend past contract end (to exhaustion).
+                    "mc_p10_end_balance": md.get("p10_end_balance",
+                        round(mc_result.p10[-1]["value"], 1) if mc_result.p10 else None),
+                    "mc_p50_end_balance": md.get("p50_end_balance",
+                        round(mc_result.burndown[-1]["value"], 1) if mc_result.burndown else None),
+                    "mc_p90_end_balance": md.get("p90_end_balance",
+                        round(mc_result.p90[-1]["value"], 1) if mc_result.p90 else None),
                 }
             except Exception:
                 pass
@@ -613,9 +627,9 @@ class ForecastingService:
                     "ml_residual_std": md.get("residual_std"),
                     "ml_projected_exhaustion": md.get("projected_exhaustion"),
                     "ml_projected_exhaustion_date": md.get("projected_exhaustion_date"),
-                    "ml_p10_end_balance": round(ml_result.p10[-1]["value"], 1) if ml_result.p10 else md.get("p10_end_balance"),
-                    "ml_p50_end_balance": round(ml_result.burndown[-1]["value"], 1) if ml_result.burndown else md.get("p50_end_balance"),
-                    "ml_p90_end_balance": round(ml_result.p90[-1]["value"], 1) if ml_result.p90 else md.get("p90_end_balance"),
+                    "ml_p10_end_balance": md.get("p10_end_balance"),
+                    "ml_p50_end_balance": md.get("p50_end_balance"),
+                    "ml_p90_end_balance": md.get("p90_end_balance"),
                 }
             except Exception:
                 pass

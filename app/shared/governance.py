@@ -50,15 +50,31 @@ class GovernanceService:
 
     # ── Per-user resolution ──────────────────────────────────────────────────
     def resolved_assignments(self) -> dict[str, str]:
-        """email(lowercased) -> governance tier, Codex resolved out (unless it's
-        the user's only tier). Same resolution the optimization engine uses."""
-        from app.optimization.service import resolve_governance_assignments
+        """email(lowercased) -> governance tier, resolved like the optimization
+        engine, with Codex-access users treated as members of the "Codex
+        Users" group when it's a configured tier: highest allotment wins, so
+        a flagged user rises to Codex Users unless their assigned tier
+        already grants more. The Codex badge is independent of all of this."""
+        from app.optimization.service import highest_cap_tier, resolve_governance_assignments
 
-        return self._memo("resolved", lambda: resolve_governance_assignments(
-            self._config_svc.load_user_tiers(),
-            self._config_svc.load_user_tier_history(),
-            self.weekly_caps(),
-        ))
+        def build() -> dict[str, str]:
+            caps = self.weekly_caps()
+            resolved = resolve_governance_assignments(
+                self._config_svc.load_user_tiers(),
+                self._config_svc.load_user_tier_history(),
+                caps,
+            )
+            if "Codex Users" in caps:
+                codex = self._memo("codex_access", self._config_svc.load_user_codex_access)
+                for email, has_access in codex.items():
+                    key = str(email).strip().lower()
+                    if not has_access or not key:
+                        continue
+                    candidates = [t for t in (resolved.get(key, ""), "Codex Users") if t]
+                    resolved[key] = highest_cap_tier(candidates, caps)
+            return resolved
+
+        return self._memo("resolved", build)
 
     def tier_for(self, email: object, default: str = "Baseline") -> str:
         return self.resolved_assignments().get(str(email or "").strip().lower(), default)

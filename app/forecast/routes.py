@@ -9,6 +9,7 @@ from flask import Blueprint, Response, flash, jsonify, redirect, render_template
 
 from app.shared.chart_data import usage_type_weekly_json
 from app.shared.credit_ledger import sync_credit_ledger
+from app.shared.csv_export import csv_response, range_slug
 from .models import PriceModel
 from .prediction import get_model
 from .service import ChartDataBuilder, ForecastingService
@@ -578,6 +579,136 @@ def create_forecast_blueprint(services) -> Blueprint:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    def _forecasting_from_request(config: dict, exclude_partial: bool = True) -> ForecastingService:
+        """A ForecastingService configured the way the page sees it: lag-aware
+        as-of/today anchors, optional partial-week exclusion, and the burn
+        window from the current request's query args."""
+        hist_df = pipeline.get_historical_weekly_summary()
+        op_df = pipeline.get_operational_weekly_summary()
+        daily_fallback_df = _get_store_df()
+        svc = ForecastingService(
+            config, hist_df, op_df, daily_fallback_df if op_df is None else None
+        )
+        data_as_of = _latest_data_date(
+            (daily_fallback_df, "date_partition"),
+            (op_df, "week_end"),
+            (hist_df, "period_end"),
+        )
+        svc._as_of = data_as_of
+        # Same lag-aware anchor as the page, so models line up with the
+        # bridged actual line and the deterministic projection.
+        svc._today = _pd.Timestamp.today().normalize()
+        if exclude_partial and svc.operational_df is not None and not svc.operational_df.empty:
+            svc.operational_df = svc.operational_df[
+                svc.operational_df["week_end"] <= data_as_of
+            ].copy()
+
+        data_from = request.args.get("data_from", "").strip() or None
+        data_to = request.args.get("data_to", "").strip() or None
+        if (data_from or data_to) and svc.operational_df is not None and not svc.operational_df.empty:
+            win = svc.operational_df.copy()
+            if data_from:
+                win = win[win["week_start"] >= _pd.to_datetime(data_from)]
+            if data_to:
+                win = win[win["week_end"] <= _pd.to_datetime(data_to)]
+            if not win.empty:
+                svc._forecast_op_df = win
+        return svc
+
+    @bp.route("/forecast/details-export.csv", methods=["GET"])
+    def forecast_details_export_csv() -> object:
+        """The Details accordion as CSV — contract & pacing, forecast, and
+        model statistics for the current view (burn window respected)."""
+        svc = _forecasting_from_request(config_svc.load_contract())
+        if not svc.has_data():
+            return Response("No data available", status=404, mimetype="text/plain")
+        cs = svc.get_contract_status()
+        fc = svc.get_forecast()
+        label = lambda k: k.replace("_", " ").capitalize()  # noqa: E731
+        rows = [("Contract & pacing", label(k), v) for k, v in {**cs}.items()]
+        rows += [("Forecast", label(k), v) for k, v in {**fc}.items()]
+        try:
+            ml = svc._run_ml(cs, fc).metadata or {}
+            rows += [
+                ("Linear trend (ML)", label(k), v) for k, v in ml.items()
+                if k not in ("weekly_predictions", "raw_weekly_predictions")
+            ]
+        except Exception:
+            pass
+        try:
+            mc = svc._run_mc(cs, fc).metadata or {}
+            rows += [("Monte Carlo", label(k), v) for k, v in mc.items()]
+        except Exception:
+            pass
+        return csv_response(
+            _pd.DataFrame(rows, columns=["Section", "Metric", "Value"]),
+            "forecast_details.csv",
+            filters=[
+                ("window", range_slug(request.args.get("data_from", "").strip(),
+                                      request.args.get("data_to", "").strip())),
+            ],
+        )
+
+    @bp.route("/forecast/snapshot/export.csv", methods=["GET"])
+    def forecast_snapshot_series_export_csv() -> object:
+        """One saved snapshot's full time series as CSV: the actual burndown
+        as known that week (it ends at the snapshot's data) plus the forecast
+        and MC/ML bands that were computed from it."""
+        ts = request.args.get("ts", "").strip()
+        series = pipeline.get_snapshot_series(ts) if ts else None
+        if not series:
+            return Response("Snapshot series not found", status=404, mimetype="text/plain")
+
+        cols: dict[str, dict[str, object]] = {}
+
+        def add(name: str, pts, value_key: str = "value") -> None:
+            for p in pts or []:
+                day = str(p.get("date", ""))[:10]
+                if day:
+                    cols.setdefault(day, {})[name] = p.get(value_key)
+
+        add("Actual remaining", series.get("actual_burndown"), "remaining")
+        add("Forecast remaining", series.get("forecast_burndown"), "remaining")
+        mc = series.get("mc") or {}
+        add("MC P10", mc.get("p10"))
+        add("MC P50", mc.get("p50"))
+        add("MC P90", mc.get("p90"))
+        ml = series.get("ml") or {}
+        add("ML P10", ml.get("p10"))
+        add("ML P50", ml.get("p50"))
+        add("ML P90", ml.get("p90"))
+
+        names = ["Actual remaining", "Forecast remaining",
+                 "MC P10", "MC P50", "MC P90", "ML P10", "ML P50", "ML P90"]
+        rows = [{"Date": d, **{n: cols[d].get(n, "") for n in names}} for d in sorted(cols)]
+        return csv_response(
+            _pd.DataFrame(rows, columns=["Date"] + names),
+            "forecast_snapshot_series.csv",
+            filters=[
+                ("week", str(series.get("snapshot_date", ""))),
+                ("label", str(series.get("label", ""))),
+            ],
+        )
+
+    @bp.route("/forecast/history/export.csv", methods=["GET"])
+    def forecast_history_export_csv() -> object:
+        """Snapshot history as CSV. Repeated ``key`` args (snapshot_ts, or
+        "date|label" for legacy rows) narrow it to the selected snapshots —
+        each row is that week's full forecast details."""
+        rows = pipeline.get_forecast_history(limit=1000)
+        keys = set(request.args.getlist("key"))
+
+        def row_key(h: dict) -> str:
+            return h.get("snapshot_ts") or f"{h.get('snapshot_date', '')}|{h.get('label', '')}"
+
+        if keys:
+            rows = [h for h in rows if row_key(h) in keys]
+        return csv_response(
+            _pd.DataFrame(rows),
+            "forecast_snapshots.csv",
+            filters=[("selected", len(keys) if keys else "")],
+        )
+
     @bp.route("/forecast/model-data", methods=["GET"])
     def model_data() -> object:
         model_id = request.args.get("model", "monte_carlo")
@@ -592,38 +723,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             runs = min(int(request.args.get("runs", cfg_runs) or cfg_runs), 20000)
         except (ValueError, TypeError):
             runs = cfg_runs
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-        daily_fallback_df = _get_store_df()
-        daily_fallback = daily_fallback_df if op_df is None else None
-
-        svc = ForecastingService(config, hist_df, op_df, daily_fallback)
-        data_as_of = _latest_data_date(
-            (daily_fallback_df, "date_partition"),
-            (op_df, "week_end"),
-            (hist_df, "period_end"),
-        )
-        svc._as_of = data_as_of
-        # Same lag-aware anchor as the page, so MC/ML overlays line up with
-        # the bridged actual line and the deterministic projection.
-        svc._today = _pd.Timestamp.today().normalize()
-        if exclude_partial:
-            if svc.operational_df is not None and not svc.operational_df.empty:
-                svc.operational_df = svc.operational_df[
-                    svc.operational_df["week_end"] <= data_as_of
-                ].copy()
-
-        data_from_mc = request.args.get("data_from", "").strip() or None
-        data_to_mc   = request.args.get("data_to",   "").strip() or None
-        if (data_from_mc or data_to_mc) and svc.operational_df is not None and not svc.operational_df.empty:
-            win = svc.operational_df.copy()
-            if data_from_mc:
-                win = win[win["week_start"] >= _pd.to_datetime(data_from_mc)]
-            if data_to_mc:
-                win = win[win["week_end"] <= _pd.to_datetime(data_to_mc)]
-            if not win.empty:
-                svc._forecast_op_df = win
-
+        svc = _forecasting_from_request(config, exclude_partial)
         if not svc.has_data():
             return jsonify({"error": "No data available"}), 404
 
