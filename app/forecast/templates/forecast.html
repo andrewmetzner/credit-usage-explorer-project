@@ -727,6 +727,13 @@
               </div>
             </div>
 
+            <!-- Reset everything -->
+            <div class="fc-advanced-group fc-span-all">
+              <button class="btn btn-outline-danger btn-sm py-0 px-2" style="font-size:.72rem;"
+                      title="Clear every saved chart preference — colors, series toggles, axis windows, actual-line cutoffs, granularity, model overlays, and enabled snapshots — and reload the default forecast view. The burn window is untouched (clear it above)."
+                      onclick="resetAllChartSettings()">Reset all chart settings</button>
+            </div>
+
             <!-- Burn window -->
             <div class="fc-advanced-group fc-span-all">
               <div class="fc-control-label">Burn window{% if data_from or data_to %} &middot; active{% endif %}</div>

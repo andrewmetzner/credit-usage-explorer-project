@@ -30,6 +30,15 @@
         </div>
         {% endif %}
 
+        {% if user_cap_monthly %}
+        <div class="user-meta-row" title="Credit limits from the governance tier — the same caps the Optimization engine scores against.">
+          <span class="field-badge">{{ user_tier_display }}</span>
+          <span>Weekly cap {{ '{:,.0f}'.format(user_cap_weekly) }}</span>
+          <span class="meta-sep">&middot;</span>
+          <span>Monthly cap {{ '{:,.0f}'.format(user_cap_monthly) }}</span>
+        </div>
+        {% endif %}
+
         <!-- KPI row -->
         <div class="user-summary-mini-grid">
           <div class="stat-card user-summary-score-card">
@@ -114,7 +123,17 @@
           <div class="col-lg-6">
             <div class="d-flex justify-content-between align-items-center mb-1">
               <div class="hero-chart-label mb-0">Credits by type / week</div>
-              <div class="d-flex gap-1">
+              <div class="d-flex gap-2 align-items-center">
+                <label class="d-flex align-items-center gap-1 mb-0 text-muted" style="font-size:.68rem; cursor:pointer;"
+                       title="Dashed weekly-pace cap line (era-aware).">
+                  <input type="checkbox" class="form-check-input mt-0" id="cap-line-weekly" checked
+                         onchange="toggleCapLine('Weekly cap', this.checked)"><span>wk cap</span>
+                </label>
+                <label class="d-flex align-items-center gap-1 mb-0 text-muted" style="font-size:.68rem; cursor:pointer;"
+                       title="Dashed monthly-allowance line (monthly-cap era only).">
+                  <input type="checkbox" class="form-check-input mt-0" id="cap-line-monthly" checked
+                         onchange="toggleCapLine('Monthly cap', this.checked)"><span>mo cap</span>
+                </label>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" style="font-size:.7rem;" title="Export PNG"  onclick="window.userWeeklyBNL && window.userWeeklyBNL.exportPNG()">&#8681;</button>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" style="font-size:.7rem;" title="Fullscreen"  onclick="window.userWeeklyBNL && window.userWeeklyBNL.openFullscreen()">&#9974;</button>
               </div>
@@ -852,14 +871,22 @@
           canvas.style.display = 'none';
           return;
         }
-        // This user's effective weekly cap, drawn as a dashed horizontal line
-        // over the bars. It's regime-aware per week (weeks before the
-        // weekly->monthly switch use the old flat weekly cap), so a cap change
-        // shows as a step instead of a vertical marker cutting the chart.
+        // This user's cap lines, era-aware: weekly pace on every week, plus
+        // the month's total allowance on monthly-era weeks. The "wk cap" /
+        // "mo cap" checkboxes above the chart show/hide either line.
         const capSeries = {{ user_weekly_caps_json | safe }};
         window.userWeeklyBNL = renderUsageTypeChart('userWeeklyChart', data,
           { exportName: 'User Credits by Type per Week',
             capSeries: capSeries, capLabel: 'Weekly cap' });
+
+        window.toggleCapLine = function (label, on) {
+          const bnl = window.userWeeklyBNL;
+          if (!bnl || !bnl.chart) return;
+          const idx = bnl.chart.data.datasets.findIndex(d => d.label === label);
+          if (idx < 0) return;
+          bnl.chart.getDatasetMeta(idx).hidden = !on;
+          bnl.chart.update();
+        };
       })();
 
       // Credits by usage type donut

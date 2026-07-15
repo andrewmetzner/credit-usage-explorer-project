@@ -436,6 +436,21 @@ def create_analytics_blueprint(services) -> Blueprint:
         summ_io = make_summary("usage_type_io")
         summ_raw = make_summary("usage_type")
 
+        # The user's credit limits (governance tier via the optimization
+        # engine) — shown in the hero and used by the chart's cap lines.
+        user_tier_display = ""
+        user_cap_weekly = 0.0
+        user_cap_monthly = 0.0
+        try:
+            gov = services.governance
+            user_tier_display = gov.tier_for(email) if email else "Baseline"
+            user_cap_weekly = float(
+                gov.weekly_caps(week_start=pd.Timestamp.today()).get(user_tier_display) or 0
+            )
+            user_cap_monthly = float(gov.monthly_cap_for(user_tier_display) or 0)
+        except Exception:
+            pass
+
         user_weekly_json = "[]"
         user_weekly_caps_json = "[]"
         if "date_partition" in df.columns and "usage_credits" in df.columns:
@@ -449,17 +464,29 @@ def create_analytics_blueprint(services) -> Blueprint:
                     {"week": str(r["_w"].date()), "credits": round(float(r["credits"]), 2)}
                     for _, r in agg.iterrows()
                 ])
-                # Effective weekly cap per plotted week for this user's tier —
-                # regime-aware (weeks before the weekly->monthly switch use the
-                # old flat weekly cap), drawn as a dashed cap line on the chart.
+                # Cap lines per plotted week for this user's tier, era-aware:
+                # every week gets its effective weekly cap (weeks before the
+                # weekly->monthly switch use the old flat weekly cap), and
+                # monthly-era weeks additionally carry the month's total
+                # allowance so the chart can draw both lines.
                 try:
                     gov = services.governance
                     tier = gov.tier_for(email) if email else "Baseline"
+                    change = pd.to_datetime(
+                        gov.tier_config().get("cap_period_change_date"), errors="coerce"
+                    )
+                    monthly_cap = gov.monthly_cap_for(tier)
                     caps_rows = []
                     for ws in agg["_w"]:
                         cap = gov.weekly_caps(week_start=ws).get(tier)
-                        if cap:
-                            caps_rows.append({"week": str(ws.date()), "cap": round(float(cap), 2)})
+                        if not cap:
+                            continue
+                        in_monthly_era = not pd.isna(change) and ws >= change
+                        caps_rows.append({
+                            "week": str(ws.date()),
+                            "cap": round(float(cap), 2),
+                            "monthly": round(float(monthly_cap), 2) if in_monthly_era and monthly_cap else None,
+                        })
                     user_weekly_caps_json = json.dumps(caps_rows)
                 except Exception:
                     user_weekly_caps_json = "[]"
@@ -477,6 +504,13 @@ def create_analytics_blueprint(services) -> Blueprint:
 
         user_ctx = build_user_summary_context(services, d.df, user_scope_df, email, name)
         optimization_page_available = "optimization.optimization_page" in current_app.view_functions
+
+        # Did any monthly-era month actually blow through its cap? Drives the
+        # chart's default: the monthly-cap line only shows when it mattered.
+        user_monthly_cap_exceeded = any(
+            float(m.get("pct", 0) or 0) >= 1.0 and not m.get("weekly_regime")
+            for m in user_ctx.get("user_month_history", [])
+        )
 
         return render_template(
             "user_summary.html",
@@ -516,6 +550,10 @@ def create_analytics_blueprint(services) -> Blueprint:
             is_form_submission=is_form_submission,
             user_weekly_json=user_weekly_json,
             user_weekly_caps_json=user_weekly_caps_json,
+            user_tier_display=user_tier_display,
+            user_cap_weekly=user_cap_weekly,
+            user_cap_monthly=user_cap_monthly,
+            user_monthly_cap_exceeded=user_monthly_cap_exceeded,
             user_usage_type_weekly=usage_type_weekly_json(df),
             type_chart_json=type_chart_json,
             optimization_page_available=optimization_page_available,

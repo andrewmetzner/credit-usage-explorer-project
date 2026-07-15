@@ -129,24 +129,36 @@ function renderUsageTypeChart(canvasId, data, opts = {}) {
     borderWidth: 0,
     borderRadius: 2,
   }));
-  // Optional horizontal cap line: opts.capSeries = [{week, cap}]. Drawn as a
-  // stepped dashed line so a cap change (e.g. the weekly->monthly regime
-  // switch) shows as a step. Its own stack group keeps it out of the bar
-  // stack; _capLine keeps it out of the tooltip's Total footer.
+  // Optional cap lines: opts.capSeries = [{week, cap, monthly?}]. Stepped
+  // dashed lines — the weekly pace on every week, plus the month's total
+  // allowance on weeks that carry a `monthly` value (the monthly-cap era).
+  // Own stack groups keep them out of the bar stack; _capLine keeps them out
+  // of the tooltip's Total footer. pointStyle 'line' = dashed legend swatch.
   if (opts.capSeries && opts.capSeries.length) {
     const capByWeek = {};
-    opts.capSeries.forEach(c => { capByWeek[c.week] = c.cap; });
-    datasets.push({
+    opts.capSeries.forEach(c => { capByWeek[c.week] = c; });
+    const capLine = (label, valueOf, color) => ({
       type: 'line',
-      label: opts.capLabel || 'Weekly cap',
-      data: data.weeks.map(w => capByWeek[w] != null ? capByWeek[w] : null),
-      borderColor: '#d63384', borderWidth: 1.5, borderDash: [6, 4],
+      label,
+      data: data.weeks.map(w => {
+        const c = capByWeek[w];
+        const v = c ? valueOf(c) : null;
+        return v != null ? v : null;
+      }),
+      borderColor: color, borderWidth: 1.5, borderDash: [6, 4],
       backgroundColor: 'transparent', fill: false,
       pointRadius: 0, pointHoverRadius: 0, stepped: 'middle',
-      // Legend swatch: a dashed line segment instead of a filled circle.
       pointStyle: 'line',
-      spanGaps: true, stack: 'bnl-cap-line', order: -1, _capLine: true,
+      spanGaps: false, stack: 'bnl-cap-' + label, order: -1, _capLine: true,
     });
+    datasets.push(capLine(opts.capLabel || 'Weekly cap', c => c.cap, '#d63384'));
+    if (opts.capSeries.some(c => c.monthly != null)) {
+      const monthly = capLine(opts.monthlyCapLabel || 'Monthly cap', c => c.monthly, '#6f42c1');
+      // Callers can start the monthly line hidden (e.g. only auto-show it
+      // when a month actually went over its cap).
+      monthly.hidden = !!opts.monthlyCapHidden;
+      datasets.push(monthly);
+    }
   }
   const chart = new BNLChart(canvasId, {
     type: 'bar',

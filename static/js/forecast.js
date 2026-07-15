@@ -25,6 +25,15 @@ const SNAP_COLORS    = ['#20c997','#6f42c1','#d63384','#ffc107','#0dcaf0','#1987
 const CURRENT_REMAINING = D.currentRemaining || 0;
 let compareChart     = null;
 
+// Cache which snapshots are enabled on the graph (per browser), so reopening
+// the forecast page restores the same overlay instead of starting blank.
+// Uses the 'fc-' prefix so "Reset all chart settings" sweeps it along with
+// every other saved preference.
+const SNAP_SELECTION_KEY = 'fc-selected-snapshots';
+function persistSelectedSnaps() {
+  try { localStorage.setItem(SNAP_SELECTION_KEY, JSON.stringify([...selectedSnaps.keys()])); } catch (_) {}
+}
+
 function fmtN(v) { const n = parseFloat(v); return isNaN(n) ? '—' : Math.round(n).toLocaleString(); }
 function fmtPct(v) { const n = parseFloat(v); return isNaN(n) ? '—' : Math.round(n * 100) + '%'; }
 function truncLabel(s, max) { max = max || 12; return s && s.length > max ? s.slice(0, max) + '…' : (s || ''); }
@@ -153,12 +162,15 @@ function refreshBurndownLegend() {
         () => toggleSnapMcFor(key), 'Monte Carlo bands for this snapshot'));
       trailing.appendChild(_snapBandBtn('ML', '#198754', snapMlKeys.has(key),
         () => toggleSnapMlFor(key), 'Linear-trend (ML) projection for this snapshot'));
-      // "As of this week" view: hide the actual line after the snapshot date.
-      const snapDay = String(h.snapshot_date || '').slice(0, 10);
+      // "As of this week" view: hide the actual line FROM the day the
+      // snapshot's forecast starts — that day belongs to the forecast, so
+      // hovering the seam shows one value, not actual + forecast twins.
+      const fcStart = String(h.latest_usage_date || h.snapshot_date || '').slice(0, 10);
+      const cutDay = fcStart ? shiftDayStr(fcStart, -1) : '';
       const cutEl = document.getElementById('actual-cutoff-to');
-      trailing.appendChild(_snapBandBtn('Cut', '#d63384', !!(cutEl && snapDay && cutEl.value === snapDay),
-        () => toggleSnapCutFor(snapDay),
-        "Hide the actual line after this snapshot's week — view the chart as it looked back then"));
+      trailing.appendChild(_snapBandBtn('Cut', '#d63384', !!(cutEl && cutDay && cutEl.value === cutDay),
+        () => toggleSnapCutFor(cutDay),
+        "Hide the actual line after this snapshot's data (up to the day before its forecast starts) — view the chart as it looked back then"));
       if (h.snapshot_ts) {
         trailing.appendChild(_snapBandBtn('CSV', '#6c757d', false, () => {
           window.location.href = D.urls.snapshotExport + '?ts=' + encodeURIComponent(h.snapshot_ts);
@@ -177,13 +189,20 @@ function refreshBurndownLegend() {
 }
 window.refreshBurndownLegend = refreshBurndownLegend;
 
+function shiftDayStr(dstr, n) {
+  const d = new Date(dstr + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 // "Cut" toggle on a snapshot row: set the actual line's hide-after cutoff to
-// that snapshot's date (click again to clear) — the chart then shows what was
-// known as of that week, with the snapshot's forecast carrying on from there.
-function toggleSnapCutFor(snapDay) {
+// the day before that snapshot's forecast starts (click again to clear) — the
+// chart then shows what was known as of that week, the forecast owning its
+// start day outright.
+function toggleSnapCutFor(cutDay) {
   const toEl = document.getElementById('actual-cutoff-to');
-  if (!toEl || !snapDay) return;
-  toEl.value = toEl.value === snapDay ? '' : snapDay;
+  if (!toEl || !cutDay) return;
+  toEl.value = toEl.value === cutDay ? '' : cutDay;
   if (typeof window.applyActualCutoffs === 'function') window.applyActualCutoffs();
   refreshBurndownLegend();
 }
@@ -413,6 +432,7 @@ function updateCompareChart(snaps) {
 }
 
 function renderComparePanel() {
+  persistSelectedSnaps();
   const panel = document.getElementById('compare-panel');
   const grid  = document.getElementById('compare-grid');
   const count = document.getElementById('compare-count');
@@ -565,8 +585,26 @@ const snapBaseOff = new Set();
 const snapMcKeys = new Set();
 const snapMlKeys = new Set();
 
+// Restore per-snapshot overlay state cached in this browser (which
+// snapshots have Base off / MC on / ML on), paired with the snapshot
+// selection restored below.
+(function () {
+  const load = key => { try { return JSON.parse(localStorage.getItem(key) || '[]') || []; } catch (_) { return []; } };
+  load('fc-snap-base-off').forEach(k => snapBaseOff.add(k));
+  load('fc-snap-mc').forEach(k => snapMcKeys.add(k));
+  load('fc-snap-ml').forEach(k => snapMlKeys.add(k));
+})();
+function persistSnapshotOverlayState() {
+  try {
+    localStorage.setItem('fc-snap-base-off', JSON.stringify([...snapBaseOff]));
+    localStorage.setItem('fc-snap-mc', JSON.stringify([...snapMcKeys]));
+    localStorage.setItem('fc-snap-ml', JSON.stringify([...snapMlKeys]));
+  } catch (_) {}
+}
+
 function toggleSnapBaseFor(key) {
   if (snapBaseOff.has(key)) snapBaseOff.delete(key); else snapBaseOff.add(key);
+  persistSnapshotOverlayState();
   updateBurndownOverlays();
   refreshBurndownLegend();
 }
@@ -579,6 +617,7 @@ function toggleSnapMcFor(key) {
     const h = selectedSnaps.get(key);
     if (h) fetchSnapSeries(h);
   }
+  persistSnapshotOverlayState();
   updateBurndownOverlays();
   refreshBurndownLegend();
 }
@@ -591,6 +630,7 @@ function toggleSnapMlFor(key) {
     const h = selectedSnaps.get(key);
     if (h) fetchSnapSeries(h);
   }
+  persistSnapshotOverlayState();
   updateBurndownOverlays();
   refreshBurndownLegend();
 }
@@ -659,11 +699,20 @@ function deleteSnapshot(btn, e) {
 let pendingSnapRestoreKeys = [];
 (function () {
   const saved = sessionStorage.getItem('forecast-snap-keys');
-  if (!saved) return;
-  sessionStorage.removeItem('forecast-snap-keys');
-  let keys;
-  try { keys = JSON.parse(saved); } catch (_) { return; }
-  pendingSnapRestoreKeys = Array.isArray(keys) ? keys.filter(Boolean) : [];
+  if (saved) {
+    sessionStorage.removeItem('forecast-snap-keys');
+    try {
+      const keys = JSON.parse(saved);
+      pendingSnapRestoreKeys = Array.isArray(keys) ? keys.filter(Boolean) : [];
+    } catch (_) {}
+    return;
+  }
+  // Plain page load (not a granularity-switch reload): restore whichever
+  // snapshots were left enabled last time, cached per browser.
+  try {
+    const cached = JSON.parse(localStorage.getItem(SNAP_SELECTION_KEY) || '[]');
+    pendingSnapRestoreKeys = Array.isArray(cached) ? cached.filter(Boolean) : [];
+  } catch (_) {}
 })();
 
 function restorePendingSnapshotSelections() {
@@ -700,6 +749,19 @@ function restorePendingSnapshotSelections() {
  * Chart color helpers
  * ===================================================================== */
 const CHART_COLOR_DEFAULTS = { actual: '#0d6efd', proj: '#dc3545', weekly: '#0d6efd' };
+// Nuke every saved chart preference — colors, toggles, axis windows, line
+// cutoffs, granularity, model overlays — and reload the default view. All
+// forecast-chart preferences live under the 'fc-' / 'forecast-' key prefixes.
+window.resetAllChartSettings = function () {
+  const doomed = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && (k.indexOf('fc-') === 0 || k.indexOf('forecast-') === 0)) doomed.push(k);
+  }
+  doomed.forEach(k => localStorage.removeItem(k));
+  window.location.href = D.urls.forecastPage;
+};
+
 function getChartColor(key) {
   return localStorage.getItem('fc-color-' + key) || CHART_COLOR_DEFAULTS[key];
 }
