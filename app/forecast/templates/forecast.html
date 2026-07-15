@@ -462,10 +462,58 @@
 <div class="container-fluid forecast-shell py-3 px-3 px-xl-4">
 
   <!-- Page Header -->
-  <div class="mb-3">
-    <h1 class="page-title">Forecast</h1>
-    <p class="page-subtitle">Contract status and credit-burn projections.</p>
+  <div class="mb-3 d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+      <h1 class="page-title">Forecast</h1>
+      <p class="page-subtitle mb-0">
+        {% if snapshot_label %}
+          Showing snapshot <strong>{{ snapshot_label }}</strong> on the live chart — actual cut at <strong>{{ snapshot_as_of }}</strong>, live forecasts hidden.
+        {% else %}
+          Contract status and credit-burn projections.
+        {% endif %}
+      </p>
+    </div>
+    {% if all_snapshots %}
+    <details class="fc-native-details" id="snapshot-view" {% if snapshot_ts %}open{% endif %}>
+      <summary style="cursor:pointer; font-weight:800; color:var(--fc-muted); text-transform:uppercase; letter-spacing:.06em; font-size:.64rem;">
+        Show a snapshot{% if snapshot_ts %} &middot; active{% endif %}
+      </summary>
+      <form method="get" action="{{ url_for('forecast.forecast_page') }}"
+            class="d-flex align-items-end flex-wrap gap-2 mt-2 p-2"
+            style="background:var(--fc-wash); border:1px solid var(--fc-soft-border); border-radius:12px;">
+        <input type="hidden" name="granularity" value="{{ granularity }}">
+        <div>
+          <label class="form-label mb-1" style="font-size:.68rem;">Snapshot</label>
+          <select name="snapshot" class="form-select form-select-sm" style="width:240px;">
+            {% for h in all_snapshots %}
+            {% if h.snapshot_ts %}
+            <option value="{{ h.snapshot_ts }}" {% if snapshot_ts == h.snapshot_ts %}selected{% endif %}>
+              {{ h.label or h.snapshot_date }}{% if h.label and h.snapshot_date %} ({{ h.snapshot_date }}){% endif %}
+            </option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Show on chart</button>
+        {% if snapshot_ts %}
+        <button type="button" class="btn btn-outline-secondary btn-sm"
+                title="Return to the live forecast and reset all chart settings to default (colors, cut, axis windows, overlays)."
+                onclick="resetAllChartSettings()">Back to live</button>
+        {% endif %}
+        <span class="text-muted align-self-center" style="font-size:.7rem; max-width:300px;">
+          A quick way to Cut the chart at a snapshot and overlay it — same window/axes as live, live forecasts hidden. Page numbers stay live.
+        </span>
+      </form>
+    </details>
+    {% endif %}
   </div>
+
+  {% if snapshot_label %}
+  <div class="alert alert-info d-flex align-items-center gap-2 py-2 px-3 mb-3" role="alert" style="font-size:.82rem;">
+    <span>&#9202;</span>
+    <span>Showing snapshot &ldquo;{{ snapshot_label }}&rdquo; on the chart: the actual line is cut at <strong>{{ snapshot_as_of }}</strong> and the live forecasts are hidden so the snapshot's own forecast stands out. <a href="#" onclick="resetAllChartSettings(); return false;">Back to live view</a> (resets chart to default).</span>
+  </div>
+  {% endif %}
 
   {% if no_data %}
   <!-- NO DATA STATE -->
@@ -541,12 +589,22 @@
 
     <div class="forecast-summary-card">
       <div class="summary-label">Risk + ML Reading</div>
+      {% if snapshot_stats %}
+      {# Snapshot mode: the frozen MC/ML stats recorded with the snapshot. #}
+      <div class="summary-main" id="mc-kpi-prob">{{ "{:.0%}".format(snapshot_stats.mc_exhaustion_prob) if snapshot_stats.mc_exhaustion_prob is not none else "—" }}</div>
+      <div class="summary-sub" id="mc-kpi-sub">{% if snapshot_stats.mc_p50_end_balance is not none %}P50 end: {{ "{:,.0f}".format(snapshot_stats.mc_p50_end_balance) }}{% else %}No Monte Carlo saved{% endif %}</div>
+      <div class="summary-metrics">
+        {{ summary_metric("ML trend", ("{:+,.0f}/wk".format(snapshot_stats.ml_slope_per_week) if snapshot_stats.ml_slope_per_week is not none else "—"), "", "ml-kpi-slope") }}
+        {{ summary_metric("Fit", ("R² " ~ snapshot_stats.ml_r_squared if snapshot_stats.ml_r_squared else "—"), "", "ml-kpi-sub2") }}
+      </div>
+      {% else %}
       <div class="summary-main" id="mc-kpi-prob" style="color:var(--fc-faint);">—</div>
       <div class="summary-sub" id="mc-kpi-sub">Monte Carlo risk loading</div>
       <div class="summary-metrics">
         {{ summary_metric("ML trend", "—", "", "ml-kpi-slope", "color:var(--fc-faint);") }}
         {{ summary_metric("Fit", "Loading", "", "ml-kpi-sub") }}
       </div>
+      {% endif %}
     </div>
   </div>
 
@@ -1012,15 +1070,21 @@
     "activeUsers": {{ active_users_data | safe }},
     "cumulative": {{ cumulative_chart_data | safe }},
     "usageType": {{ usage_type_weekly | safe }},
-    "purchased": {{ contract_status.purchased_credits if not no_data else 0 }},
-    "remaining": {{ forecast.credits_remaining if not no_data else 0 }},
-    "weeklyBurn": {{ forecast.forecast_weekly_burn if not no_data else 0 }},
-    "weeksLeft": {{ forecast.weeks_remaining if not no_data else 0 }},
-    "contractStartDate": "{{ contract_status.contract_start_date if not no_data else '' }}",
-    "latestDate": "{{ contract_status.latest_usage_date if not no_data else '' }}",
-    "currentRemaining": {{ contract_status.credits_remaining if not no_data else 0 }},
-    "contractEndDate": "{{ contract_status.contract_end_date if not no_data else '' }}",
-    "csWeeksLeft": {{ contract_status.weeks_remaining if not no_data else 0 }},
+    {# The chart/island always use LIVE values (live_contract_status/
+       live_forecast) so the window and cut-and-overlay match the live view,
+       even in snapshot mode where the KPI cards above show frozen numbers. #}
+    "purchased": {{ live_contract_status.purchased_credits if not no_data else 0 }},
+    "remaining": {{ live_forecast.credits_remaining if not no_data else 0 }},
+    "weeklyBurn": {{ live_forecast.forecast_weekly_burn if not no_data else 0 }},
+    "weeksLeft": {{ live_forecast.weeks_remaining if not no_data else 0 }},
+    "contractStartDate": "{{ live_contract_status.contract_start_date if not no_data else '' }}",
+    "latestDate": "{{ live_contract_status.latest_usage_date if not no_data else '' }}",
+    "currentRemaining": {{ live_contract_status.credits_remaining if not no_data else 0 }},
+    "contractEndDate": "{{ live_contract_status.contract_end_date if not no_data else '' }}",
+    "csWeeksLeft": {{ live_contract_status.weeks_remaining if not no_data else 0 }},
+    "viewFrom": "{{ view_from or '' }}",
+    "viewTo": "{{ view_to or '' }}",
+    "snapshotTs": "{{ snapshot_ts or '' }}",
     "mcRuns": {{ saved_contract.get('forecast', {}).get('monte_carlo_runs', 10000) | int }},
     "snapshots": {{ forecast_history | tojson }},
     "urls": {

@@ -35,6 +35,117 @@ def create_forecast_blueprint(services) -> Blueprint:
                 candidates.append(dates.max().normalize())
         return max(candidates) if candidates else _pd.Timestamp("today").normalize()
 
+    def _snapshot_row(ts):
+        """The forecast_history row for a snapshot timestamp, or None."""
+        ts = (ts or "").strip()
+        if not ts:
+            return None
+        for row in pipeline.get_forecast_history(limit=1000):
+            if str(row.get("snapshot_ts") or "") == ts:
+                return row
+        return None
+
+    def _snapshot_status_forecast(row):
+        """Reconstruct the frozen ContractStatus / Forecast dicts from a saved
+        snapshot row (every field was stored as a column), coerced back to the
+        dataclass field types so the page's number displays format correctly.
+        These drive the KPI cards in snapshot mode; the chart stays live."""
+        import dataclasses
+
+        from app.forecast.service import ContractStatus, Forecast
+
+        def coerce(dc):
+            out = {}
+            for f in dataclasses.fields(dc):
+                raw = row.get(f.name, "")
+                ftype = str(f.type)
+                if raw in (None, "", "nan", "None"):
+                    out[f.name] = (0.0 if ftype == "float" else 0 if ftype == "int"
+                                   else False if ftype == "bool" else "")
+                elif ftype == "float":
+                    try:
+                        out[f.name] = float(raw)
+                    except (TypeError, ValueError):
+                        out[f.name] = 0.0
+                elif ftype == "int":
+                    try:
+                        out[f.name] = int(float(raw))
+                    except (TypeError, ValueError):
+                        out[f.name] = 0
+                elif ftype == "bool":
+                    out[f.name] = str(raw).strip().lower() in ("true", "1", "yes")
+                else:
+                    out[f.name] = raw
+            return out
+
+        return coerce(ContractStatus), coerce(Forecast)
+
+    def _apply_view_window(svc, data_as_of, exclude_partial):
+        """Configure a ForecastingService for the current request's date view.
+
+        Windows arrive via the query string:
+
+          * ``view_from`` / ``view_to`` — a manual "date-range view" that
+            rewinds the page: caps the actual line / remaining at ``view_to``
+            and anchors the projection there. (Snapshot mode does NOT use this
+            — it's a lightweight live-page chart preset, applied client-side.)
+          * ``data_from`` / ``data_to`` — the narrower legacy "burn window" that
+            only limits which weeks drive the burn RATE (Advanced settings).
+
+        Returns the resolved values the caller threads into the template/chart.
+        """
+        def _arg(name):
+            return request.args.get(name, "").strip() or None
+
+        view_from = _arg("view_from")
+        view_to = _arg("view_to")
+        data_from, data_to = _arg("data_from"), _arg("data_to")
+        burn_from = data_from or view_from
+        burn_to = data_to or view_to
+
+        vt = _pd.to_datetime(view_to, errors="coerce") if view_to else _pd.NaT
+        effective_as_of = min(data_as_of, vt.normalize()) if not _pd.isna(vt) else data_as_of
+        effective_today = vt.normalize() if not _pd.isna(vt) else _pd.Timestamp.today().normalize()
+        svc._as_of = effective_as_of
+        svc._today = effective_today
+
+        # Cap operational data at the as-of date. A rewound view (view_to set)
+        # ALWAYS caps — both granularities — so daily mode rewinds too (else it
+        # keeps current weeks and computes today's remaining, not the view's).
+        # On the live page it's just the weekly partial-week exclusion.
+        if (view_to or exclude_partial) and svc.operational_df is not None and not svc.operational_df.empty:
+            svc.operational_df = svc.operational_df[
+                svc.operational_df["week_end"] <= effective_as_of
+            ].copy()
+
+        if (burn_from or burn_to) and svc.operational_df is not None and not svc.operational_df.empty:
+            win = svc.operational_df.copy()
+            if burn_from:
+                win = win[win["week_start"] >= _pd.to_datetime(burn_from)]
+            if burn_to:
+                win = win[win["week_end"] <= _pd.to_datetime(burn_to)]
+            if not win.empty:
+                svc._forecast_op_df = win
+
+        # Rewound to a past as-of: the credit pool must reflect only what had
+        # been granted by then. Clamp the service's own config ledger so
+        # get_contract_status() computes the historical remaining (otherwise it
+        # would subtract usage from the CURRENT purchased total, incl. later
+        # grants — the bug that made a past view's headline numbers wrong).
+        if view_to:
+            from app.shared.credit_ledger import credit_entries_as_of, credit_entries_total
+
+            contract = svc.config.setdefault("contract", {})
+            entries = credit_entries_as_of(contract, effective_as_of)
+            contract["credit_entries"] = entries
+            contract["purchased_credits"] = credit_entries_total(entries)
+
+        return {
+            "view_from": view_from, "view_to": view_to,
+            "data_from": data_from, "data_to": data_to,
+            "as_of": effective_as_of, "today": effective_today,
+        }
+
     def _config_as_of(config: dict, as_of: object) -> dict:
         """A config copy whose credit ledger only includes entries effective
         by `as_of` — so a historical/backfilled snapshot doesn't count
@@ -50,21 +161,26 @@ def create_forecast_blueprint(services) -> Blueprint:
         contract["purchased_credits"] = credit_entries_total(entries)
         return cfg
 
-    def _credit_events(contract_start) -> list[dict]:
+    def _credit_events(contract_start, as_of=None) -> list[dict]:
         """Credit-ledger entries as chart events, each clamped to contract start.
 
         effective_date is when the entry starts counting toward "available";
-        undated or pre-contract entries count from contract start."""
+        undated or pre-contract entries count from contract start. ``as_of``
+        drops entries effective after that date, so a past/snapshot view only
+        shows grants that had actually happened by then."""
         from app.shared.credit_ledger import credit_kind_label, normalize_credit_entries
 
         entries = normalize_credit_entries(config_svc.load_contract().get("contract", {}))
         start = _pd.to_datetime(contract_start, errors="coerce")
+        cutoff = _pd.to_datetime(as_of, errors="coerce") if as_of is not None else _pd.NaT
         events = []
         for e in entries:
             dt = _pd.to_datetime(e.get("date"), errors="coerce")
             if _pd.isna(dt) or (not _pd.isna(start) and dt < start):
                 dt = start
             if _pd.isna(dt):
+                continue
+            if not _pd.isna(cutoff) and dt > cutoff:
                 continue
             events.append({
                 "date": str(e.get("date") or ""),
@@ -110,9 +226,10 @@ def create_forecast_blueprint(services) -> Blueprint:
         daily = ddf.groupby("_day", as_index=False)["usage_credits"].sum()
         full_days = _pd.DataFrame({"_day": _pd.date_range(start.normalize(), end.normalize(), freq="D")})
         daily = full_days.merge(daily, on="_day", how="left").fillna({"usage_credits": 0.0})
-        # Credits available as of each day = sum of ledger entries dated <= day.
+        # Credits available as of each day = sum of ledger entries dated <= day
+        # (only entries that had happened by the view's as-of date).
         available = _pd.Series(0.0, index=daily.index)
-        for ev in _credit_events(contract_status.get("contract_start_date")):
+        for ev in _credit_events(contract_status.get("contract_start_date"), as_of=end):
             ev_day = _pd.to_datetime(ev["effective_date"])
             available = available + (daily["_day"] >= ev_day) * ev["credits"]
         daily["remaining"] = (available - daily["usage_credits"].cumsum()).clip(lower=0.0)
@@ -187,29 +304,46 @@ def create_forecast_blueprint(services) -> Blueprint:
             (op_df, "week_end"),
             (hist_df, "period_end"),
         )
-        forecasting._as_of = data_as_of
-        # Live view: anchor projections at today (lag-aware). Snapshot
-        # backfill constructs its own service and leaves this unset.
-        forecasting._today = _pd.Timestamp.today().normalize()
-        if exclude_partial:
-            if forecasting.operational_df is not None and not forecasting.operational_df.empty:
-                forecasting.operational_df = forecasting.operational_df[
-                    forecasting.operational_df["week_end"] <= data_as_of
-                ].copy()
+        # "Snapshot mode" is a lightweight client preset on the LIVE page — it
+        # cuts the actual at the snapshot's date, overlays that snapshot, and
+        # hides the live forecasts, keeping the normal window/axes. The server
+        # just renders the live page and passes the snapshot id/date so the
+        # client can apply the preset; it does NOT rewind the page.
+        snapshot_ts = request.args.get("snapshot", "").strip() or None
+        snapshot_row = _snapshot_row(snapshot_ts) if snapshot_ts else None
+        snapshot_as_of = str(snapshot_row.get("latest_usage_date") or "").strip() if snapshot_row else None
+        snapshot_label = (
+            (snapshot_row.get("label") or snapshot_row.get("snapshot_date") or "").strip()
+            if snapshot_row else None
+        )
+        if not snapshot_row:
+            snapshot_ts = snapshot_as_of = snapshot_label = None
 
-        # Date window for burn-rate calculation (does not affect credits_remaining / weeks_remaining)
-        data_from = request.args.get("data_from", "").strip() or None
-        data_to   = request.args.get("data_to",   "").strip() or None
-        if (data_from or data_to) and forecasting.operational_df is not None and not forecasting.operational_df.empty:
-            win = forecasting.operational_df.copy()
-            if data_from:
-                win = win[win["week_start"] >= _pd.to_datetime(data_from)]
-            if data_to:
-                win = win[win["week_end"] <= _pd.to_datetime(data_to)]
-            if not win.empty:
-                forecasting._forecast_op_df = win
+        # Resolve the manual date-range view (view_from/view_to) and legacy burn
+        # window (data_from/data_to). Snapshot mode does NOT drive this — it
+        # stays on the live window so its X/Y match the normal forecast.
+        win = _apply_view_window(forecasting, data_as_of, exclude_partial)
+        data_from, data_to = win["data_from"], win["data_to"]
+        view_from, view_to = win["view_from"], win["view_to"]
+        effective_as_of = win["as_of"]
+        effective_today = win["today"]
 
         usage_type_weekly = usage_type_weekly_json(_get_store_df())
+
+        # A manual date-range view rewinds the page to a past window, so it
+        # behaves like preview (no auto-save; snapshots filtered to the window).
+        # Snapshot mode does NOT — it's a live-page preset, so it keeps live
+        # data/snapshots (but still shouldn't auto-save while pinned to one).
+        view_active = bool(view_from or view_to)
+        window_preview = is_preview or view_active or bool(snapshot_ts)
+        all_snapshots = pipeline.get_forecast_history(limit=1000)
+
+        def _history_in_window():
+            if not view_active:
+                return all_snapshots
+            lo = str(view_from) if view_from else ""
+            hi = str(effective_as_of.date())
+            return [r for r in all_snapshots if lo <= str(r.get("snapshot_date", "")) <= hi]
 
         if not forecasting.has_data():
             return render_template(
@@ -220,7 +354,7 @@ def create_forecast_blueprint(services) -> Blueprint:
                 forecast=None,
                 weekly_chart_data="[]",
                 daily_actual_data="[]",
-                today=str(_pd.Timestamp.today().date()),
+                today=str(effective_today.date()),
                 credit_events="[]",
                 cumulative_chart_data="[]",
                 active_users_data="[]",
@@ -233,44 +367,90 @@ def create_forecast_blueprint(services) -> Blueprint:
                 granularity=granularity,
                 data_from=data_from,
                 data_to=data_to,
+                view_from=view_from,
+                view_to=view_to,
+                all_snapshots=all_snapshots,
+                snapshot_ts=snapshot_ts,
+                snapshot_label=snapshot_label,
+                snapshot_as_of=snapshot_as_of,
             )
 
         contract_status = forecasting.get_contract_status()
         forecast_data = forecasting.get_forecast()
 
         auto_save_mode = config.get("forecast", {}).get("snapshot_auto_save", "daily")
-        if not is_preview and auto_save_mode in ("daily", "both"):
+        if not window_preview and auto_save_mode in ("daily", "both"):
             forecasting.save_to_dir(pipeline.processed_dir)
 
         chart_builder = ChartDataBuilder(forecasting, forecasting.historical_df, forecasting.operational_df)
         weekly_chart_data = chart_builder.weekly_burn_json()
-        daily_actual_data = _daily_actual_burndown_json(daily_fallback_df, contract_status, data_as_of)
-        credit_events = json.dumps(_credit_events(contract_status.get("contract_start_date")))
+        # A rewound view is weekly-based (snapshots are), so its actual line
+        # uses the weekly reconstruction (which ends exactly at the view's
+        # remaining) rather than the daily one (which includes partial-week
+        # usage past the last complete week and wouldn't line up with the
+        # snapshot's frozen forecast anchor). Suppressing the daily series makes
+        # the chart fall back to the weekly actual in either granularity.
+        daily_actual_data = (
+            "[]" if view_active
+            else _daily_actual_burndown_json(daily_fallback_df, contract_status, effective_as_of)
+        )
+        # In a past/snapshot view, only show grants that had happened by then.
+        events_as_of = effective_as_of if view_active else None
+        credit_events = json.dumps(_credit_events(contract_status.get("contract_start_date"), as_of=events_as_of))
         cumulative_chart_data = chart_builder.cumulative_burn_json()
         contract_start_str = str(contract_status.get("contract_start_date", ""))
         active_users_data = chart_builder.active_users_json(contract_start_str)
+
+        # Snapshot mode: the KPI cards (status, credit position, burn, MC/ML)
+        # show the snapshot's FROZEN numbers, while the chart/island keep LIVE
+        # values so the window and cut-and-overlay match the live forecast.
+        display_cs, display_fc = contract_status, forecast_data
+        snapshot_stats = None
+        if snapshot_row:
+            display_cs, display_fc = _snapshot_status_forecast(snapshot_row)
+            def _f(key):
+                try:
+                    return float(snapshot_row.get(key) or 0)
+                except (TypeError, ValueError):
+                    return None
+            snapshot_stats = {
+                "mc_exhaustion_prob": _f("mc_exhaustion_prob"),
+                "mc_p50_end_balance": _f("mc_p50_end_balance"),
+                "ml_slope_per_week": _f("ml_slope_per_week"),
+                "ml_r_squared": snapshot_row.get("ml_r_squared") or "",
+                "ml_p50_end_balance": _f("ml_p50_end_balance"),
+            }
 
         return render_template(
             template_name,
             no_data=False,
             price_model=PriceModel(cost_per_credit, available_credits, total_credit_cost),
-            contract_status=contract_status,
-            forecast=forecast_data,
+            contract_status=display_cs,
+            forecast=display_fc,
+            live_contract_status=contract_status,
+            live_forecast=forecast_data,
+            snapshot_stats=snapshot_stats,
             weekly_chart_data=weekly_chart_data,
             daily_actual_data=daily_actual_data,
-            today=str(_pd.Timestamp.today().date()),
+            today=str(effective_today.date()),
             credit_events=credit_events,
             cumulative_chart_data=cumulative_chart_data,
             active_users_data=active_users_data,
             usage_type_weekly=usage_type_weekly,
             pipeline_status=pipeline.status(),
-            forecast_history=pipeline.get_forecast_history(),
-            is_preview=is_preview,
+            forecast_history=_history_in_window(),
+            is_preview=window_preview,
             saved_contract=config_svc.load_contract(),
             exclude_partial=exclude_partial,
             granularity=granularity,
             data_from=data_from,
             data_to=data_to,
+            view_from=view_from,
+            view_to=view_to,
+            all_snapshots=all_snapshots,
+            snapshot_ts=snapshot_ts,
+            snapshot_label=snapshot_label,
+            snapshot_as_of=snapshot_as_of,
         )
 
     @bp.route("/forecast", methods=["GET"])
@@ -700,8 +880,9 @@ def create_forecast_blueprint(services) -> Blueprint:
 
     def _forecasting_from_request(config: dict, exclude_partial: bool = True) -> ForecastingService:
         """A ForecastingService configured the way the page sees it: lag-aware
-        as-of/today anchors, optional partial-week exclusion, and the burn
-        window from the current request's query args."""
+        as-of/today anchors, optional partial-week exclusion, and the date-range
+        view / burn window from the current request's query args — so exports
+        (details, model-data) match whatever window the page is showing."""
         hist_df = pipeline.get_historical_weekly_summary()
         op_df = pipeline.get_operational_weekly_summary()
         daily_fallback_df = _get_store_df()
@@ -713,25 +894,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             (op_df, "week_end"),
             (hist_df, "period_end"),
         )
-        svc._as_of = data_as_of
-        # Same lag-aware anchor as the page, so models line up with the
-        # bridged actual line and the deterministic projection.
-        svc._today = _pd.Timestamp.today().normalize()
-        if exclude_partial and svc.operational_df is not None and not svc.operational_df.empty:
-            svc.operational_df = svc.operational_df[
-                svc.operational_df["week_end"] <= data_as_of
-            ].copy()
-
-        data_from = request.args.get("data_from", "").strip() or None
-        data_to = request.args.get("data_to", "").strip() or None
-        if (data_from or data_to) and svc.operational_df is not None and not svc.operational_df.empty:
-            win = svc.operational_df.copy()
-            if data_from:
-                win = win[win["week_start"] >= _pd.to_datetime(data_from)]
-            if data_to:
-                win = win[win["week_end"] <= _pd.to_datetime(data_to)]
-            if not win.empty:
-                svc._forecast_op_df = win
+        _apply_view_window(svc, data_as_of, exclude_partial)
         return svc
 
     @bp.route("/forecast/details-export.csv", methods=["GET"])

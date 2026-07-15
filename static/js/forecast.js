@@ -31,6 +31,9 @@ let compareChart     = null;
 // every other saved preference.
 const SNAP_SELECTION_KEY = 'fc-selected-snapshots';
 function persistSelectedSnaps() {
+  // Snapshot mode is a transient URL-driven preset — never persist its
+  // auto-selection, or it would leak into the next live-view session.
+  if (D.snapshotTs) return;
   try { localStorage.setItem(SNAP_SELECTION_KEY, JSON.stringify([...selectedSnaps.keys()])); } catch (_) {}
 }
 
@@ -105,17 +108,21 @@ function refreshBurndownLegend() {
   menu.innerHTML = '';
 
   // ── Forecast models (load / remove on click) ──
-  menu.appendChild(_menuHeader('Forecasts'));
-  [
-    { id: 'deterministic',     name: 'Base',              color: getChartColor('proj') },
-    { id: 'monte_carlo',       name: 'Monte Carlo',       color: '#fd7e14' },
-    { id: 'linear_regression', name: 'Linear Trend (ML)', color: '#198754' },
-  ].forEach(m => {
-    const on = _modelOn(m.id);
-    menu.appendChild(_menuRow(m.name, m.color, on,
-      () => { window.toggleForecastModel(m.id, !on); refreshBurndownLegend(); },
-      on ? 'Hide ' + m.name : 'Show ' + m.name));
-  });
+  // In snapshot mode the page's live models are hidden — the forecast comes
+  // from the snapshot's own frozen Base/MC/ML in the Snapshots section below.
+  if (!D.snapshotTs) {
+    menu.appendChild(_menuHeader('Forecasts'));
+    [
+      { id: 'deterministic',     name: 'Base',              color: getChartColor('proj') },
+      { id: 'monte_carlo',       name: 'Monte Carlo',       color: '#fd7e14' },
+      { id: 'linear_regression', name: 'Linear Trend (ML)', color: '#198754' },
+    ].forEach(m => {
+      const on = _modelOn(m.id);
+      menu.appendChild(_menuRow(m.name, m.color, on,
+        () => { window.toggleForecastModel(m.id, !on); refreshBurndownLegend(); },
+        on ? 'Hide ' + m.name : 'Show ' + m.name));
+    });
+  }
 
   // ── Other displayed lines (visibility toggle): actual, what-if ──
   // Model main lines are covered above; their bands carry _noLegend. Snapshot
@@ -339,6 +346,37 @@ function updateBurndownOverlays() {
   [...snapMcKeys].forEach(k => { if (!liveKeys.has(k)) snapMcKeys.delete(k); });
   [...snapMlKeys].forEach(k => { if (!liveKeys.has(k)) snapMlKeys.delete(k); });
 
+  // The blue actual line's value at each label — snapshot overlays snap their
+  // first plotted point onto it so the dashed forecast/MC/ML rides seamlessly
+  // out of the actual instead of starting at a slightly different frozen value
+  // (weekly-vs-daily, or a resynced remaining). The forecast's first point is
+  // redundant with the actual, so it's also dropped from the hover.
+  const actualDs = bc.data.datasets.find(d => d.label === 'Actual remaining');
+  const actualByLabel = {};
+  if (actualDs && Array.isArray(actualDs.data)) {
+    allLabels.forEach((l, j) => { if (actualDs.data[j] != null) actualByLabel[l] = actualDs.data[j]; });
+  }
+  // Shift a snapshot overlay group vertically so its first plotted point lands
+  // on the blue actual line — connecting seamlessly WHILE preserving the
+  // forecast shape (decline rate, band width). Moving only the first point
+  // instead left the interpolated 2nd point high, drawing a spurious up-tick
+  // before the decline (visible in daily view). Pass the primary line first
+  // (its offset drives the whole group); extra arrays (MC/ML bands) shift by
+  // the same delta so the band doesn't distort. Returns the anchor label for
+  // tooltip suppression. No-op when the actual doesn't reach the anchor.
+  function alignToActual(primary, ...others) {
+    const idx = primary.findIndex(v => v !== null && v !== undefined);
+    if (idx < 0) return null;
+    const label = allLabels[idx];
+    const target = actualByLabel[label];
+    if (target == null || primary[idx] == null) return label;
+    const delta = target - primary[idx];
+    [primary, ...others].forEach(arr => {
+      for (let j = 0; j < arr.length; j++) if (arr[j] != null) arr[j] = Math.max(arr[j] + delta, 0);
+    });
+    return label;
+  }
+
   snaps.forEach((h, i) => {
     maxRemaining = Math.max(maxRemaining, parseFloat(h.credits_remaining || 0));
     const key       = snapKey(h);
@@ -351,15 +389,20 @@ function updateBurndownOverlays() {
     if (fb) {
       if (!snapBaseOff.has(key)) {
         const forecastData = interpDateSeries(fb, allLabels, 'date', 'remaining');
+        const anchorLabel = alignToActual(forecastData);
         const startIdx = forecastData.findIndex(v => v !== null);
+        // In snapshot mode the base forecast is RED like the live "Projected
+        // remaining"; in comparison mode it keeps the snapshot's own color so
+        // multiple snapshots stay distinguishable.
+        const baseColor = D.snapshotTs ? (getChartColor('proj') || '#dc3545') : color;
         bc.data.datasets.push({
           label: snapLabel + ' · forecast',
           data: forecastData,
-          borderColor: color, borderDash: [5, 4], borderWidth: 2,
+          borderColor: baseColor, borderDash: [5, 4], borderWidth: 2,
           backgroundColor: 'transparent', fill: false, tension: 0.05,
           pointRadius: forecastData.map((v, j) => j === startIdx ? 7 : 0),
-          pointBackgroundColor: color,
-          spanGaps: false, _snapOverlay: true,
+          pointBackgroundColor: baseColor,
+          spanGaps: false, _snapOverlay: true, _snapAnchorLabel: anchorLabel,
         });
       }
 
@@ -368,23 +411,27 @@ function updateBurndownOverlays() {
         const p10d = interpDateSeries(mc.p10 || [], allLabels);
         const p50d = interpDateSeries(mc.p50,       allLabels);
         const p90d = interpDateSeries(mc.p90 || [], allLabels);
-        const alpha = hexToRgba(color, 0.12);
+        // Connect the band to the actual at the anchor (P50 drives the shift;
+        // P10/P90 move with it so the band width is preserved).
+        const mcAnchor = alignToActual(p50d, p10d, p90d);
+        // Same orange as the live Monte Carlo so snapshot MC reads the same.
+        const MC = getChartColor('mc') || '#fd7e14';
         // P90/P10 stay out of the legend but DO show in the hover tooltip so a
         // snapshot's MC band reads as numbers, not just the P50 line.
         bc.data.datasets.push({
           label: snapLabel + ' · MC P90', data: p90d,
-          borderColor: hexToRgba(color, 0.45), borderWidth: 1, borderDash: [2, 3],
-          backgroundColor: alpha, fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true,
+          borderColor: hexToRgba(MC, 0.55), borderWidth: 1, borderDash: [2, 3],
+          backgroundColor: hexToRgba(MC, 0.14), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true, _snapAnchorLabel: mcAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · MC P50', data: p50d,
-          borderColor: hexToRgba(color, 0.85), borderWidth: 2, borderDash: [4, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true,
+          borderColor: MC, borderWidth: 2, borderDash: [4, 3],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _snapAnchorLabel: mcAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · MC P10', data: p10d,
-          borderColor: hexToRgba(color, 0.45), borderWidth: 1, borderDash: [2, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true,
+          borderColor: hexToRgba(MC, 0.55), borderWidth: 1, borderDash: [2, 3],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true, _snapAnchorLabel: mcAnchor,
         });
       }
 
@@ -393,24 +440,28 @@ function updateBurndownOverlays() {
         const m10 = interpDateSeries(ml.p10 || [], allLabels);
         const m50 = interpDateSeries(ml.p50,       allLabels);
         const m90 = interpDateSeries(ml.p90 || [], allLabels);
+        const mlAnchor = alignToActual(m50, m10, m90);
+        // Same green as the live Linear Trend (ML).
+        const ML = getChartColor('ml') || '#198754';
         bc.data.datasets.push({
           label: snapLabel + ' · ML P90', data: m90,
-          borderColor: hexToRgba(color, 0.4), borderWidth: 1, borderDash: [1, 3],
-          backgroundColor: hexToRgba(color, 0.08), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true,
+          borderColor: hexToRgba(ML, 0.4), borderWidth: 1, borderDash: [1, 3],
+          backgroundColor: hexToRgba(ML, 0.10), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true, _snapAnchorLabel: mlAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · ML trend', data: m50,
-          borderColor: hexToRgba(color, 0.85), borderWidth: 2, borderDash: [1, 2],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true,
+          borderColor: ML, borderWidth: 2, borderDash: [1, 2],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _snapAnchorLabel: mlAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · ML P10', data: m10,
-          borderColor: hexToRgba(color, 0.4), borderWidth: 1, borderDash: [1, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true,
+          borderColor: hexToRgba(ML, 0.4), borderWidth: 1, borderDash: [1, 3],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true, _snapAnchorLabel: mlAnchor,
         });
       }
     } else if (!snapBaseOff.has(key)) {
       const data     = allLabels.map(l => snapRemainingAt(h, l));
+      const anchorLabel = alignToActual(data);
       const firstIdx = data.findIndex(v => v !== null);
       bc.data.datasets.push({
         label: snapLabel + ' · forecast', data,
@@ -418,7 +469,7 @@ function updateBurndownOverlays() {
         backgroundColor: 'transparent', fill: false, tension: 0.05,
         pointRadius:          data.map((v, j) => j === firstIdx ? 7 : 0),
         pointBackgroundColor: data.map((v, j) => j === firstIdx ? color : 'transparent'),
-        spanGaps: false, _snapOverlay: true,
+        spanGaps: false, _snapOverlay: true, _snapAnchorLabel: anchorLabel,
       });
     }
   });
@@ -667,6 +718,8 @@ const snapMlKeys = new Set();
   load('fc-snap-ml').forEach(k => snapMlKeys.add(k));
 })();
 function persistSnapshotOverlayState() {
+  // Transient in snapshot mode — don't leak the preset's overlays into live.
+  if (D.snapshotTs) return;
   try {
     localStorage.setItem('fc-snap-base-off', JSON.stringify([...snapBaseOff]));
     localStorage.setItem('fc-snap-mc', JSON.stringify([...snapMcKeys]));
@@ -770,6 +823,15 @@ function deleteSnapshot(btn, e) {
 // restore waits until the burndown chart has rebuilt its daily/weekly labels.
 let pendingSnapRestoreKeys = [];
 (function () {
+  // Snapshot mode: the page IS a snapshot, so its own frozen forecast is the
+  // one shown — auto-select it (its key is its timestamp) and turn on its
+  // Base/MC/ML, ignoring any other cached selection.
+  if (D.snapshotTs) {
+    pendingSnapRestoreKeys = [D.snapshotTs];
+    snapMcKeys.add(D.snapshotTs);
+    snapMlKeys.add(D.snapshotTs);
+    return;
+  }
   const saved = sessionStorage.getItem('forecast-snap-keys');
   if (saved) {
     sessionStorage.removeItem('forecast-snap-keys');
@@ -1153,9 +1215,12 @@ if (typeof Chart !== 'undefined') {
   }
 
   function defaultViewRange() {
-    const min = getNearestLabel(D.contractStartDate || allLabels[0], 'start') || allLabels[0];
-    // Default view spans the contract; projections past contract end (to
-    // exhaustion) are there when the user widens the x-axis window.
+    // Weekly: a date-range view (viewFrom/viewTo) starts the x-axis at viewFrom
+    // so the window's actual data leads the chart. Daily keeps its original
+    // full-contract window (contract start -> end) regardless of any view.
+    const startAnchor = (currentGranularity !== 'daily' && D.viewFrom)
+      || D.contractStartDate || allLabels[0];
+    const min = getNearestLabel(startAnchor, 'start') || allLabels[0];
     const max = getNearestLabel(D.contractEndDate, 'end') || allLabels[allLabels.length - 1];
     return { min, max };
   }
@@ -1288,8 +1353,12 @@ if (typeof Chart !== 'undefined') {
     if (!fromEl || !toEl) return;
     setViewInputBounds();
     const def = defaultViewRange();
-    fromEl.value = localStorage.getItem(viewStorageKey('from')) || def.min;
-    toEl.value = localStorage.getItem(viewStorageKey('to')) || def.max;
+    // A URL-driven date-range view sets the axis window itself, overriding any
+    // stale per-browser x-axis cached from a normal session. Daily is exempt —
+    // it keeps its original cached/full-contract window behavior.
+    const viewActive = !!(D.viewFrom || D.viewTo) && currentGranularity !== 'daily';
+    fromEl.value = (!viewActive && localStorage.getItem(viewStorageKey('from'))) || def.min;
+    toEl.value = (!viewActive && localStorage.getItem(viewStorageKey('to'))) || def.max;
     window.applyBurndownViewRange(false);
   }
 
@@ -1358,7 +1427,12 @@ if (typeof Chart !== 'undefined') {
           // many overlays are active: drop empty points and the faint P10/P90
           // band lines (marked _noTooltip), then cap the visible rows.
           itemSort: (a, b) => (b.raw ?? -Infinity) - (a.raw ?? -Infinity),
-          filter: (item) => item.raw != null && !item.dataset._noTooltip && !isLatestActualProjectionHover(item),
+          filter: (item) => item.raw != null && !item.dataset._noTooltip
+            && !isLatestActualProjectionHover(item)
+            // A snapshot overlay's first point sits on the actual line (they
+            // share that value) — the actual already reports it, so don't
+            // double it up in the hover.
+            && item.dataset._snapAnchorLabel !== item.label,
           usePointStyle: true,
           boxWidth: 8,
           boxHeight: 8,
@@ -1555,8 +1629,8 @@ if (typeof Chart !== 'undefined') {
   let detDataset = null;
   let lrCache = null, lrLoading = null;
 
-  window.toggleForecastModel = function (modelId, enabled) {
-    localStorage.setItem('forecast-model-' + modelId, enabled ? '1' : '0');
+  window.toggleForecastModel = function (modelId, enabled, persist = true) {
+    if (persist) localStorage.setItem('forecast-model-' + modelId, enabled ? '1' : '0');
     if (modelId === 'deterministic') {
       const bc = window.burndownChart;
       if (!bc) return;
@@ -1841,15 +1915,33 @@ if (typeof Chart !== 'undefined') {
     mcCache = null;
   }
 
-  // Restore model overlays from the last session (pills read the same state).
-  if (localStorage.getItem('forecast-model-deterministic') === '0') {
-    window.toggleForecastModel('deterministic', false);
-  }
-  if (localStorage.getItem('forecast-model-monte_carlo') === '1') {
-    window.toggleForecastModel('monte_carlo', true);
-  }
-  if (localStorage.getItem('forecast-model-linear_regression') === '1') {
-    window.toggleForecastModel('linear_regression', true);
+  // Snapshot mode is a transient preset on the live page: hide the live
+  // forecasts (base + MC/ML) and cut the actual at the snapshot's date, so the
+  // selected snapshot's own overlay is what shows. Everything is applied
+  // WITHOUT persisting, so returning to the live view is perfectly clean.
+  if (D.snapshotTs) {
+    window.toggleForecastModel('deterministic', false, false);  // hide base, don't persist
+    // Cut the actual line where this snapshot's forecast starts (the day
+    // before its data anchor), same as the per-snapshot Cut button.
+    const snapObj = (D.snapshots || []).find(h => h.snapshot_ts === D.snapshotTs);
+    const fcStart = snapObj ? String(snapObj.latest_usage_date || snapObj.snapshot_date || '').slice(0, 10) : '';
+    const cutDay = fcStart ? shiftDayStr(fcStart, -1) : '';
+    const toEl = document.getElementById('actual-cutoff-to');
+    if (toEl && cutDay && typeof window.applyActualCutoffs === 'function') {
+      toEl.value = cutDay;
+      window.applyActualCutoffs(false);  // transient
+    }
+  } else {
+    // Restore model overlays from the last session (pills read the same state).
+    if (localStorage.getItem('forecast-model-deterministic') === '0') {
+      window.toggleForecastModel('deterministic', false);
+    }
+    if (localStorage.getItem('forecast-model-monte_carlo') === '1') {
+      window.toggleForecastModel('monte_carlo', true);
+    }
+    if (localStorage.getItem('forecast-model-linear_regression') === '1') {
+      window.toggleForecastModel('linear_regression', true);
+    }
   }
   refreshBurndownLegend();
 

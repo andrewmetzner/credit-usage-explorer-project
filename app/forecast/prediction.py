@@ -295,7 +295,10 @@ class LinearRegressionModel(PredictionModel):
         p90 = [round(float(ctx.credits_remaining), 1)]
         weekly_predictions: list[float] = []
         raw_weekly_predictions: list[float] = []
-        remaining = float(ctx.credits_remaining)
+        # Unclamped running balance so the band center keeps declining past 0;
+        # the P90 (optimistic) edge then reaches 0 LATER than P50 instead of
+        # being cut off the moment P50 exhausts.
+        raw_remaining = float(ctx.credits_remaining)
         cum_var = 0.0
         last_idx = len(y) - 1
         exhaustion_date: str | None = None
@@ -308,7 +311,7 @@ class LinearRegressionModel(PredictionModel):
             week_burn = max(bounded_week_burn, 0.0) * frac
             raw_weekly_predictions.append(round(raw_week_burn * frac, 2))
             weekly_predictions.append(round(week_burn, 2))
-            remaining = max(remaining - week_burn, 0.0)
+            raw_remaining -= week_burn
             cum_var += (resid_std * frac) ** 2
             band = self._Z_80 * math.sqrt(cum_var)
             # The final partial week spans its true length (ends at contract
@@ -316,11 +319,14 @@ class LinearRegressionModel(PredictionModel):
             cum_days += float(frac) * 7
             d = ctx.latest_usage_date + timedelta(days=round(cum_days))
             dates.append(str(d))
-            p50.append(round(remaining, 1))
-            p90.append(round(min(max(remaining + band, 0.0), ctx.purchased_credits), 1))
-            p10.append(round(max(remaining - band, 0.0), 1))
-            if remaining <= 0.0 and exhaustion_date is None:
+            p50.append(round(max(raw_remaining, 0.0), 1))
+            p90.append(round(min(max(raw_remaining + band, 0.0), ctx.purchased_credits), 1))
+            p10.append(round(max(raw_remaining - band, 0.0), 1))
+            if raw_remaining <= 0.0 and exhaustion_date is None:
                 exhaustion_date = str(d)
+            # Stop only once even the optimistic edge is spent, so the band
+            # runs to its true end rather than cutting off at P50's exhaustion.
+            if p90[-1] <= 0.0:
                 break
 
         def pts(vals: list[float]) -> list[dict]:
