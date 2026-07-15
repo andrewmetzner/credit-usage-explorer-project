@@ -62,6 +62,34 @@ def credit_entries_total(entries: list[dict[str, Any]] | None) -> float:
     return round(sum(_to_float(e.get("credits", 0)) for e in (entries or [])), 2)
 
 
+def credit_entries_as_of(contract: dict[str, Any] | None, as_of: Any) -> list[dict[str, Any]]:
+    """Ledger entries effective on or before `as_of` (inclusive).
+
+    Undated entries, or ones dated before contract start, count from contract
+    start — the same clamp used everywhere else the ledger is laddered by
+    date. Used to reconstruct what the pool actually held as of a past date,
+    for historical/backfilled forecast snapshots: a snapshot from before a
+    later grant's effective date must not count credits that hadn't been
+    added to the contract yet.
+    """
+    import pandas as pd
+
+    contract = contract or {}
+    entries = normalize_credit_entries(contract)
+    cutoff = pd.to_datetime(as_of, errors="coerce")
+    if pd.isna(cutoff):
+        return entries
+    start = pd.to_datetime(contract.get("contract_start_date"), errors="coerce")
+    out = []
+    for e in entries:
+        ed = pd.to_datetime(e.get("date"), errors="coerce")
+        if pd.isna(ed) or (not pd.isna(start) and ed < start):
+            ed = start
+        if pd.isna(ed) or ed <= cutoff:
+            out.append(e)
+    return out
+
+
 def build_credit_entry(
     *,
     date: str,

@@ -207,6 +207,78 @@ function toggleSnapCutFor(cutDay) {
   refreshBurndownLegend();
 }
 
+/* ===================================================================== *
+ * "View as of a date" — one control that ties together snapshot select,
+ * Cut, and CSV export: pick a date, land on the nearest snapshot at or
+ * before it, see the chart as it looked then, and grab its data sheet.
+ * ===================================================================== */
+let viewAsOfKey = null;
+
+function _removeViewAsOfSnap() {
+  if (!viewAsOfKey || !selectedSnaps.has(viewAsOfKey)) { viewAsOfKey = null; return; }
+  const row = findRowByKey(viewAsOfKey);
+  if (row) { toggleRow(row); } else { selectedSnaps.delete(viewAsOfKey); renderComparePanel(); }
+  viewAsOfKey = null;
+}
+
+window.applyViewAsOf = function () {
+  const dateEl = document.getElementById('view-as-of-date');
+  const statusEl = document.getElementById('view-as-of-status');
+  const date = dateEl && dateEl.value;
+  if (!date) return;
+
+  const candidates = (D.snapshots || []).filter(h => (h.snapshot_date || '') <= date);
+  if (!candidates.length) {
+    if (statusEl) statusEl.textContent = 'No snapshot on or before that date.';
+    return;
+  }
+  candidates.sort((a, b) => (a.snapshot_date < b.snapshot_date ? 1 : -1));
+  const h = candidates[0];
+  const key = snapKey(h);
+
+  if (viewAsOfKey && viewAsOfKey !== key) _removeViewAsOfSnap();
+  viewAsOfKey = key;
+
+  if (!selectedSnaps.has(key)) {
+    const wasEmpty = selectedSnaps.size === 0;
+    selectedSnaps.set(key, h);
+    fetchSnapSeries(h);
+    if (wasEmpty) {
+      const target = document.getElementById('burndown-chart-section');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  renderComparePanel();
+
+  // Cut the actual line right where this snapshot's forecast starts, same
+  // as its row's Cut button — "view as of" means seeing only what was known
+  // by then.
+  const fcStart = String(h.latest_usage_date || h.snapshot_date || '').slice(0, 10);
+  const cutDay = fcStart ? shiftDayStr(fcStart, -1) : '';
+  const toEl = document.getElementById('actual-cutoff-to');
+  if (toEl && cutDay && toEl.value !== cutDay) {
+    toEl.value = cutDay;
+    if (typeof window.applyActualCutoffs === 'function') window.applyActualCutoffs();
+  }
+
+  if (statusEl) {
+    const label = snapDisplayName(h);
+    const csvUrl = h.snapshot_ts ? (D.urls.snapshotExport + '?ts=' + encodeURIComponent(h.snapshot_ts)) : '';
+    statusEl.innerHTML = 'Showing ' + label
+      + (csvUrl ? ' &middot; <a href="' + csvUrl + '">Download data sheet</a>' : '');
+  }
+  refreshBurndownLegend();
+};
+
+window.clearViewAsOf = function () {
+  const dateEl = document.getElementById('view-as-of-date');
+  const statusEl = document.getElementById('view-as-of-status');
+  if (dateEl) dateEl.value = '';
+  if (statusEl) statusEl.textContent = '';
+  if (typeof window.clearActualCutoffs === 'function') window.clearActualCutoffs();
+  _removeViewAsOfSnap();
+};
+
 // Download the selected snapshots' history rows as CSV (all when none picked).
 window.exportSelectedSnapshots = function () {
   const params = new URLSearchParams();
@@ -1370,10 +1442,30 @@ if (typeof Chart !== 'undefined') {
       if (after) localStorage.setItem('fc-actual-cutoff-to', after);
       else localStorage.removeItem('fc-actual-cutoff-to');
     }
-    bc.data.datasets[idx].data = bc.data.labels.map(
+    const labels = bc.data.labels;
+    const values = labels.map(
       l => ((before && l < before) || (after && l > after))
         ? null : lookup(activeActualPts(), l)
     );
+    // A "hide after" cutoff almost always lands BETWEEN two plotted labels
+    // (e.g. weekly points, 7 days apart) rather than exactly on one, so the
+    // line's last visible point sits one whole label short of whatever comes
+    // next — a snapshot's forecast dot included. Carry the line one label
+    // further so it visibly reaches that next point instead of stopping
+    // short. Use the REAL value there (daily-resolution data when available,
+    // so a weekly gap reflects the actual trend across those days rather
+    // than a flat plateau); only fall back to repeating the last visible
+    // value if no real data exists that far out at all.
+    if (after) {
+      let lastVisible = -1;
+      for (let i = 0; i < values.length; i++) if (values[i] != null) lastVisible = i;
+      if (lastVisible >= 0 && lastVisible + 1 < values.length && values[lastVisible + 1] == null) {
+        const nextLabel = labels[lastVisible + 1];
+        const real = dailyActualPts.length ? lookup(dailyActualPts, nextLabel) : null;
+        values[lastVisible + 1] = real != null ? real : values[lastVisible];
+      }
+    }
+    bc.data.datasets[idx].data = values;
     bc.chart.update();
   };
   window.clearActualCutoffs = function () {

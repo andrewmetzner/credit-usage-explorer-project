@@ -803,6 +803,12 @@
       <button class="btn btn-outline-success btn-sm py-0 px-2" style="font-size:.74rem;"
               title="Download the selected snapshots' full forecast details as CSV — one row per snapshot week (all snapshots when none are selected)."
               onclick="exportSelectedSnapshots()">Export CSV</button>
+
+      <span class="fc-control-label ms-md-3" title="Jump the graph and data sheet to a specific date — picks the nearest snapshot on or before it, cuts the actual line there, and gives you that snapshot's CSV.">View as of</span>
+      <input type="date" id="view-as-of-date" class="form-control form-control-sm" style="width:150px; font-size:.74rem;">
+      <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.74rem;" onclick="applyViewAsOf()">Apply</button>
+      <button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.72rem;" onclick="clearViewAsOf()">Clear</button>
+      <span id="view-as-of-status" class="text-muted" style="font-size:.72rem;"></span>
       {% else %}
       <span class="text-muted">No snapshots yet</span>
       {% endif %}

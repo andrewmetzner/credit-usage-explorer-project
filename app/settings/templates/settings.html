@@ -461,6 +461,15 @@
           </div>
           <button class="btn btn-outline-primary btn-sm" type="submit">Save Snapshot Now</button>
         </form>
+        {% if forecast_history_count %}
+        <form method="post" action="{{ url_for('forecast.resync_forecast_snapshots') }}" class="mt-2"
+              onsubmit="return confirm('Recompute all {{ forecast_history_count }} snapshot(s) against the current credit ledger? Each snapshot keeps its own date/label/color and historical data window — only credit totals (and everything derived from them) get refreshed.');">
+          <button class="btn btn-outline-secondary btn-sm" type="submit"
+                  title="Run this after adding or editing a credit-ledger entry (Purchased/Gifted/Adjustment above) — snapshots freeze their totals when saved, so a later or backdated entry never reaches ones that already exist until you resync.">
+            &#8635; Resync snapshots to current credit ledger
+          </button>
+        </form>
+        {% endif %}
       </div>
 
       {# Tier Policy #}

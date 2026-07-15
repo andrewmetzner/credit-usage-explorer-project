@@ -35,6 +35,21 @@ def create_forecast_blueprint(services) -> Blueprint:
                 candidates.append(dates.max().normalize())
         return max(candidates) if candidates else _pd.Timestamp("today").normalize()
 
+    def _config_as_of(config: dict, as_of: object) -> dict:
+        """A config copy whose credit ledger only includes entries effective
+        by `as_of` — so a historical/backfilled snapshot doesn't count
+        credits that hadn't been granted yet as of its own date. Used
+        wherever a ForecastingService is built to reconstruct the past
+        (weekly-snapshot backfill, snapshot resync)."""
+        from app.shared.credit_ledger import credit_entries_as_of, credit_entries_total
+
+        cfg = copy.deepcopy(config)
+        contract = cfg.setdefault("contract", {})
+        entries = credit_entries_as_of(contract, as_of)
+        contract["credit_entries"] = entries
+        contract["purchased_credits"] = credit_entries_total(entries)
+        return cfg
+
     def _credit_events(contract_start) -> list[dict]:
         """Credit-ledger entries as chart events, each clamped to contract start.
 
@@ -378,6 +393,105 @@ def create_forecast_blueprint(services) -> Blueprint:
             return redirect(url_for("settings.settings_page"))
         return redirect(url_for("forecast.forecast_page"))
 
+    @bp.route("/forecast/snapshot/resync", methods=["POST"])
+    def resync_forecast_snapshots() -> object:
+        """Recompute every saved snapshot against the CURRENT credit ledger.
+
+        Snapshots freeze their numbers the moment they're saved. If a credit
+        entry is added afterward — even one backdated to an earlier effective
+        date — every snapshot that already existed keeps the old, now-stale
+        total forever; nothing else in the app ever revisits them. This walks
+        every snapshot and rebuilds it in place (same timestamp/date/label/
+        color), using today's ledger but that snapshot's OWN historical data
+        window (only the weeks known by its own as-of date), so "what the
+        burn history looked like then" stays fixed while "what the ledger
+        actually contained by then" gets corrected.
+        """
+        config = copy.deepcopy(config_svc.load_contract())
+        hist_df = pipeline.get_historical_weekly_summary()
+        op_df = pipeline.get_operational_weekly_summary()
+        if op_df is None or op_df.empty:
+            daily_df = _get_store_df()
+            if daily_df is not None and not daily_df.empty:
+                _tmp = ForecastingService(config, hist_df, None, daily_df)
+                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
+                    op_df = _tmp.operational_df
+                if hist_df is None and _tmp.historical_df is not None:
+                    hist_df = _tmp.historical_df
+
+        rows = pipeline.get_forecast_history(limit=1000)
+        if not rows:
+            flash("No snapshots to resync.", "info")
+            return redirect(request.referrer or url_for("settings.settings_page"))
+        if op_df is None or op_df.empty:
+            flash("No operational data available to rebuild snapshots from.", "warning")
+            return redirect(request.referrer or url_for("settings.settings_page"))
+
+        # Cap Monte Carlo like the other batch-generation routes so resyncing
+        # many snapshots at once stays responsive.
+        cfg_fc = config.setdefault("forecast", {})
+        cfg_fc["monte_carlo_runs"] = min(int(cfg_fc.get("monte_carlo_runs", 10000)), 2000)
+
+        op_sorted = op_df.sort_values("week_start").reset_index(drop=True)
+        resynced = skipped = errors = 0
+        for row in rows:
+            ts = str(row.get("snapshot_ts") or "").strip()
+            if not ts:
+                # No timestamp to preserve identity by — resyncing would mint
+                # a new one and silently orphan this row under a new key.
+                skipped += 1
+                continue
+            snap_date = str(row.get("snapshot_date") or "").strip()
+            label = str(row.get("label") or "").strip()
+            color = str(row.get("color") or "").strip()
+            # Two different "as of" axes: how much USAGE DATA had accumulated
+            # (latest_usage_date — can lag behind the real calendar), vs. what
+            # the CREDIT LEDGER actually held (as of the snapshot's own real
+            # or simulated wall-clock date, snapshot_date). A live snapshot
+            # saved today, with data lagging a few days, must still count a
+            # grant effective yesterday — clamping the ledger to the lagging
+            # data date would wrongly erase it.
+            data_as_of = _pd.to_datetime(row.get("latest_usage_date"), errors="coerce")
+            ledger_as_of = _pd.to_datetime(snap_date, errors="coerce")
+
+            truncated_op = (
+                op_sorted[op_sorted["week_end"] <= data_as_of] if not _pd.isna(data_as_of) else op_sorted
+            )
+            if truncated_op.empty:
+                errors += 1
+                continue
+
+            try:
+                pipeline.delete_snapshot(ts, snap_date, label)
+                # Ledger entries dated after this snapshot's own date must not
+                # count yet — only what the pool actually held then.
+                week_config = _config_as_of(config, ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of)
+                svc = ForecastingService(week_config, hist_df, truncated_op.copy())
+                if not svc.has_data():
+                    errors += 1
+                    continue
+                svc.save_to_dir(
+                    pipeline.processed_dir,
+                    once_per_day=False,
+                    label=label,
+                    snapshot_ts=ts,
+                    snapshot_date=snap_date,
+                    skip_mc=False,
+                )
+                if color:
+                    pipeline.set_snapshot_color(ts, snap_date, label, color)
+                resynced += 1
+            except Exception:
+                errors += 1
+
+        parts = [f"{resynced} snapshot{'s' if resynced != 1 else ''} resynced"]
+        if skipped:
+            parts.append(f"{skipped} skipped (no timestamp)")
+        if errors:
+            parts.append(f"{errors} failed")
+        flash(", ".join(parts) + ".", "success" if resynced else "warning")
+        return redirect(request.referrer or url_for("settings.settings_page"))
+
     @bp.route("/forecast/history/rename", methods=["POST"])
     def rename_forecast_snapshot() -> object:
         snapshot_ts = request.form.get("snapshot_ts", "")
@@ -465,10 +579,14 @@ def create_forecast_blueprint(services) -> Blueprint:
                 except Exception:
                     pass
 
-            # Build a service that only sees data through this week
+            # Build a service that only sees data through this week — and a
+            # ledger that only counts credits granted by this week, so a
+            # later-dated grant (even a real, current one) doesn't leak into
+            # a week that predates it.
             truncated_op = op_sorted.iloc[: i + 1].copy()
             try:
-                svc = ForecastingService(config, hist_df, truncated_op)
+                week_config = _config_as_of(config, week_end_str)
+                svc = ForecastingService(week_config, hist_df, truncated_op)
                 if not svc.has_data():
                     errors += 1
                     continue
@@ -554,7 +672,8 @@ def create_forecast_blueprint(services) -> Blueprint:
 
                 truncated_op = op_sorted.iloc[: i + 1].copy()
                 try:
-                    svc = ForecastingService(config, hist_df, truncated_op)
+                    week_config = _config_as_of(config, week_end_str)
+                    svc = ForecastingService(week_config, hist_df, truncated_op)
                     if not svc.has_data():
                         errors += 1
                         continue

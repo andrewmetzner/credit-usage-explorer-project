@@ -458,8 +458,26 @@ class ForecastingService:
         import math
         from datetime import date as _date, timedelta as _td
 
-        contract_start = pd.to_datetime(self.config["contract"]["contract_start_date"])
-        purchased = float(snapshot.get("purchased_credits", 0))
+        from app.shared.credit_ledger import normalize_credit_entries
+
+        contract = self.config.get("contract", {})
+        contract_start = pd.to_datetime(contract.get("contract_start_date"))
+
+        # Credits available as of a date = sum of ledger entries effective by
+        # then (undated/pre-contract entries count from contract start), so a
+        # mid-contract grant steps this reconstruction up on its own date
+        # instead of being smeared back across the whole history.
+        entries = normalize_credit_entries(contract)
+
+        def available(day: pd.Timestamp) -> float:
+            total = 0.0
+            for e in entries:
+                ed = pd.to_datetime(e.get("date"), errors="coerce")
+                if pd.isna(ed) or (not pd.isna(contract_start) and ed < contract_start):
+                    ed = contract_start
+                if pd.isna(ed) or ed <= day:
+                    total += float(e.get("credits") or 0)
+            return total
 
         # Collect weekly burn series from both data sources
         weekly_series: list[dict] = []
@@ -478,12 +496,13 @@ class ForecastingService:
                 })
         weekly_series.sort(key=lambda x: x["week_start"])
 
-        # Reconstruct actual credit burndown from contract start
-        rem = purchased
+        # Reconstruct actual credit burndown, ledger-aware.
+        cum_used = 0.0
         actual_burndown: list[dict] = []
         for w in weekly_series:
             if w["in_contract"]:
-                rem = max(rem - w["total_credits_used"], 0.0)
+                cum_used += w["total_credits_used"]
+                rem = max(available(pd.Timestamp(w["week_start"])) - cum_used, 0.0)
                 actual_burndown.append({"date": w["week_start"], "remaining": round(rem, 1)})
 
         snap_date = str(snapshot.get("snapshot_date", ""))
