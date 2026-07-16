@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -410,7 +410,22 @@ class IngestionPipeline:
             if df.empty or "snapshot_date" not in df.columns:
                 return []
             df = df.sort_values("snapshot_date", ascending=False).head(limit)
-            return df.fillna("").to_dict("records")
+            rows = df.fillna("").to_dict("records")
+            # forecast_exhaustion_week is always recomputed from the exact
+            # date here (not trusted from the CSV) so every consumer — the
+            # snapshot picker, the KPI card, and the history/details CSV
+            # exports — gets the "week that STARTS exhausted" rule even for
+            # rows saved before that fix existed, without needing a resync.
+            for row in rows:
+                ed = str(row.get("forecast_exhaustion_date") or "")
+                if ed and ed not in ("nan", "None"):
+                    try:
+                        d = datetime.fromisoformat(ed).date()
+                        days_to_next_monday = (7 - d.weekday()) % 7
+                        row["forecast_exhaustion_week"] = (d + timedelta(days=days_to_next_monday)).isoformat()
+                    except ValueError:
+                        pass
+            return rows
         except Exception:
             return []
 
