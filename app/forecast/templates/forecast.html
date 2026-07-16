@@ -675,6 +675,7 @@
           <button class="btn btn-outline-secondary py-0 px-2" title="Reset"    onclick="resetBurndownView()">&#8635;</button>
         </div>
         <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"  onclick="window.burndownChart && window.burndownChart.exportPNG()">&#8681;</button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Bulk export: Basic, MC, and ML as separate PNGs" onclick="window.burndownChart && window.burndownChart.bulkExportPNG()">&#8681;&#8681;</button>
         <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"  onclick="window.burndownChart && window.burndownChart.openFullscreen()">&#9974;</button>
       </div>
     </div>
@@ -1036,7 +1037,32 @@
       </h2>
       <div id="acc-mc" class="accordion-collapse collapse">
         <div class="accordion-body py-3" id="mc-acc-body">
+          {% if snapshot_stats %}
+          {% set mc_ep = snapshot_stats.mc_exhaustion_prob %}
+          {% set mc_risk_cls = 'text-danger' if mc_ep is not none and mc_ep > 0.5 else 'text-warning' if mc_ep is not none and mc_ep > 0.1 else 'text-success' if mc_ep is not none else '' %}
+          <div class="row g-3">
+            <div class="col-md-5">
+              <p class="text-muted small mb-1 fw-semibold">Simulation Summary <span class="text-muted">(from snapshot)</span></p>
+              <table class="table table-sm mb-2">
+                <tr><td>Exhaustion probability</td><td class="text-end fw-semibold {{ mc_risk_cls }}">{{ "{:.0%}".format(mc_ep) if mc_ep is not none else "—" }}</td></tr>
+                <tr><td>Simulation runs</td><td class="text-end">{{ "{:,}".format(snapshot_stats.mc_runs) if snapshot_stats.mc_runs is not none else "—" }}</td></tr>
+              </table>
+            </div>
+            <div class="col-md-7">
+              <p class="text-muted small mb-1 fw-semibold">End Balance Distribution</p>
+              <table class="table table-sm mb-0">
+                <thead><tr><th>Percentile</th><th class="text-end">End Balance</th></tr></thead>
+                <tbody>
+                  <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.mc_p10_end_balance) if snapshot_stats.mc_p10_end_balance is not none else "—" }}</td></tr>
+                  <tr><td>P50 <span class="text-muted small">(median)</span></td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.mc_p50_end_balance) if snapshot_stats.mc_p50_end_balance is not none else "—" }}</td></tr>
+                  <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.mc_p90_end_balance) if snapshot_stats.mc_p90_end_balance is not none else "—" }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {% else %}
           <div class="text-muted small">Loading simulation data&hellip;</div>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -1053,7 +1079,36 @@
       </h2>
       <div id="acc-ml" class="accordion-collapse collapse">
         <div class="accordion-body py-3" id="ml-acc-body">
+          {% if snapshot_stats %}
+          <div class="row g-3">
+            <div class="col-md-6">
+              <p class="text-muted small mb-1 fw-semibold">Trend Fit <span class="text-muted">(from snapshot)</span></p>
+              <table class="table table-sm mb-0">
+                <tr><td>Direction</td><td class="text-end fw-semibold">{{ (snapshot_stats.ml_trend_direction or "—")|replace("_", " ") }}</td></tr>
+                <tr><td>Slope</td><td class="text-end">{{ "{:+,.0f} / wk".format(snapshot_stats.ml_slope_per_week) if snapshot_stats.ml_slope_per_week is not none else "—" }}</td></tr>
+                <tr><td>R&sup2; (fit quality)</td><td class="text-end">{{ snapshot_stats.ml_r_squared if snapshot_stats.ml_r_squared else "—" }}</td></tr>
+                <tr><td>RMSE</td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.ml_rmse) if snapshot_stats.ml_rmse is not none else "—" }}</td></tr>
+                <tr><td>Weeks of history</td><td class="text-end">{{ snapshot_stats.ml_observations_used if snapshot_stats.ml_observations_used is not none else "—" }}</td></tr>
+                <tr><td>Engine</td><td class="text-end text-muted small">{{ snapshot_stats.ml_model_engine or "linear regression" }}</td></tr>
+              </table>
+            </div>
+            <div class="col-md-6">
+              <p class="text-muted small mb-1 fw-semibold">Projected End Balance</p>
+              <table class="table table-sm mb-2">
+                <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.ml_p10_end_balance) if snapshot_stats.ml_p10_end_balance is not none else "—" }}</td></tr>
+                <tr><td>P50 <span class="text-muted small">(expected)</span></td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.ml_p50_end_balance) if snapshot_stats.ml_p50_end_balance is not none else "—" }}</td></tr>
+                <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end">{{ "{:,.0f}".format(snapshot_stats.ml_p90_end_balance) if snapshot_stats.ml_p90_end_balance is not none else "—" }}</td></tr>
+              </table>
+              {% if snapshot_stats.ml_projected_exhaustion_date %}
+              <p class="mb-0 small text-danger">Trend projected exhaustion around {{ snapshot_stats.ml_projected_exhaustion_date }}.</p>
+              {% else %}
+              <p class="mb-0 small text-success">Trend did not project exhaustion before contract end.</p>
+              {% endif %}
+            </div>
+          </div>
+          {% else %}
           <div class="text-muted small">Loading ML model statistics&hellip;</div>
+          {% endif %}
         </div>
       </div>
     </div>

@@ -79,14 +79,19 @@ def create_forecast_blueprint(services) -> Blueprint:
             return out
 
         cs, fc = coerce(ContractStatus), coerce(Forecast)
-        if not fc.get('forecast_exhaustion_week') and fc.get('forecast_exhaustion_date'):
+        # Always recompute from the exact date rather than trusting a stored
+        # forecast_exhaustion_week: older snapshots (saved before the "week
+        # that STARTS exhausted" fix) have one on file, just computed with the
+        # old floor-to-same-Monday rule, so only backfilling when absent would
+        # leave those showing the wrong week forever.
+        if fc.get('forecast_exhaustion_date'):
             try:
                 from datetime import datetime, timedelta
                 ed = datetime.fromisoformat(fc['forecast_exhaustion_date']).date()
-                start_of_week = ed - timedelta(days=ed.weekday())
-                fc['forecast_exhaustion_week'] = start_of_week.isoformat()
+                days_to_next_monday = (7 - ed.weekday()) % 7
+                fc['forecast_exhaustion_week'] = (ed + timedelta(days=days_to_next_monday)).isoformat()
             except Exception:
-                fc['forecast_exhaustion_week'] = fc['forecast_exhaustion_date']
+                fc['forecast_exhaustion_week'] = fc.get('forecast_exhaustion_week') or fc['forecast_exhaustion_date']
         return cs, fc
 
     def _apply_view_window(svc, data_as_of, exclude_partial):
@@ -425,15 +430,26 @@ def create_forecast_blueprint(services) -> Blueprint:
                     return cast(raw)
                 except (TypeError, ValueError):
                     return None
-            ml_r_squared = snapshot_row.get("ml_r_squared")
-            if ml_r_squared in (None, "", "nan", "None", "null"):
-                ml_r_squared = None
+            def _raw(key):
+                raw = snapshot_row.get(key)
+                return None if raw in (None, "", "nan", "None", "null") else raw
+
             snapshot_stats = {
                 "mc_exhaustion_prob": _val("mc_exhaustion_prob"),
                 "mc_p50_end_balance": _val("mc_p50_end_balance"),
+                "mc_p10_end_balance": _val("mc_p10_end_balance"),
+                "mc_p90_end_balance": _val("mc_p90_end_balance"),
+                "mc_runs": _val("mc_runs", int),
                 "ml_slope_per_week": _val("ml_slope_per_week"),
-                "ml_r_squared": ml_r_squared,
+                "ml_r_squared": _raw("ml_r_squared"),
+                "ml_rmse": _val("ml_rmse"),
+                "ml_observations_used": _val("ml_observations_used", int),
+                "ml_model_engine": _raw("ml_model_engine"),
+                "ml_trend_direction": _raw("ml_trend_direction"),
+                "ml_projected_exhaustion_date": _raw("ml_projected_exhaustion_date"),
+                "ml_p10_end_balance": _val("ml_p10_end_balance"),
                 "ml_p50_end_balance": _val("ml_p50_end_balance"),
+                "ml_p90_end_balance": _val("ml_p90_end_balance"),
             }
 
         return render_template(

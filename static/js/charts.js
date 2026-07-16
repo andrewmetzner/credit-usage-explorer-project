@@ -219,15 +219,92 @@ function setUsageTypeMode(varName, stacked, btn) {
   }
 }
 
+// Export each of `groups` as its own PNG by toggling dataset visibility
+// (label/flag matched per group). Downloads are staggered slightly since
+// firing several `a.click()` calls in the same tick can trip a browser's
+// multi-download prompt/blocker. `onDone` (if given) runs after the last
+// group instead of restoring visibility — used when `chart` is a disposable
+// clone rather than the chart actually on screen.
+function bnlBulkExportPNG(chart, exportName, groups, onDone) {
+  if (!groups || !groups.length) { if (onDone) onDone(); return; }
+  const originalHidden = chart.data.datasets.map(ds => !!ds.hidden);
+  // setDatasetVisibility (not just `dataset.hidden`) also updates the
+  // per-dataset meta the legend reads — mutating `.hidden` alone left the
+  // on-chart legend showing every series from the live/selected view instead
+  // of just the one model that's actually drawn in this particular PNG.
+  const finish = () => {
+    if (onDone) { onDone(); return; }
+    chart.data.datasets.forEach((ds, i) => {
+      ds.hidden = originalHidden[i];
+      chart.setDatasetVisibility(i, !originalHidden[i]);
+    });
+    chart.update();
+  };
+  const runGroup = i => {
+    if (i >= groups.length) { finish(); return; }
+    const group = groups[i];
+    chart.data.datasets.forEach((ds, di) => {
+      const visible = group.match(ds);
+      ds.hidden = !visible;
+      chart.setDatasetVisibility(di, visible);
+    });
+    chart.update();
+    const a = document.createElement('a');
+    a.download = (exportName + '_' + group.label).replace(/\s+/g, '_') + '.png';
+    a.href = chart.toBase64Image('image/png', 1);
+    a.click();
+    setTimeout(() => runGroup(i + 1), 250);
+  };
+  runGroup(0);
+}
+
+// Build a disposable, off-screen clone of a live Chart.js instance (same
+// technique as the fullscreen modal) — so exports that need to mutate
+// visibility/fonts never touch what's actually rendered on the page.
+function bnlCloneChartOffscreen(src) {
+  const datasets = src.data.datasets.map(ds => ({
+    ...ds,
+    data: Array.isArray(ds.data) ? [...ds.data] : ds.data,
+  }));
+  const cfg = {
+    type: src.config.type,
+    data: { labels: [...(src.data.labels || [])], datasets },
+    options: JSON.parse(JSON.stringify(src.options || {})),
+  };
+  cfg.options.animation = false;
+  if (cfg.options.plugins) delete cfg.options.plugins.zoom;
+  // Fixed size, not responsive: a detached canvas has no sized parent for
+  // Chart.js's ResizeObserver to measure, so with responsive left on it was
+  // sizing (and cropping the aspect ratio) as if it were the fullscreen
+  // modal instead of matching the on-page chart it's a copy of.
+  cfg.options.responsive = false;
+  cfg.options.maintainAspectRatio = false;
+  const canvas = document.createElement('canvas');
+  const width = src.canvas.width || src.width || 1200;
+  const height = src.canvas.height || src.height || 600;
+  canvas.style.position = 'fixed';
+  canvas.style.left = '-99999px';
+  canvas.style.top = '0';
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  document.body.appendChild(canvas);
+  const clone = new Chart(canvas, cfg);
+  clone.resize(width, height);
+  Object.keys(src).filter(k => k.startsWith('$')).forEach(k => { clone[k] = src[k]; });
+  clone.update();
+  return { clone, canvas };
+}
+
 class BNLChart {
   /**
    * @param {string} canvasId
    * @param {object} config     Chart.js config
-   * @param {object} [opts]     { exportName: string }
+   * @param {object} [opts]     { exportName: string, exportGroups: [{label, match(dataset)}] }
    */
   constructor(canvasId, config, opts = {}) {
     this.canvasId   = canvasId;
     this.exportName = opts.exportName || canvasId;
+    this.exportGroups = opts.exportGroups || null;
     const canvas    = document.getElementById(canvasId);
     if (!canvas) throw new Error(`BNLChart: no canvas #${canvasId}`);
     this.chart = new Chart(canvas, config);
@@ -249,6 +326,18 @@ class BNLChart {
     a.click();
   }
 
+  /** Export each configured exportGroups entry as its own PNG. Runs against a
+   * disposable off-screen clone, not the chart actually on screen, so the
+   * inline chart never flashes hidden series / boosted fonts while exporting. */
+  bulkExportPNG() {
+    if (!this.exportGroups || !this.exportGroups.length) return;
+    const { clone, canvas } = bnlCloneChartOffscreen(this.chart);
+    bnlBulkExportPNG(clone, this.exportName, this.exportGroups, () => {
+      clone.destroy();
+      canvas.remove();
+    });
+  }
+
   /** Open a fullscreen copy in a Bootstrap modal. */
   openFullscreen() {
     const MODAL_ID = 'bnl-fs-modal';
@@ -264,6 +353,7 @@ class BNLChart {
             <div class="modal-header py-2 px-3">
               <h6 class="modal-title mb-0 fw-semibold" id="${MODAL_ID}-title"></h6>
               <div class="ms-auto d-flex gap-2 me-2">
+                <button class="btn btn-sm btn-outline-secondary d-none" id="${MODAL_ID}-bulk-export">&#8681; Bulk export</button>
                 <button class="btn btn-sm btn-outline-secondary" id="${MODAL_ID}-export">&#8681; Export PNG</button>
               </div>
               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -301,6 +391,13 @@ class BNLChart {
 
       if (fsChart) { fsChart.destroy(); }
       fsChart = new Chart(document.getElementById(`${MODAL_ID}-canvas`), cfg);
+      // Chart-instance properties set directly (not part of config), e.g. the
+      // forecast page's credit-event markers ($creditEvents read by the
+      // bnl-credit-events plugin's afterDraw) — cloning `options`/`data` above
+      // doesn't carry these, so the fullscreen copy drew no markers. Copy any
+      // `$`-prefixed instance property over and redraw.
+      Object.keys(src).filter(k => k.startsWith('$')).forEach(k => { fsChart[k] = src[k]; });
+      fsChart.update();
 
       document.getElementById(`${MODAL_ID}-export`).onclick = () => {
         const a = document.createElement('a');
@@ -308,6 +405,15 @@ class BNLChart {
         a.href = fsChart.toBase64Image('image/png', 1);
         a.click();
       };
+
+      const bulkBtn = document.getElementById(`${MODAL_ID}-bulk-export`);
+      if (this.exportGroups && this.exportGroups.length) {
+        bulkBtn.classList.remove('d-none');
+        bulkBtn.onclick = () => bnlBulkExportPNG(fsChart, this.exportName, this.exportGroups);
+      } else {
+        bulkBtn.classList.add('d-none');
+        bulkBtn.onclick = null;
+      }
     };
 
     const onHidden = () => {

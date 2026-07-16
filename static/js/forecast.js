@@ -402,7 +402,7 @@ function updateBurndownOverlays() {
           backgroundColor: 'transparent', fill: false, tension: 0.05,
           pointRadius: forecastData.map((v, j) => j === startIdx ? 7 : 0),
           pointBackgroundColor: baseColor,
-          spanGaps: false, _snapOverlay: true, _snapAnchorLabel: anchorLabel,
+          spanGaps: false, _snapOverlay: true, _baseOverlay: true, _snapAnchorLabel: anchorLabel,
         });
       }
 
@@ -421,17 +421,17 @@ function updateBurndownOverlays() {
         bc.data.datasets.push({
           label: snapLabel + ' · MC P90', data: p90d,
           borderColor: hexToRgba(MC, 0.55), borderWidth: 1, borderDash: [2, 3],
-          backgroundColor: hexToRgba(MC, 0.14), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true, _snapAnchorLabel: mcAnchor,
+          backgroundColor: hexToRgba(MC, 0.14), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _mcOverlay: true, _noLegend: true, _snapAnchorLabel: mcAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · MC P50', data: p50d,
           borderColor: MC, borderWidth: 2, borderDash: [4, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _snapAnchorLabel: mcAnchor,
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _mcOverlay: true, _snapAnchorLabel: mcAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · MC P10', data: p10d,
           borderColor: hexToRgba(MC, 0.55), borderWidth: 1, borderDash: [2, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noLegend: true, _snapAnchorLabel: mcAnchor,
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _mcOverlay: true, _noLegend: true, _snapAnchorLabel: mcAnchor,
         });
       }
 
@@ -446,17 +446,17 @@ function updateBurndownOverlays() {
         bc.data.datasets.push({
           label: snapLabel + ' · ML P90', data: m90,
           borderColor: hexToRgba(ML, 0.4), borderWidth: 1, borderDash: [1, 3],
-          backgroundColor: hexToRgba(ML, 0.10), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true, _snapAnchorLabel: mlAnchor,
+          backgroundColor: hexToRgba(ML, 0.10), fill: '+2', tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _lrOverlay: true, _noTooltip: true, _noLegend: true, _snapAnchorLabel: mlAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · ML trend', data: m50,
           borderColor: ML, borderWidth: 2, borderDash: [1, 2],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _snapAnchorLabel: mlAnchor,
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _lrOverlay: true, _snapAnchorLabel: mlAnchor,
         });
         bc.data.datasets.push({
           label: snapLabel + ' · ML P10', data: m10,
           borderColor: hexToRgba(ML, 0.4), borderWidth: 1, borderDash: [1, 3],
-          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _noTooltip: true, _noLegend: true, _snapAnchorLabel: mlAnchor,
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0, spanGaps: false, _snapOverlay: true, _lrOverlay: true, _noTooltip: true, _noLegend: true, _snapAnchorLabel: mlAnchor,
         });
       }
     } else if (!snapBaseOff.has(key)) {
@@ -469,7 +469,7 @@ function updateBurndownOverlays() {
         backgroundColor: 'transparent', fill: false, tension: 0.05,
         pointRadius:          data.map((v, j) => j === firstIdx ? 7 : 0),
         pointBackgroundColor: data.map((v, j) => j === firstIdx ? color : 'transparent'),
-        spanGaps: false, _snapOverlay: true, _snapAnchorLabel: anchorLabel,
+        spanGaps: false, _snapOverlay: true, _baseOverlay: true, _snapAnchorLabel: anchorLabel,
       });
     }
   });
@@ -1404,6 +1404,7 @@ if (typeof Chart !== 'undefined') {
           data: allLabels.map(l => lookup(projPts, l)),
           borderColor: getChartColor('proj'), borderDash: [5, 4], backgroundColor: 'transparent',
           tension: 0.05, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
+          _baseOverlay: true,
         },
       ],
     },
@@ -1491,7 +1492,17 @@ if (typeof Chart !== 'undefined') {
         },
       },
     },
-  }, { exportName: 'Credit Burndown' });
+  }, {
+    exportName: 'Credit Burndown',
+    // Bulk export: one clean PNG per model, each with the actual line for
+    // context, so a poster can show Basic/MC/ML side by side without the
+    // other models' bands cluttering each image.
+    exportGroups: [
+      { label: 'Basic', match: ds => ds.label === 'Actual remaining' || ds._baseOverlay },
+      { label: 'MC', match: ds => ds.label === 'Actual remaining' || ds._mcOverlay },
+      { label: 'ML', match: ds => ds.label === 'Actual remaining' || ds._lrOverlay },
+    ],
+  });
 
   // Show where each ledger entry (purchase / gifted grace credits) lands.
   // The initial purchase at contract start is implicit, so only mark
@@ -2040,23 +2051,29 @@ if (typeof Chart !== 'undefined') {
       </div>`;
   }
 
-  // Auto-load MC stats on page load (also serves chart overlay if it was restored)
-  getMcData().then(updateMcStats).catch(() => {
-    const probEl = document.getElementById('mc-kpi-prob');
-    if (probEl) probEl.textContent = '—';
-    const body = document.getElementById('mc-acc-body');
-    if (body) body.innerHTML = '<div class="text-muted small">Simulation data unavailable.</div>';
-  });
+  // Auto-load MC/ML stats on page load (also serves chart overlay if it was
+  // restored) — LIVE data, so it must not run in snapshot mode: the server
+  // already rendered the Risk+ML KPI card from the snapshot's own frozen
+  // stats, and this fetch would silently clobber it with today's live
+  // numbers (same regardless of which snapshot was picked — the actual bug
+  // behind "doesn't update to the snapshot selected").
+  if (!D.snapshotTs) {
+    getMcData().then(updateMcStats).catch(() => {
+      const probEl = document.getElementById('mc-kpi-prob');
+      if (probEl) probEl.textContent = '—';
+      const body = document.getElementById('mc-acc-body');
+      if (body) body.innerHTML = '<div class="text-muted small">Simulation data unavailable.</div>';
+    });
 
-  // Auto-load ML (linear trend) stats on page load.
-  getLrData().then(updateMlStats).catch(() => {
-    const slopeEl = document.getElementById('ml-kpi-slope');
-    if (slopeEl) slopeEl.textContent = '—';
-    const subEl = document.getElementById('ml-kpi-sub');
-    if (subEl) subEl.textContent = 'unavailable';
-    const body = document.getElementById('ml-acc-body');
-    if (body) body.innerHTML = '<div class="text-muted small">ML model data unavailable.</div>';
-  });
+    getLrData().then(updateMlStats).catch(() => {
+      const slopeEl = document.getElementById('ml-kpi-slope');
+      if (slopeEl) slopeEl.textContent = '—';
+      const subEl = document.getElementById('ml-kpi-sub');
+      if (subEl) subEl.textContent = 'unavailable';
+      const body = document.getElementById('ml-acc-body');
+      if (body) body.innerHTML = '<div class="text-muted small">ML model data unavailable.</div>';
+    });
+  }
 })();
 
 /* ===================================================================== *

@@ -327,7 +327,14 @@ class ForecastingService:
             # unset and stays anchored to its historical as-of date.
             anchor = latest_date if self._today is None else max(latest_date, self._today)
             exhaustion_date = (anchor + timedelta(days=weeks_until_exhaustion * 7)).date()
-            exhaustion_week = exhaustion_date - timedelta(days=exhaustion_date.weekday())
+            # The week that STARTS exhausted (0 credits already at its
+            # Monday) — not just the week containing exhaustion_date. If
+            # exhaustion lands mid-week, that week's Monday still had credits
+            # left, so the first fully-exhausted week is the following one;
+            # only round down to the same Monday when exhaustion_date IS a
+            # Monday.
+            days_to_next_monday = (7 - exhaustion_date.weekday()) % 7
+            exhaustion_week = exhaustion_date + timedelta(days=days_to_next_monday)
 
         future_usage = forecast_weekly * weeks_remaining
         end_balance = credits_remaining - future_usage
