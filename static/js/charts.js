@@ -258,6 +258,27 @@ function bnlBulkExportPNG(chart, exportName, groups, onDone) {
   runGroup(0);
 }
 
+// JSON.stringify silently drops function values, so cloning `chart.options`
+// through it (the only practical way to deep-copy a Chart.js options object)
+// strips every callback: tooltip formatters, tick formatters, and the
+// legend's generateLabels — which is what actually filters the on-chart
+// legend down to visible/relevant series. Without this, a cloned chart falls
+// back to Chart.js's default legend generator and lists every dataset again.
+// Walks `src` alongside the already-JSON-cloned `dst` and re-attaches any
+// function found at the same path.
+function bnlCopyFunctionsInto(dst, src) {
+  if (!dst || !src || typeof src !== 'object') return;
+  Object.keys(src).forEach(k => {
+    const sv = src[k];
+    if (typeof sv === 'function') {
+      dst[k] = sv;
+    } else if (sv && typeof sv === 'object') {
+      if (!dst[k]) dst[k] = Array.isArray(sv) ? [] : {};
+      bnlCopyFunctionsInto(dst[k], sv);
+    }
+  });
+}
+
 // Build a disposable, off-screen clone of a live Chart.js instance (same
 // technique as the fullscreen modal) — so exports that need to mutate
 // visibility/fonts never touch what's actually rendered on the page.
@@ -271,6 +292,7 @@ function bnlCloneChartOffscreen(src) {
     data: { labels: [...(src.data.labels || [])], datasets },
     options: JSON.parse(JSON.stringify(src.options || {})),
   };
+  bnlCopyFunctionsInto(cfg.options, src.options || {});
   cfg.options.animation = false;
   if (cfg.options.plugins) delete cfg.options.plugins.zoom;
   // Fixed size, not responsive: a detached canvas has no sized parent for
@@ -384,6 +406,9 @@ class BNLChart {
         data: { labels: [...(src.data.labels || [])], datasets },
         options: JSON.parse(JSON.stringify(src.options || {})),
       };
+      // JSON-cloning options drops callbacks (tooltip/tick formatters, the
+      // legend's generateLabels) — reattach them from the live chart.
+      bnlCopyFunctionsInto(cfg.options, src.options || {});
       cfg.options.maintainAspectRatio = false;
       cfg.options.animation = false;
       // Disable zoom plugin in modal (pan state won't carry over cleanly)
