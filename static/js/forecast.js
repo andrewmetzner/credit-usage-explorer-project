@@ -1656,6 +1656,27 @@ if (typeof Chart !== 'undefined') {
  * ===================================================================== */
 (function () {
   if (!document.getElementById('burndownChart')) return;
+  // The server's MC/ML series anchor exactly at "today" with today's precise
+  // value. In weekly view, the actual line's known-facts bridge only steps
+  // forward in whole weeks, so its last point is the next Monday on/after
+  // today — a few days later, still holding the LAST KNOWN flat value (no
+  // new data yet). That date/value gap between the two anchors showed up as
+  // MC/ML visibly not connecting to the actual line (daily view doesn't have
+  // this problem: its bridge already lands exactly on "today"). Shift the
+  // whole band so its first plotted point lands exactly on the actual line,
+  // mirroring the snapshot overlay's own alignToActual.
+  function alignOverlayToActual(bc, allLabels, primary, ...others) {
+    const idx = primary.findIndex(v => v !== null && v !== undefined);
+    if (idx < 0) return;
+    const actualDs = bc.data.datasets.find(d => d.label === 'Actual remaining');
+    const target = actualDs && actualDs.data ? actualDs.data[idx] : null;
+    if (target == null || primary[idx] == null) return;
+    const delta = target - primary[idx];
+    if (!delta) return;
+    [primary, ...others].forEach(arr => {
+      for (let j = 0; j < arr.length; j++) if (arr[j] != null) arr[j] = Math.max(arr[j] + delta, 0);
+    });
+  }
   const MC_RUNS = D.mcRuns;
   let mcCache  = null;
   let mcLoading = null;
@@ -1703,15 +1724,18 @@ if (typeof Chart !== 'undefined') {
     const C = '#198754';
     const p50 = interpDateSeries(data.burndown, allLabels);
     const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
+    const p90 = hasBand ? interpDateSeries(data.p90, allLabels) : null;
+    const p10 = hasBand ? interpDateSeries(data.p10, allLabels) : null;
+    alignOverlayToActual(bc, allLabels, p50, p10 || [], p90 || []);
     if (hasBand) {
       bc.data.datasets.push({
-        label: 'LR P90', data: interpDateSeries(data.p90, allLabels),
+        label: 'LR P90', data: p90,
         borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
         backgroundColor: hexToRgba(C, 0.10), fill: '+1', tension: 0.1, pointRadius: 0,
         spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
       });
       bc.data.datasets.push({
-        label: 'LR P10', data: interpDateSeries(data.p10, allLabels),
+        label: 'LR P10', data: p10,
         borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
         backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0,
         spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
@@ -1885,6 +1909,7 @@ if (typeof Chart !== 'undefined') {
     const p90data = interpDateSeries(data.p90, allLabels);
     const p50data = interpDateSeries(data.burndown, allLabels);
     const p10data = interpDateSeries(data.p10, allLabels);
+    alignOverlayToActual(bc, allLabels, p50data, p10data, p90data);
 
     const showP90 = localStorage.getItem('forecast-mc-p90') !== '0';
     const showP10 = localStorage.getItem('forecast-mc-p10') !== '0';

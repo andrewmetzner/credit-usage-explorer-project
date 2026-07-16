@@ -259,24 +259,22 @@ function bnlBulkExportPNG(chart, exportName, groups, onDone) {
 }
 
 // JSON.stringify silently drops function values, so cloning `chart.options`
-// through it (the only practical way to deep-copy a Chart.js options object)
-// strips every callback: tooltip formatters, tick formatters, and the
-// legend's generateLabels — which is what actually filters the on-chart
-// legend down to visible/relevant series. Without this, a cloned chart falls
-// back to Chart.js's default legend generator and lists every dataset again.
-// Walks `src` alongside the already-JSON-cloned `dst` and re-attaches any
-// function found at the same path.
-function bnlCopyFunctionsInto(dst, src) {
-  if (!dst || !src || typeof src !== 'object') return;
-  Object.keys(src).forEach(k => {
-    const sv = src[k];
-    if (typeof sv === 'function') {
-      dst[k] = sv;
-    } else if (sv && typeof sv === 'object') {
-      if (!dst[k]) dst[k] = Array.isArray(sv) ? [] : {};
-      bnlCopyFunctionsInto(dst[k], sv);
-    }
-  });
+// through it (the only practical way most code reaches for deep-copying a
+// Chart.js options object) strips every callback: tooltip formatters, tick
+// formatters, and the legend's generateLabels — which is what actually
+// filters the on-chart legend down to visible/relevant series. Without it, a
+// cloned chart falls back to Chart.js's default legend generator and lists
+// every dataset again (crossed out, not removed). Deep-clones plain
+// objects/arrays but keeps function values by reference instead of
+// round-tripping through JSON, so no callback is ever lost.
+function bnlDeepCloneKeepFns(v) {
+  if (Array.isArray(v)) return v.map(bnlDeepCloneKeepFns);
+  if (v && typeof v === 'object') {
+    const out = {};
+    Object.keys(v).forEach(k => { out[k] = bnlDeepCloneKeepFns(v[k]); });
+    return out;
+  }
+  return v; // primitives and functions both pass through as-is
 }
 
 // Build a disposable, off-screen clone of a live Chart.js instance (same
@@ -290,9 +288,8 @@ function bnlCloneChartOffscreen(src) {
   const cfg = {
     type: src.config.type,
     data: { labels: [...(src.data.labels || [])], datasets },
-    options: JSON.parse(JSON.stringify(src.options || {})),
+    options: bnlDeepCloneKeepFns(src.options || {}),
   };
-  bnlCopyFunctionsInto(cfg.options, src.options || {});
   cfg.options.animation = false;
   if (cfg.options.plugins) delete cfg.options.plugins.zoom;
   // Fixed size, not responsive: a detached canvas has no sized parent for
@@ -404,11 +401,8 @@ class BNLChart {
       const cfg = {
         type: src.config.type,
         data: { labels: [...(src.data.labels || [])], datasets },
-        options: JSON.parse(JSON.stringify(src.options || {})),
+        options: bnlDeepCloneKeepFns(src.options || {}),
       };
-      // JSON-cloning options drops callbacks (tooltip/tick formatters, the
-      // legend's generateLabels) — reattach them from the live chart.
-      bnlCopyFunctionsInto(cfg.options, src.options || {});
       cfg.options.maintainAspectRatio = false;
       cfg.options.animation = false;
       // Disable zoom plugin in modal (pan state won't carry over cleanly)
