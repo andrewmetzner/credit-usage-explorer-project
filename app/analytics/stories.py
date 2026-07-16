@@ -538,13 +538,15 @@ def build_contract_timeline(
     tier_config: dict,
     snapshots: list | None = None,
     step: float = TIMELINE_STEP,
+    live_forecast: dict | None = None,
 ) -> list[dict]:
     """Chronological, dated events across the contract.
 
     Covers: contract start/end, credit-ledger entries (purchased/gifted/
     adjustment), the weekly->monthly cap-era switch, each `step` (100k) the
-    remaining balance falls through, and the forecast snapshots taken — the
-    first and last flagged as the research bookends.
+    remaining balance falls through, the forecast snapshots taken — the
+    first and last flagged as the research bookends — and, if supplied, the
+    current live forecast's own projected exhaustion.
 
     Each event: {date, kind, title, detail, tone, icon}.
     """
@@ -617,6 +619,15 @@ def build_contract_timeline(
             add(final.get("snapshot_date"), "research", "Research: end forecast",
                 _snap_detail(final), "alert", "🔬")
 
+    # 6. Live forecast — where the current (not a saved snapshot's) forecast
+    # projects credits running out, if at all.
+    if live_forecast:
+        exh_date = live_forecast.get("forecast_exhaustion_date")
+        if exh_date:
+            exh_week = live_forecast.get("forecast_exhaustion_week")
+            detail = f"Week of {exh_week}" if exh_week and str(exh_week) != str(exh_date) else ""
+            add(exh_date, "forecast", "Live forecast: projected exhaustion", detail, "alert", "🔥")
+
     events.sort(key=lambda e: (e["date"], e["kind"]))
     return events
 
@@ -629,7 +640,8 @@ def _snap_detail(snap: dict) -> str:
         bits.append(label)
     for key, fmt in (("credits_remaining", "{:,.0f} remaining"),
                      ("forecast_weekly_burn", "{:,.0f}/wk burn"),
-                     ("forecast_exhaustion_date", "exhaustion {}")):
+                     ("forecast_exhaustion_date", "exhaustion {}"),
+                     ("forecast_exhaustion_week", "week of {}")):
         raw = snap.get(key)
         if raw in (None, "", "nan"):
             continue

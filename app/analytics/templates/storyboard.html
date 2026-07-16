@@ -66,7 +66,11 @@
       <div class="section-card mb-3">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h5 class="mb-0">Contract timeline</h5>
-          <span class="badge bg-secondary">{{ timeline | length }} events</span>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-secondary">{{ timeline | length }} events</span>
+            <a class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;"
+               href="{{ url_for('analytics.storyboard_timeline_export_csv') }}">&#8681; Export CSV</a>
+          </div>
         </div>
 
         <div class="story-timeline">

@@ -640,6 +640,59 @@ def create_analytics_blueprint(services) -> Blueprint:
         flash("Note removed.", "success")
         return redirect(url_for("analytics.user_summary", email=email))
 
+    def _build_storyboard_timeline(d: CreditUsageData, gov) -> list[dict]:
+        """The contract's narrative spine: start/end, credit grants, the
+        cap-era switch, each 100k the balance fell through, the research
+        forecasts, and the live forecast's own projected exhaustion.
+        Defensive — a timeline failure must not break the page/export."""
+        all_snapshots = services.pipeline.get_forecast_history(limit=1000)
+        contract_config = config_svc.load_contract()
+        live_forecast = None
+        try:
+            from app.forecast.service import ForecastingService
+
+            fsvc = ForecastingService(
+                contract_config,
+                services.pipeline.get_historical_weekly_summary(),
+                services.pipeline.get_operational_weekly_summary(),
+                store.data.df,
+            )
+            if fsvc.has_data():
+                live_forecast = fsvc.get_forecast()
+        except Exception:
+            live_forecast = None
+        try:
+            from app.analytics.stories import build_contract_timeline
+
+            return build_contract_timeline(
+                d.df,
+                contract_config.get("contract", {}),
+                gov.tier_config(),
+                all_snapshots,
+                live_forecast=live_forecast,
+            )
+        except Exception:
+            return []
+
+    @bp.route("/storyboard/timeline/export.csv", methods=["GET"])
+    def storyboard_timeline_export_csv() -> object:
+        d = data()
+        timeline = _build_storyboard_timeline(d, services.governance)
+        rows = [
+            {
+                "Date": e.get("date", ""),
+                "Kind": e.get("kind", ""),
+                "Title": e.get("title", ""),
+                "Detail": e.get("detail", ""),
+                "Tone": e.get("tone", ""),
+            }
+            for e in timeline
+        ]
+        return csv_response(
+            pd.DataFrame(rows, columns=["Date", "Kind", "Title", "Detail", "Tone"]),
+            "contract_timeline.csv",
+        )
+
     @bp.route("/storyboard", methods=["GET"])
     def storyboard() -> str:
         """Org-wide stories hub: every story condition with its current top
@@ -693,21 +746,8 @@ def create_analytics_blueprint(services) -> Blueprint:
                 notes.append({**n, "email": note_email, "tier": tiers.get(note_email, "Baseline")})
         notes.sort(key=lambda n: str(n.get("created", "")), reverse=True)
 
-        # The contract's narrative spine: start/end, credit grants, the cap-era
-        # switch, each 100k the balance fell through, and the research
-        # forecasts. Defensive — a timeline failure must not break the page.
         all_snapshots = services.pipeline.get_forecast_history(limit=1000)
-        try:
-            from app.analytics.stories import build_contract_timeline
-
-            timeline = build_contract_timeline(
-                d.df,
-                config_svc.load_contract().get("contract", {}),
-                gov.tier_config(),
-                all_snapshots,
-            )
-        except Exception:
-            timeline = []
+        timeline = _build_storyboard_timeline(d, gov)
 
         return render_template(
             "storyboard.html",
