@@ -789,6 +789,17 @@
               </div>
             </div>
 
+            <!-- Forecast lines -->
+            <div class="fc-advanced-group">
+              <div class="fc-control-label">Forecast lines</div>
+              <div class="fc-color-panel" style="display:flex; align-items:flex-end; gap:.6rem; flex-wrap:wrap;">
+                <label class="fc-check fc-toggle-chip mb-0" title="Let Basic, MC, and ML lines keep declining past zero instead of flattening out, so an overrun's depth is visible. The y-axis expands to fit automatically.">
+                  <input type="checkbox" id="show-negative-credits" onchange="toggleNegativeCredits(this.checked)">
+                  <span>Show negative credits</span>
+                </label>
+              </div>
+            </div>
+
             <!-- Reset everything -->
             <div class="fc-advanced-group fc-span-all">
               <button class="btn btn-outline-danger btn-sm py-0 px-2" style="font-size:.72rem;"

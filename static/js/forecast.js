@@ -316,6 +316,35 @@ async function fetchSnapSeries(snap) {
   } catch (_) {}
 }
 
+// "Show negative credits" (Advanced settings toggle): let a forecast line
+// keep declining past zero using its own last real slope, instead of
+// stopping dead once the underlying (clamped/truncated) source data runs
+// out. Purely a display extrapolation on the already-plotted arrays — never
+// touches the model math, the KPI numbers, or stored snapshot data.
+function showNegativeCredits() {
+  return localStorage.getItem('fc-show-negative') === '1';
+}
+function extendBelowZero(data) {
+  if (!showNegativeCredits() || !data || !data.length) return data;
+  let lastPos = -1;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] != null && data[i] > 0) lastPos = i;
+  }
+  if (lastPos < 0 || lastPos >= data.length - 1) return data;
+  let prevIdx = -1;
+  for (let j = lastPos - 1; j >= 0; j--) {
+    if (data[j] != null) { prevIdx = j; break; }
+  }
+  if (prevIdx < 0 || prevIdx === lastPos) return data;
+  const slope = (data[lastPos] - data[prevIdx]) / (lastPos - prevIdx);
+  if (!(slope < 0)) return data;
+  const out = data.slice();
+  for (let i = lastPos + 1; i < out.length; i++) {
+    out[i] = data[lastPos] + slope * (i - lastPos);
+  }
+  return out;
+}
+
 function interpDateSeries(pts, allLabels, dateKey, valKey) {
   dateKey = dateKey || 'date';
   valKey = valKey || 'value';
@@ -388,8 +417,9 @@ function updateBurndownOverlays() {
 
     if (fb) {
       if (!snapBaseOff.has(key)) {
-        const forecastData = interpDateSeries(fb, allLabels, 'date', 'remaining');
+        let forecastData = interpDateSeries(fb, allLabels, 'date', 'remaining');
         const anchorLabel = alignToActual(forecastData);
+        forecastData = extendBelowZero(forecastData);
         const startIdx = forecastData.findIndex(v => v !== null);
         // In snapshot mode the base forecast is RED like the live "Projected
         // remaining"; in comparison mode it keeps the snapshot's own color so
@@ -408,12 +438,15 @@ function updateBurndownOverlays() {
 
       const mc = series && series.mc;
       if (snapMcKeys.has(key) && mc && mc.p50 && mc.p50.length) {
-        const p10d = interpDateSeries(mc.p10 || [], allLabels);
-        const p50d = interpDateSeries(mc.p50,       allLabels);
-        const p90d = interpDateSeries(mc.p90 || [], allLabels);
+        let p10d = interpDateSeries(mc.p10 || [], allLabels);
+        let p50d = interpDateSeries(mc.p50,       allLabels);
+        let p90d = interpDateSeries(mc.p90 || [], allLabels);
         // Connect the band to the actual at the anchor (P50 drives the shift;
         // P10/P90 move with it so the band width is preserved).
         const mcAnchor = alignToActual(p50d, p10d, p90d);
+        p10d = extendBelowZero(p10d);
+        p50d = extendBelowZero(p50d);
+        p90d = extendBelowZero(p90d);
         // Same orange as the live Monte Carlo so snapshot MC reads the same.
         const MC = getChartColor('mc') || '#fd7e14';
         // P90/P10 stay out of the legend but DO show in the hover tooltip so a
@@ -437,10 +470,13 @@ function updateBurndownOverlays() {
 
       const ml = series && series.ml;
       if (snapMlKeys.has(key) && ml && ml.p50 && ml.p50.length) {
-        const m10 = interpDateSeries(ml.p10 || [], allLabels);
-        const m50 = interpDateSeries(ml.p50,       allLabels);
-        const m90 = interpDateSeries(ml.p90 || [], allLabels);
+        let m10 = interpDateSeries(ml.p10 || [], allLabels);
+        let m50 = interpDateSeries(ml.p50,       allLabels);
+        let m90 = interpDateSeries(ml.p90 || [], allLabels);
         const mlAnchor = alignToActual(m50, m10, m90);
+        m10 = extendBelowZero(m10);
+        m50 = extendBelowZero(m50);
+        m90 = extendBelowZero(m90);
         // Same green as the live Linear Trend (ML).
         const ML = getChartColor('ml') || '#198754';
         bc.data.datasets.push({
@@ -460,8 +496,9 @@ function updateBurndownOverlays() {
         });
       }
     } else if (!snapBaseOff.has(key)) {
-      const data     = allLabels.map(l => snapRemainingAt(h, l));
+      let data     = allLabels.map(l => snapRemainingAt(h, l));
       const anchorLabel = alignToActual(data);
+      data = extendBelowZero(data);
       const firstIdx = data.findIndex(v => v !== null);
       bc.data.datasets.push({
         label: snapLabel + ' · forecast', data,
@@ -1235,7 +1272,21 @@ if (typeof Chart !== 'undefined') {
     const startAnchor = (currentGranularity !== 'daily' && D.viewFrom)
       || D.contractStartDate || allLabels[0];
     const min = getNearestLabel(startAnchor, 'start') || allLabels[0];
-    const max = getNearestLabel(D.contractEndDate, 'end') || allLabels[allLabels.length - 1];
+    // The window's right edge used to stop dead at contract end, cutting off
+    // the Basic projection's own tail whenever it runs out AFTER the
+    // contract does (a high-burn or underfunded contract). Extend to
+    // whichever is later: contract end, or a few weeks past where the Basic
+    // line first reaches (or would go below) zero — MC/ML tails run further
+    // still and stay reachable by panning, but the common "did we run out,
+    // and when" question shouldn't require manual zooming to answer.
+    const zeroPt = projPts.find(p => p[1] <= 0);
+    // 'start' direction rounds UP to the next available label — needed here
+    // so the window actually reaches past the target date instead of
+    // rounding back down to whatever label sits just before it.
+    const pastZero = zeroPt ? getNearestLabel(shiftDayStr(zeroPt[0], 21), 'start') : null;
+    const contractEnd = getNearestLabel(D.contractEndDate, 'end');
+    const candidates = [contractEnd, pastZero].filter(Boolean);
+    const max = (candidates.length ? candidates.sort().pop() : null) || allLabels[allLabels.length - 1];
     return { min, max };
   }
 
@@ -1401,7 +1452,7 @@ if (typeof Chart !== 'undefined') {
         },
         {
           label: 'Projected remaining',
-          data: allLabels.map(l => lookup(projPts, l)),
+          data: extendBelowZero(allLabels.map(l => lookup(projPts, l))),
           borderColor: getChartColor('proj'), borderDash: [5, 4], backgroundColor: 'transparent',
           tension: 0.05, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
           _baseOverlay: true,
@@ -1523,6 +1574,18 @@ if (typeof Chart !== 'undefined') {
   (function () {
     const cb = document.getElementById('credit-markers-on');
     if (cb) cb.checked = creditMarkersOn;
+  })();
+
+  // Whether Basic/MC/ML keep declining past zero (extendBelowZero) instead
+  // of stopping dead — reload so every series (live-fetched and snapshot,
+  // built across several separate code paths) rebuilds consistently.
+  window.toggleNegativeCredits = function (on) {
+    localStorage.setItem('fc-show-negative', on ? '1' : '0');
+    window.location.reload();
+  };
+  (function () {
+    const cb = document.getElementById('show-negative-credits');
+    if (cb) cb.checked = showNegativeCredits();
   })();
 
   // ── Actual-line display options (Advanced settings) ──
@@ -1722,11 +1785,13 @@ if (typeof Chart !== 'undefined') {
     bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
     const allLabels = bc.data.labels;
     const C = '#198754';
-    const p50 = interpDateSeries(data.burndown, allLabels);
+    let p50 = interpDateSeries(data.burndown, allLabels);
     const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
-    const p90 = hasBand ? interpDateSeries(data.p90, allLabels) : null;
-    const p10 = hasBand ? interpDateSeries(data.p10, allLabels) : null;
+    let p90 = hasBand ? interpDateSeries(data.p90, allLabels) : null;
+    let p10 = hasBand ? interpDateSeries(data.p10, allLabels) : null;
     alignOverlayToActual(bc, allLabels, p50, p10 || [], p90 || []);
+    p50 = extendBelowZero(p50);
+    if (hasBand) { p90 = extendBelowZero(p90); p10 = extendBelowZero(p10); }
     if (hasBand) {
       bc.data.datasets.push({
         label: 'LR P90', data: p90,
@@ -1906,10 +1971,13 @@ if (typeof Chart !== 'undefined') {
     const data      = mcCache;
     const allLabels = bc.data.labels;
 
-    const p90data = interpDateSeries(data.p90, allLabels);
-    const p50data = interpDateSeries(data.burndown, allLabels);
-    const p10data = interpDateSeries(data.p10, allLabels);
+    let p90data = interpDateSeries(data.p90, allLabels);
+    let p50data = interpDateSeries(data.burndown, allLabels);
+    let p10data = interpDateSeries(data.p10, allLabels);
     alignOverlayToActual(bc, allLabels, p50data, p10data, p90data);
+    p90data = extendBelowZero(p90data);
+    p50data = extendBelowZero(p50data);
+    p10data = extendBelowZero(p10data);
 
     const showP90 = localStorage.getItem('forecast-mc-p90') !== '0';
     const showP10 = localStorage.getItem('forecast-mc-p10') !== '0';
