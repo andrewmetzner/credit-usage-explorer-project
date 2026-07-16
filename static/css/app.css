@@ -248,6 +248,44 @@ body { display: flex; min-height: 100vh; background: var(--bg); color: var(--tex
   vertical-align: middle;
 }
 
+/* Contract timeline (Storyboard): a vertical rail of dated events. */
+.story-timeline { position: relative; padding-left: 1.5rem; }
+.story-timeline::before {
+  content: "";
+  position: absolute;
+  left: .48rem; top: .35rem; bottom: .35rem;
+  width: 2px;
+  background: var(--border);
+}
+.story-timeline-item { position: relative; display: flex; gap: .6rem; padding: .35rem 0; }
+.story-timeline-marker {
+  position: absolute;
+  left: -1.5rem;
+  width: 1.05rem;
+  text-align: center;
+  font-size: .72rem;
+  line-height: 1.2rem;
+  background: var(--surface);
+}
+.story-timeline-body { flex: 1; min-width: 0; }
+.story-timeline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+.story-timeline-title { font-size: .82rem; font-weight: 600; color: var(--ink); }
+.story-timeline-date {
+  font-size: .7rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.story-timeline-detail { font-size: .72rem; color: var(--text-soft); line-height: 1.35; }
+.story-timeline-item.tone-notable .story-timeline-title { color: var(--accent); }
+.story-timeline-item.tone-alert .story-timeline-title { color: #d63384; }
+
 .pacing-pill {
   font-size: .75rem;
   font-weight: 700;

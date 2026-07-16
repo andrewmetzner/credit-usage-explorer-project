@@ -30,11 +30,11 @@ def create_analytics_blueprint(services) -> Blueprint:
             return default
         return max(min_value, min(value, max_result_limit))
 
-    def _tier_column(df: pd.DataFrame) -> pd.Series:
-        return services.governance.tier_column(df)
-
     def _tier_options(d: CreditUsageData) -> list[str]:
-        return services.governance.tier_options(d.df)
+        return services.governance.tier_search_options(d.df)
+
+    def _tier_search(df: pd.DataFrame, tier_query: str) -> pd.Series:
+        return services.governance.tier_search_column(df, tier_query)
 
     def _leaderboard_filtered_df(d: CreditUsageData) -> pd.DataFrame:
         usage_type_filter = request.args.get("usage_type_filter", "")
@@ -54,7 +54,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         if model_filter and "usage_type_model" in df.columns:
             df = df[df["usage_type_model"] == model_filter]
         if tier_filter and "email" in df.columns:
-            df = df[_tier_column(df) == tier_filter]
+            df = df[_tier_search(df, tier_filter)]
 
         return d.filter_by_credits(df, min_credits, max_credits, zero_credits)
 
@@ -76,7 +76,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         if email_query and "email" in df.columns:
             df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
         if tier_query and "email" in df.columns:
-            df = df[_tier_column(df) == tier_query]
+            df = df[_tier_search(df, tier_query)]
         if date_field and (start_date or end_date):
             df = d.filter_by_date(df, start_date, end_date, col=date_field)
         df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
@@ -437,7 +437,12 @@ def create_analytics_blueprint(services) -> Blueprint:
         summ_raw = make_summary("usage_type")
 
         # The user's credit limits (governance tier via the optimization
-        # engine) — shown in the hero and used by the chart's cap lines.
+        # engine) — shown in the hero as their current allowance. Not drawn
+        # as a per-week line on the chart: their tier may have changed over
+        # time and we have no reliable date for when a past tier applied
+        # (the tier-change log only has import dates, not effective dates),
+        # so a flat "current cap" line across historical weeks would
+        # misrepresent what applied then.
         user_tier_display = ""
         user_cap_weekly = 0.0
         user_cap_monthly = 0.0
@@ -451,8 +456,11 @@ def create_analytics_blueprint(services) -> Blueprint:
         except Exception:
             pass
 
+        user_was_summer_intern = "2026 Summer Interns" in services.governance.tier_history_map().get(
+            str(email or "").strip().lower(), []
+        )
+
         user_weekly_json = "[]"
-        user_weekly_caps_json = "[]"
         if "date_partition" in df.columns and "usage_credits" in df.columns:
             wdf = df[["date_partition", "usage_credits"]].copy()
             wdf["_d"] = pd.to_datetime(wdf["date_partition"], errors="coerce")
@@ -464,32 +472,6 @@ def create_analytics_blueprint(services) -> Blueprint:
                     {"week": str(r["_w"].date()), "credits": round(float(r["credits"]), 2)}
                     for _, r in agg.iterrows()
                 ])
-                # Cap lines per plotted week for this user's tier, era-aware:
-                # every week gets its effective weekly cap (weeks before the
-                # weekly->monthly switch use the old flat weekly cap), and
-                # monthly-era weeks additionally carry the month's total
-                # allowance so the chart can draw both lines.
-                try:
-                    gov = services.governance
-                    tier = gov.tier_for(email) if email else "Baseline"
-                    change = pd.to_datetime(
-                        gov.tier_config().get("cap_period_change_date"), errors="coerce"
-                    )
-                    monthly_cap = gov.monthly_cap_for(tier)
-                    caps_rows = []
-                    for ws in agg["_w"]:
-                        cap = gov.weekly_caps(week_start=ws).get(tier)
-                        if not cap:
-                            continue
-                        in_monthly_era = not pd.isna(change) and ws >= change
-                        caps_rows.append({
-                            "week": str(ws.date()),
-                            "cap": round(float(cap), 2),
-                            "monthly": round(float(monthly_cap), 2) if in_monthly_era and monthly_cap else None,
-                        })
-                    user_weekly_caps_json = json.dumps(caps_rows)
-                except Exception:
-                    user_weekly_caps_json = "[]"
 
         type_chart_json = json.dumps([
             {"label": s.get("usage_type_parsed_type") or "Other",
@@ -549,10 +531,10 @@ def create_analytics_blueprint(services) -> Blueprint:
             sort_order=sort_order,
             is_form_submission=is_form_submission,
             user_weekly_json=user_weekly_json,
-            user_weekly_caps_json=user_weekly_caps_json,
             user_tier_display=user_tier_display,
             user_cap_weekly=user_cap_weekly,
             user_cap_monthly=user_cap_monthly,
+            user_was_summer_intern=user_was_summer_intern,
             user_monthly_cap_exceeded=user_monthly_cap_exceeded,
             user_usage_type_weekly=usage_type_weekly_json(df),
             type_chart_json=type_chart_json,
@@ -711,6 +693,22 @@ def create_analytics_blueprint(services) -> Blueprint:
                 notes.append({**n, "email": note_email, "tier": tiers.get(note_email, "Baseline")})
         notes.sort(key=lambda n: str(n.get("created", "")), reverse=True)
 
+        # The contract's narrative spine: start/end, credit grants, the cap-era
+        # switch, each 100k the balance fell through, and the research
+        # forecasts. Defensive — a timeline failure must not break the page.
+        all_snapshots = services.pipeline.get_forecast_history(limit=1000)
+        try:
+            from app.analytics.stories import build_contract_timeline
+
+            timeline = build_contract_timeline(
+                d.df,
+                config_svc.load_contract().get("contract", {}),
+                gov.tier_config(),
+                all_snapshots,
+            )
+        except Exception:
+            timeline = []
+
         return render_template(
             "storyboard.html",
             boards=boards,
@@ -719,6 +717,8 @@ def create_analytics_blueprint(services) -> Blueprint:
             story_hits=hits,
             story_metrics=STORY_ALERT_METRICS,
             notes=notes,
+            timeline=timeline,
+            forecast_history=sorted(all_snapshots, key=lambda h: str(h.get("snapshot_date") or "")),
             reference_date=str(reference_date.date()) if reference_date is not None and not pd.isna(reference_date) else "",
         )
 
@@ -821,7 +821,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         if email_query and "email" in df.columns:
             df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
         if tier_query and "email" in df.columns:
-            df = df[_tier_column(df) == tier_query]
+            df = df[_tier_search(df, tier_query)]
 
         # Advanced (outlier) controls + result.
         metric = request.args.get("metric", "per_user_window").strip()
@@ -966,7 +966,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         if email_query and "email" in df.columns:
             df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
         if tier_query and "email" in df.columns:
-            df = df[_tier_column(df) == tier_query]
+            df = df[_tier_search(df, tier_query)]
 
         rows, count, win_start, win_end, columns = compute_outliers(
             df, metric, credit_threshold, lookback_days,

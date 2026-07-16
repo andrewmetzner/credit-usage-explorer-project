@@ -78,7 +78,16 @@ def create_forecast_blueprint(services) -> Blueprint:
                     out[f.name] = raw
             return out
 
-        return coerce(ContractStatus), coerce(Forecast)
+        cs, fc = coerce(ContractStatus), coerce(Forecast)
+        if not fc.get('forecast_exhaustion_week') and fc.get('forecast_exhaustion_date'):
+            try:
+                from datetime import datetime, timedelta
+                ed = datetime.fromisoformat(fc['forecast_exhaustion_date']).date()
+                start_of_week = ed - timedelta(days=ed.weekday())
+                fc['forecast_exhaustion_week'] = start_of_week.isoformat()
+            except Exception:
+                fc['forecast_exhaustion_week'] = fc['forecast_exhaustion_date']
+        return cs, fc
 
     def _apply_view_window(svc, data_as_of, exclude_partial):
         """Configure a ForecastingService for the current request's date view.
@@ -408,17 +417,23 @@ def create_forecast_blueprint(services) -> Blueprint:
         snapshot_stats = None
         if snapshot_row:
             display_cs, display_fc = _snapshot_status_forecast(snapshot_row)
-            def _f(key):
+            def _val(key, cast=float):
+                raw = snapshot_row.get(key)
+                if raw in (None, "", "nan", "None", "null"):
+                    return None
                 try:
-                    return float(snapshot_row.get(key) or 0)
+                    return cast(raw)
                 except (TypeError, ValueError):
                     return None
+            ml_r_squared = snapshot_row.get("ml_r_squared")
+            if ml_r_squared in (None, "", "nan", "None", "null"):
+                ml_r_squared = None
             snapshot_stats = {
-                "mc_exhaustion_prob": _f("mc_exhaustion_prob"),
-                "mc_p50_end_balance": _f("mc_p50_end_balance"),
-                "ml_slope_per_week": _f("ml_slope_per_week"),
-                "ml_r_squared": snapshot_row.get("ml_r_squared") or "",
-                "ml_p50_end_balance": _f("ml_p50_end_balance"),
+                "mc_exhaustion_prob": _val("mc_exhaustion_prob"),
+                "mc_p50_end_balance": _val("mc_p50_end_balance"),
+                "ml_slope_per_week": _val("ml_slope_per_week"),
+                "ml_r_squared": ml_r_squared,
+                "ml_p50_end_balance": _val("ml_p50_end_balance"),
             }
 
         return render_template(
@@ -657,6 +672,8 @@ def create_forecast_blueprint(services) -> Blueprint:
                     snapshot_ts=ts,
                     snapshot_date=snap_date,
                     skip_mc=False,
+                    research_role_initial=str(row.get("research_role_initial") or ""),
+                    research_role_final=str(row.get("research_role_final") or ""),
                 )
                 if color:
                     pipeline.set_snapshot_color(ts, snap_date, label, color)
@@ -704,6 +721,35 @@ def create_forecast_blueprint(services) -> Blueprint:
             return (err or "Color update failed.", 500)
         return ("", 204)
 
+    @bp.route("/forecast/history/set-roles", methods=["POST"])
+    def set_snapshot_roles() -> object:
+        initial_ts = request.form.get("research_role_initial", "").strip()
+        final_ts = request.form.get("research_role_final", "").strip()
+
+        if initial_ts:
+            ok, err = pipeline.set_snapshot_roles(snapshot_ts=initial_ts, initial=True)
+            if not ok:
+                flash(err or "Failed to set initial forecast snapshot.", "warning")
+        else:
+            ok, err = pipeline.clear_snapshot_role("research_role_initial")
+            if not ok:
+                flash(err or "Failed to clear initial forecast selection.", "warning")
+
+        if final_ts:
+            ok, err = pipeline.set_snapshot_roles(snapshot_ts=final_ts, final=True)
+            if not ok:
+                flash(err or "Failed to set end forecast snapshot.", "warning")
+        else:
+            ok, err = pipeline.clear_snapshot_role("research_role_final")
+            if not ok:
+                flash(err or "Failed to clear end forecast selection.", "warning")
+
+        if not initial_ts and not final_ts:
+            flash("Cleared research snapshot bookends.", "success")
+        else:
+            flash("Research snapshot bookends updated.", "success")
+        return redirect(request.referrer or url_for("analytics.storyboard"))
+
     @bp.route("/forecast/snapshot/generate-weekly", methods=["POST"])
     def generate_weekly_snapshots() -> object:
         config = copy.deepcopy(config_svc.load_contract())
@@ -737,9 +783,9 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         for i in range(len(op_sorted)):
             row = op_sorted.iloc[i]
-            week_end_str = str(_pd.Timestamp(row["week_end"]).date())
-            label = f"Week of {week_end_str}"
-            snap_ts = f"{week_end_str}T00:00:00"
+            week_start_str = str(_pd.Timestamp(row["week_start"]).date())
+            label = f"Week of {week_start_str}"
+            snap_ts = f"{week_start_str}T00:00:00"
 
             existing = existing_by_label.get(label)
             if existing:
@@ -828,9 +874,9 @@ def create_forecast_blueprint(services) -> Blueprint:
 
             for i in range(total):
                 row = op_sorted.iloc[i]
-                week_end_str = str(_pd.Timestamp(row["week_end"]).date())
-                label = f"Week of {week_end_str}"
-                snap_ts = f"{week_end_str}T00:00:00"
+                week_start_str = str(_pd.Timestamp(row["week_start"]).date())
+                label = f"Week of {week_start_str}"
+                snap_ts = f"{week_start_str}T00:00:00"
                 pct = int((i + 1) / total * 100)
                 yield f"data: {json.dumps({'progress': pct, 'current': i + 1, 'total': total, 'week': week_end_str})}\n\n"
 

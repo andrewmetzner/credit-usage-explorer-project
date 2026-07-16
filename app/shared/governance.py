@@ -93,6 +93,36 @@ class GovernanceService:
             return []
         return sorted(self.tier_column(df).unique().tolist())
 
+    # ── Tier search (past membership, not just current assignment) ──────────
+    def tier_history_map(self) -> dict[str, list[str]]:
+        return self._memo("tier_history_map", self._config_svc.load_user_tier_history)
+
+    def tier_search_options(self, df: pd.DataFrame) -> list[str]:
+        """Tiers to offer in a tier search/filter dropdown: every tier
+        currently assigned to someone in this data, plus any tier that shows
+        up in a user's import history. A user who was e.g. a "2026 Summer
+        Intern" stays findable under that tier even after highest-allotment
+        resolution (resolved_assignments) has since moved their current
+        assignment elsewhere."""
+        tiers = set(self.tier_options(df))
+        for history in self.tier_history_map().values():
+            tiers.update(t for t in history if t)
+        return sorted(tiers)
+
+    def tier_search_column(self, df: pd.DataFrame, tier_query: str) -> pd.Series:
+        """Boolean mask: does each row's user currently hold `tier_query`, or
+        did they ever hold it per their import history? Search-only — actual
+        cap/assignment logic still uses resolved_assignments()'s
+        highest-allotment tier, this just makes past membership searchable."""
+        if "email" not in df.columns:
+            return pd.Series(False, index=df.index)
+        history = self.tier_history_map()
+        assignments = self.resolved_assignments()
+        emails = df["email"].astype(str).str.strip().str.lower()
+        current = emails.map(assignments).fillna("Baseline")
+        ever = emails.map(lambda e: tier_query in history.get(e, []))
+        return (current == tier_query) | ever
+
     def monthly_cap_by_email(self, default_tier: str = "Baseline") -> tuple[dict[str, float], float]:
         """(email -> monthly cap, default cap) for story/pace alert evaluation."""
         mcaps = self.monthly_caps()

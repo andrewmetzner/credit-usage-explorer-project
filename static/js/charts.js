@@ -137,20 +137,30 @@ function renderUsageTypeChart(canvasId, data, opts = {}) {
   if (opts.capSeries && opts.capSeries.length) {
     const capByWeek = {};
     opts.capSeries.forEach(c => { capByWeek[c.week] = c; });
-    const capLine = (label, valueOf, color) => ({
-      type: 'line',
-      label,
-      data: data.weeks.map(w => {
+    const capLine = (label, valueOf, color) => {
+      const vals = data.weeks.map(w => {
         const c = capByWeek[w];
         const v = c ? valueOf(c) : null;
         return v != null ? v : null;
-      }),
-      borderColor: color, borderWidth: 1.5, borderDash: [6, 4],
-      backgroundColor: 'transparent', fill: false,
-      pointRadius: 0, pointHoverRadius: 0, stepped: 'middle',
-      pointStyle: 'line',
-      spanGaps: false, stack: 'bnl-cap-' + label, order: -1, _capLine: true,
-    });
+      });
+      return {
+        type: 'line',
+        label,
+        data: vals,
+        borderColor: color, borderWidth: 1.5, borderDash: [6, 4],
+        backgroundColor: 'transparent', fill: false,
+        // A cap that applies to only ONE plotted week (e.g. the monthly cap
+        // right after the weekly->monthly switch) has no neighbour to draw a
+        // segment to, so it would render as nothing. Give isolated points a
+        // dot; runs of points draw as a line and stay dot-free.
+        pointRadius: vals.map((v, i) =>
+          v != null && vals[i - 1] == null && vals[i + 1] == null ? 3 : 0),
+        pointBackgroundColor: color,
+        pointHoverRadius: 0, stepped: 'middle',
+        pointStyle: 'line',
+        spanGaps: false, stack: 'bnl-cap-' + label, order: -1, _capLine: true,
+      };
+    };
     datasets.push(capLine(opts.capLabel || 'Weekly cap', c => c.cap, '#d63384'));
     if (opts.capSeries.some(c => c.monthly != null)) {
       const monthly = capLine(opts.monthlyCapLabel || 'Monthly cap', c => c.monthly, '#6f42c1');

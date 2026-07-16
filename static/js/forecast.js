@@ -1088,11 +1088,13 @@ if (typeof Chart !== 'undefined') {
     return lastReal;
   }
   const weeklyLastReal = extendWithBridge(actualPts, true);
-  const dailyLastReal = extendWithBridge(dailyActualPts, false);
+  extendWithBridge(dailyActualPts, false);
   const useDaily = (D.granularity || 'weekly') === 'daily' && dailyActualPts.length > 0;
-  // Boundary between solid (recorded usage) and dashed (bridge) on the chart,
-  // and the anchor the projection continues from.
-  const lastRealDate = (useDaily ? dailyLastReal : weeklyLastReal)?.[0] || latestDate;
+  // Weekly-only: the bridge past the last fully-recorded week represents an
+  // in-progress (incomplete) week, so it draws dashed. Daily view has exact
+  // per-day data up to "today" and credit-event steps are known facts either
+  // way, so neither gets dashed.
+  const lastCompleteWeek = weeklyLastReal ? weeklyLastReal[0] : null;
   const activeSeries = useDaily ? dailyActualPts : actualPts;
   const activeLast = activeSeries.length ? activeSeries[activeSeries.length - 1] : [latestDate, remaining];
   const projAnchorDate = activeLast[0];
@@ -1135,17 +1137,22 @@ if (typeof Chart !== 'undefined') {
         : Math.max(projAnchorRemaining - dailyBurn * days, 0);
       pts.push([dstr, rem]);
     }
-    // Contract end is a chart label (see buildAllLabels); the projection uses
-    // exact-label lookup, so give it an interpolated point there to avoid a
-    // one-label gap in the line when the weekly cadence steps over it.
-    const endStr = D.contractEndDate || '';
-    if (endStr) {
-      for (let j = 1; j < pts.length; j++) {
-        if (pts[j - 1][0] < endStr && endStr < pts[j][0]) {
-          const t = (new Date(endStr) - new Date(pts[j - 1][0]))
-                  / (new Date(pts[j][0]) - new Date(pts[j - 1][0]));
-          pts.splice(j, 0, [endStr, pts[j - 1][1] + t * (pts[j][1] - pts[j - 1][1])]);
-          break;
+    // Contract end is added as an exact chart label only for DAILY granularity
+    // (see buildAllLabels) — weekly stays strictly Monday-anchored, since
+    // contract_end_date is rarely a Monday itself. Splicing it in here would
+    // otherwise put one off-grid weekday column on an otherwise all-Monday
+    // weekly axis. MC/ML still reach contract end fine for weekly: they
+    // interpolate onto whatever labels exist, landing on the nearest Monday.
+    if (granularity === 'daily') {
+      const endStr = D.contractEndDate || '';
+      if (endStr) {
+        for (let j = 1; j < pts.length; j++) {
+          if (pts[j - 1][0] < endStr && endStr < pts[j][0]) {
+            const t = (new Date(endStr) - new Date(pts[j - 1][0]))
+                    / (new Date(pts[j][0]) - new Date(pts[j - 1][0]));
+            pts.splice(j, 0, [endStr, pts[j - 1][1] + t * (pts[j][1] - pts[j - 1][1])]);
+            break;
+          }
         }
       }
     }
@@ -1168,16 +1175,23 @@ if (typeof Chart !== 'undefined') {
 
   function buildAllLabels(ppts) {
     const labels = new Set([...activeActualPts(), ...ppts].map(p => p[0]));
-    // Contract end is always a category so MC/ML overlays (which end exactly
-    // there) reach it even when the weekly cadence steps over it.
-    if (D.contractEndDate) labels.add(D.contractEndDate);
+    // Contract end is added as its own category only for daily granularity —
+    // for weekly, every label here is already Monday-anchored (actual points
+    // land on week_end+1 = Monday; projected points step +7 days from there),
+    // and injecting the raw contract_end_date would put one off-grid weekday
+    // column on the axis whenever the contract doesn't end on a Monday.
+    if (D.contractEndDate && currentGranularity === 'daily') labels.add(D.contractEndDate);
     return [...labels].sort();
   }
 
   function formatBurndownTickLabel(value, index, ticks) {
     const label = this.getLabelForValue(value);
     if (!label) return '';
-    const dt = new Date(label + 'T00:00:00');
+    // Every weekly label is already Monday-anchored at the data layer (see
+    // buildAllLabels/buildProjPts), so this just formats whichever date it
+    // actually is — no forced re-labeling, which would mask a real
+    // inconsistency instead of surfacing it.
+    const dt = new Date(label + 'T12:00:00');
     if (Number.isNaN(dt.getTime())) return label;
     return `${dt.getMonth() + 1}/${dt.getDate()}`;
   }
@@ -1376,14 +1390,14 @@ if (typeof Chart !== 'undefined') {
           data: allLabels.map(l => lookup(activeActualPts(), l)),
           borderColor: getChartColor('actual'), backgroundColor: hexToRgba(getChartColor('actual'), 0.07),
           fill: true, tension: 0.1, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
-          // The bridge portion (past the last real data point) draws dashed:
-          // the level is known from the ledger, the flatness is "no data yet".
-          segment: {
+          // Weekly only: the current, still-accumulating week draws dashed
+          // since it isn't a finished week of recorded usage yet.
+          segment: !useDaily ? {
             borderDash: ctx => {
               const lbl = allLabels[ctx.p1DataIndex];
-              return lbl && lastRealDate && lbl > lastRealDate ? [4, 4] : undefined;
+              return lbl && lastCompleteWeek && lbl > lastCompleteWeek ? [4, 4] : undefined;
             },
-          },
+          } : undefined,
         },
         {
           label: 'Projected remaining',
@@ -1440,7 +1454,15 @@ if (typeof Chart !== 'undefined') {
           titleFont: { size: 11 },
           maxWidth: 320,
           callbacks: {
-            title: items => items && items.length ? items[0].label : '',
+            title: items => {
+              if (!items || !items.length) return '';
+              const lbl = items[0].label || '';
+              // Weekly labels are already Monday-anchored at the data layer —
+              // show the hovered date as-is, no forced re-labeling.
+              const dt = new Date(lbl + 'T12:00:00');
+              if (Number.isNaN(dt.getTime())) return lbl;
+              return `${dt.getMonth() + 1}/${dt.getDate()}`;
+            },
             label: ctx => `  ${cleanLegendLabel(ctx.dataset.label)}: ${Math.round(ctx.raw ?? 0).toLocaleString()} credits`,
           },
         },

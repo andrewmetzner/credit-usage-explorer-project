@@ -532,6 +532,85 @@ class IngestionPipeline:
         except Exception as exc:
             return False, str(exc)
 
+    def set_snapshot_roles(
+        self,
+        snapshot_ts: str,
+        snapshot_date: str = "",
+        label: str = "",
+        initial: bool = False,
+        final: bool = False,
+    ) -> tuple[bool, str]:
+        path = self.processed_dir / self.FORECAST_HISTORY
+        if not path.exists():
+            return False, "History file not found."
+        try:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+            ts_clean = snapshot_ts if snapshot_ts not in ("nan", "None") else ""
+            if ts_clean and "|" in ts_clean and ("snapshot_ts" not in df.columns or not (df["snapshot_ts"] == ts_clean).any()):
+                snapshot_date, label = ts_clean.split("|", 1)
+                ts_clean = ""
+            if ts_clean and "snapshot_ts" in df.columns:
+                mask = df["snapshot_ts"] == ts_clean
+            else:
+                date_mask = df["snapshot_date"] == snapshot_date
+                lbl_col = df["label"] if "label" in df.columns else pd.Series([""] * len(df), index=df.index)
+                mask = date_mask & (lbl_col == label)
+            if not mask.any():
+                return False, "No matching snapshot found."
+            if "research_role_initial" not in df.columns:
+                df["research_role_initial"] = ""
+            if "research_role_final" not in df.columns:
+                df["research_role_final"] = ""
+            df.loc[:, "research_role_initial"] = df["research_role_initial"].fillna("")
+            df.loc[:, "research_role_final"] = df["research_role_final"].fillna("")
+            # Clear any existing roles if needed so only one snapshot is initial/final.
+            if initial:
+                df.loc[:, "research_role_initial"] = df["research_role_initial"].where(~df.index.isin(df[mask].index), "true")
+                df.loc[df.index.difference(df[mask].index), "research_role_initial"] = df.loc[df.index.difference(df[mask].index), "research_role_initial"].replace("true", "")
+            if final:
+                df.loc[:, "research_role_final"] = df["research_role_final"].where(~df.index.isin(df[mask].index), "true")
+                df.loc[df.index.difference(df[mask].index), "research_role_final"] = df.loc[df.index.difference(df[mask].index), "research_role_final"].replace("true", "")
+            if not initial:
+                df.loc[mask, "research_role_initial"] = ""
+            if not final:
+                df.loc[mask, "research_role_final"] = ""
+            tmp = path.with_suffix(".tmp")
+            df.to_csv(tmp, index=False)
+            tmp.replace(path)
+            if ts_clean:
+                json_path = self._ts_to_series_path(self.processed_dir, ts_clean)
+                if json_path.exists():
+                    try:
+                        import json as _json
+                        data = _json.loads(json_path.read_text(encoding="utf-8"))
+                        data["research_role_initial"] = "true" if initial else ""
+                        data["research_role_final"] = "true" if final else ""
+                        jtmp = json_path.with_suffix(".tmp")
+                        jtmp.write_text(_json.dumps(data), encoding="utf-8")
+                        jtmp.replace(json_path)
+                    except Exception:
+                        pass
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def clear_snapshot_role(self, role: str) -> tuple[bool, str]:
+        path = self.processed_dir / self.FORECAST_HISTORY
+        if not path.exists():
+            return False, "History file not found."
+        try:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+            if role not in df.columns:
+                return True, ""
+            df[role] = df[role].fillna("")
+            df.loc[:, role] = ""
+            tmp = path.with_suffix(".tmp")
+            df.to_csv(tmp, index=False)
+            tmp.replace(path)
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
     def has_forecast_history(self) -> bool:
         return (self.processed_dir / self.FORECAST_HISTORY).exists()
 

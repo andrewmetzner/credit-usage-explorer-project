@@ -560,6 +560,7 @@
       <div class="summary-metrics">
         {{ summary_metric("Pace ratio", "{:.2f}".format(cs.burn_pace_ratio)) }}
         {{ summary_metric("Exhaustion", fc.forecast_exhaustion_date or "None") }}
+        {{ summary_metric("Week of", fc.forecast_exhaustion_week or "—") }}
         {{ summary_metric("Used", "{:.1%}".format(cs.percent_credits_used)) }}
         {{ summary_metric("By end", "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end)) }}
       </div>
@@ -591,10 +592,12 @@
       <div class="summary-label">Risk + ML Reading</div>
       {% if snapshot_stats %}
       {# Snapshot mode: the frozen MC/ML stats recorded with the snapshot. #}
-      <div class="summary-main" id="mc-kpi-prob">{{ "{:.0%}".format(snapshot_stats.mc_exhaustion_prob) if snapshot_stats.mc_exhaustion_prob is not none else "—" }}</div>
+      {% set mc_risk_cls = 'text-danger' if snapshot_stats.mc_exhaustion_prob is not none and snapshot_stats.mc_exhaustion_prob > 0.5 else 'text-warning' if snapshot_stats.mc_exhaustion_prob is not none and snapshot_stats.mc_exhaustion_prob > 0.1 else 'text-success' if snapshot_stats.mc_exhaustion_prob is not none else '' %}
+      {% set ml_slope_cls = 'text-danger' if snapshot_stats.ml_slope_per_week is not none and snapshot_stats.ml_slope_per_week > 0 else 'text-success' if snapshot_stats.ml_slope_per_week is not none and snapshot_stats.ml_slope_per_week < 0 else '' %}
+      <div class="summary-main" id="mc-kpi-prob">{% if snapshot_stats.mc_exhaustion_prob is not none %}<span class="{{ mc_risk_cls }}">{{ "{:.0%}".format(snapshot_stats.mc_exhaustion_prob) }}</span>{% else %}—{% endif %}</div>
       <div class="summary-sub" id="mc-kpi-sub">{% if snapshot_stats.mc_p50_end_balance is not none %}P50 end: {{ "{:,.0f}".format(snapshot_stats.mc_p50_end_balance) }}{% else %}No Monte Carlo saved{% endif %}</div>
       <div class="summary-metrics">
-        {{ summary_metric("ML trend", ("{:+,.0f}/wk".format(snapshot_stats.ml_slope_per_week) if snapshot_stats.ml_slope_per_week is not none else "—"), "", "ml-kpi-slope") }}
+        {{ summary_metric("ML trend", ("{:+,.0f}/wk".format(snapshot_stats.ml_slope_per_week) if snapshot_stats.ml_slope_per_week is not none else "—"), ml_slope_cls, "ml-kpi-slope") }}
         {{ summary_metric("Fit", ("R² " ~ snapshot_stats.ml_r_squared if snapshot_stats.ml_r_squared else "—"), "", "ml-kpi-sub2") }}
       </div>
       {% else %}
@@ -862,6 +865,32 @@
               title="Download the selected snapshots' full forecast details as CSV — one row per snapshot week (all snapshots when none are selected)."
               onclick="exportSelectedSnapshots()">Export CSV</button>
 
+      <form method="post" action="{{ url_for('forecast.set_snapshot_roles') }}" class="d-flex align-items-end gap-2 flex-wrap">
+        <div>
+          <label class="form-label mb-1" style="font-size:.68rem; display:block;">Initial forecast</label>
+          <select name="research_role_initial" class="form-select form-select-sm" style="width:200px;">
+            <option value="">Auto / none</option>
+            {% for h in forecast_history %}
+            <option value="{{ h.snapshot_ts or (h.snapshot_date ~ '|' ~ (h.label or '')) }}"{% if h.research_role_initial|string|lower == 'true' %} selected{% endif %}>
+              {{ h.label or h.snapshot_date }}{% if h.label and h.snapshot_date %} ({{ h.snapshot_date }}){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label mb-1" style="font-size:.68rem; display:block;">End forecast</label>
+          <select name="research_role_final" class="form-select form-select-sm" style="width:200px;">
+            <option value="">Auto / none</option>
+            {% for h in forecast_history %}
+            <option value="{{ h.snapshot_ts or (h.snapshot_date ~ '|' ~ (h.label or '')) }}"{% if h.research_role_final|string|lower == 'true' %} selected{% endif %}>
+              {{ h.label or h.snapshot_date }}{% if h.label and h.snapshot_date %} ({{ h.snapshot_date }}){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm py-0 px-2" style="font-size:.74rem;">Save bookends</button>
+      </form>
+
       <span class="fc-control-label ms-md-3" title="Jump the graph and data sheet to a specific date — picks the nearest snapshot on or before it, cuts the actual line there, and gives you that snapshot's CSV.">View as of</span>
       <input type="date" id="view-as-of-date" class="form-control form-control-sm" style="width:150px; font-size:.74rem;">
       <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.74rem;" onclick="applyViewAsOf()">Apply</button>
@@ -984,6 +1013,7 @@
                 <tr><td>Forecast weekly burn</td><td class="text-end fw-semibold">{{ "{:,.0f}".format(fc.forecast_weekly_burn) }}</td></tr>
                 <tr><td>Forecast monthly burn</td><td class="text-end">{{ "{:,.0f}".format(fc.forecast_monthly_burn) }}</td></tr>
                 <tr><td>Weeks until exhaustion</td><td class="text-end">{{ "{:.1f}".format(fc.weeks_until_exhaustion) if fc.weeks_until_exhaustion is not none else "N/A" }}</td></tr>
+                <tr><td>Week of exhaustion</td><td class="text-end">{{ fc.forecast_exhaustion_week or "N/A" }}</td></tr>
                 <tr><td>Exhaustion date</td><td class="text-end">{{ fc.forecast_exhaustion_date or "N/A" }}</td></tr>
                 <tr><td>End balance</td><td class="text-end {{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">{{ "{:,.0f}".format(fc.forecast_contract_end_balance) }}</td></tr>
                 <tr><td>% used by end</td><td class="text-end">{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }}</td></tr>

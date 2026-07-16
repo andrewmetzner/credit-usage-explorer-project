@@ -61,6 +61,31 @@
         {% endfor %}
       </div>
 
+      <!-- CONTRACT TIMELINE -->
+      {% if timeline %}
+      <div class="section-card mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="mb-0">Contract timeline</h5>
+          <span class="badge bg-secondary">{{ timeline | length }} events</span>
+        </div>
+
+        <div class="story-timeline">
+          {% for e in timeline %}
+          <div class="story-timeline-item tone-{{ e.tone }}">
+            <div class="story-timeline-marker">{{ e.icon }}</div>
+            <div class="story-timeline-body">
+              <div class="story-timeline-head">
+                <span class="story-timeline-title">{{ e.title }}</span>
+                <span class="story-timeline-date">{{ e.date }}</span>
+              </div>
+              {% if e.detail %}<div class="story-timeline-detail">{{ e.detail }}</div>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
       <div class="row g-3">
         <!-- STORY ALERT RULES -->
         <div class="col-lg-6">

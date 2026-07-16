@@ -70,7 +70,11 @@ def create_settings_blueprint(services) -> Blueprint:
                 })
         pipeline_status = pipeline.status()
         ingested_weeks = pipeline.get_ingested_weeks()
-        forecast_history_count = len(pipeline.get_forecast_history())
+        forecast_history = sorted(
+            pipeline.get_forecast_history(limit=1000),
+            key=lambda r: str(r.get("snapshot_date") or ""),
+        )
+        forecast_history_count = len(forecast_history)
         upload_history = pipeline.get_upload_history()
         return render_template(
             "settings.html",
@@ -86,6 +90,7 @@ def create_settings_blueprint(services) -> Blueprint:
             user_tier_counts=dict(sorted(user_tier_counts.items())),
             pipeline_status=pipeline_status,
             ingested_weeks=ingested_weeks,
+            forecast_history=forecast_history,
             forecast_history_count=forecast_history_count,
             upload_history=upload_history,
         )

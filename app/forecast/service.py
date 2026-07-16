@@ -56,6 +56,7 @@ class Forecast(DictMixin):
     weeks_remaining: float
     weeks_until_exhaustion: float
     forecast_exhaustion_date: Any
+    forecast_exhaustion_week: Any
     contract_end_date: Any
     forecast_future_usage_to_contract_end: float
     forecast_contract_end_balance: float
@@ -186,7 +187,14 @@ class ForecastingService:
         # +1 day gives the exclusive boundary where projections begin.
         #
         # _as_of caps the date at the freshest uploaded data so the UI never
-        # jumps past what is actually present in the dataset.
+        # jumps past what is actually present in the dataset. It's the raw max
+        # date PRESENT (inclusive — e.g. a week_end, always a Sunday), so it
+        # must also be shifted +1 day before comparing: otherwise it's always
+        # exactly one day earlier than latest_usage_date's exclusive-boundary
+        # convention, and — since a complete week's last real day is a Sunday —
+        # the clamp would ALWAYS win and pin latest_usage_date to Sunday
+        # instead of the correct following Monday. This was the source of
+        # Sunday-dated points leaking onto the (Monday-anchored) weekly chart.
         dates: list[pd.Timestamp] = []
         if self.historical_df is not None and not self.historical_df.empty:
             dates.append(self.historical_df["period_end"].max() + pd.Timedelta(days=1))
@@ -194,7 +202,7 @@ class ForecastingService:
             dates.append(self.operational_df["week_end"].max() + pd.Timedelta(days=1))
         latest_usage_date = max(dates) if dates else contract_start
         if self._as_of is not None:
-            latest_usage_date = min(latest_usage_date, self._as_of)
+            latest_usage_date = min(latest_usage_date, self._as_of + pd.Timedelta(days=1))
 
         total_contract_days = (contract_end - contract_start).days
         elapsed_days = max((latest_usage_date - contract_start).days, 0)
@@ -309,6 +317,7 @@ class ForecastingService:
 
         weeks_until_exhaustion: float | None = None
         exhaustion_date = None
+        exhaustion_week = None
         if forecast_weekly > 0:
             weeks_until_exhaustion = credits_remaining / forecast_weekly
             # Uploads lag the calendar: no burn is recorded after
@@ -318,6 +327,7 @@ class ForecastingService:
             # unset and stays anchored to its historical as-of date.
             anchor = latest_date if self._today is None else max(latest_date, self._today)
             exhaustion_date = (anchor + timedelta(days=weeks_until_exhaustion * 7)).date()
+            exhaustion_week = exhaustion_date - timedelta(days=exhaustion_date.weekday())
 
         future_usage = forecast_weekly * weeks_remaining
         end_balance = credits_remaining - future_usage
@@ -347,6 +357,7 @@ class ForecastingService:
             weeks_remaining=weeks_remaining,
             weeks_until_exhaustion=weeks_until_exhaustion,
             forecast_exhaustion_date=exhaustion_date,
+            forecast_exhaustion_week=exhaustion_week,
             contract_end_date=pd.to_datetime(cs["contract_end_date"]).date(),
             forecast_future_usage_to_contract_end=future_usage,
             forecast_contract_end_balance=end_balance,
@@ -584,6 +595,8 @@ class ForecastingService:
         snapshot_date: str = "",
         skip_mc: bool = False,
         skip_ml: bool = False,
+        research_role_initial: str = "",
+        research_role_final: str = "",
     ) -> None:
         processed_dir.mkdir(parents=True, exist_ok=True)
 
@@ -658,6 +671,8 @@ class ForecastingService:
             "snapshot_date": _snap_date,
             "snapshot_ts": _snap_ts,
             "label": label,
+            "research_role_initial": research_role_initial,
+            "research_role_final": research_role_final,
             **{k: str(v) if hasattr(v, "strftime") else v for k, v in {**cs, **fc}.items()},
             **mc_stats,
             **ml_stats,

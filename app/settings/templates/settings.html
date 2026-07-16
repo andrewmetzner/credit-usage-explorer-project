@@ -469,6 +469,40 @@
             &#8635; Resync snapshots to current credit ledger
           </button>
         </form>
+
+        <div class="mt-4 border rounded-3 p-3 bg-light">
+          <h6 class="mb-3">Research snapshot bookends</h6>
+          <p class="text-muted small mb-3">
+            Select the saved forecast snapshot used as the initial and end research bookends for the storyboard timeline.
+          </p>
+          <form method="post" action="{{ url_for('forecast.set_snapshot_roles') }}" class="row g-3 align-items-end">
+            <div class="col-md-5">
+              <label class="form-label mb-1" for="research_role_initial">Initial forecast</label>
+              <select id="research_role_initial" name="research_role_initial" class="form-select form-select-sm">
+                <option value="">Auto / earliest snapshot</option>
+                {% for h in forecast_history %}
+                <option value="{{ h.snapshot_ts or (h.snapshot_date ~ '|' ~ (h.label or '')) }}"{% if h.research_role_initial|string|lower == 'true' %} selected{% endif %}>
+                  {{ h.label or h.snapshot_date }}{% if h.label and h.snapshot_date %} ({{ h.snapshot_date }}){% endif %}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-5">
+              <label class="form-label mb-1" for="research_role_final">End forecast</label>
+              <select id="research_role_final" name="research_role_final" class="form-select form-select-sm">
+                <option value="">Auto / latest snapshot</option>
+                {% for h in forecast_history %}
+                <option value="{{ h.snapshot_ts or (h.snapshot_date ~ '|' ~ (h.label or '')) }}"{% if h.research_role_final|string|lower == 'true' %} selected{% endif %}>
+                  {{ h.label or h.snapshot_date }}{% if h.label and h.snapshot_date %} ({{ h.snapshot_date }}){% endif %}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2">
+              <button type="submit" class="btn btn-primary btn-sm w-100">Save bookends</button>
+            </div>
+          </form>
+        </div>
         {% endif %}
       </div>
 

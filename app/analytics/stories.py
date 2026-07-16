@@ -522,3 +522,150 @@ def build_user_stories(
         story_pro_then_codex(df),
     ]
     return [s.to_dict() for s in candidates if s]
+
+
+# ── Org-wide contract timeline ──────────────────────────────────────────────
+# The narrative spine of the contract: when it opened, when credits arrived,
+# when the governance era changed, how the balance drained, and the forecasts
+# taken along the way. Rendered on the Storyboard.
+
+TIMELINE_STEP = 100_000  # balance milestones are reported every 100k burned
+
+
+def build_contract_timeline(
+    df: pd.DataFrame,
+    contract: dict,
+    tier_config: dict,
+    snapshots: list | None = None,
+    step: float = TIMELINE_STEP,
+) -> list[dict]:
+    """Chronological, dated events across the contract.
+
+    Covers: contract start/end, credit-ledger entries (purchased/gifted/
+    adjustment), the weekly->monthly cap-era switch, each `step` (100k) the
+    remaining balance falls through, and the forecast snapshots taken — the
+    first and last flagged as the research bookends.
+
+    Each event: {date, kind, title, detail, tone, icon}.
+    """
+    from app.shared.credit_ledger import credit_kind_label, normalize_credit_entries
+
+    contract = contract or {}
+    events: list[dict] = []
+
+    def add(date, kind, title, detail="", tone="info", icon="•"):
+        ts = pd.to_datetime(date, errors="coerce")
+        if pd.isna(ts):
+            return
+        events.append({
+            "date": str(ts.date()), "kind": kind, "title": title,
+            "detail": detail, "tone": tone, "icon": icon,
+        })
+
+    start = pd.to_datetime(contract.get("contract_start_date"), errors="coerce")
+    end = pd.to_datetime(contract.get("contract_end_date"), errors="coerce")
+
+    # 1. Contract bookends
+    add(start, "contract", "Contract starts", "Credit usage begins counting toward the contract.", "notable", "📄")
+    add(end, "contract", "Contract ends", "End of the current credit agreement.", "notable", "🏁")
+
+    # 2. Credit ledger — every purchase / gift / adjustment, on its own date
+    entries = normalize_credit_entries(contract)
+    for e in entries:
+        ed = pd.to_datetime(e.get("date"), errors="coerce")
+        if pd.isna(ed) or (not pd.isna(start) and ed < start):
+            ed = start
+        credits = float(e.get("credits") or 0)
+        notes = str(e.get("notes") or "").strip()
+        add(ed, "credits", f"+{credits:,.0f} {credit_kind_label(e.get('kind'))}",
+            notes or "Added to the credit pool.", "notable", "💳")
+
+    # 3. Governance era change (weekly -> monthly caps)
+    change = cap_change_date(tier_config)
+    if change is not None:
+        add(change, "era", "Caps switch: weekly → monthly",
+            "Weeks from here are scored against the monthly cap; earlier weeks "
+            "keep the old flat weekly caps.", "notable", "🔀")
+
+    # 4. Balance milestones — each `step` the remaining pool falls through
+    daily = _daily_remaining(df, contract, entries, start)
+    if not daily.empty:
+        peak = float(daily.max())
+        level = (int(peak // step)) * step
+        seen: set[float] = set()
+        for day, remaining in daily.items():
+            while level > 0 and remaining <= level:
+                if level not in seen:
+                    add(day, "balance", f"Credits fall below {level:,.0f}",
+                        f"Remaining pool crossed the {level:,.0f} mark.", "info", "📉")
+                    seen.add(level)
+                level -= step
+
+    # 5. Forecast snapshots — research bookends
+    snaps = [s for s in (snapshots or []) if s.get("snapshot_date")]
+    snaps.sort(key=lambda s: str(s.get("snapshot_date")))
+    if snaps:
+        initial = next((s for s in snaps if str(s.get("research_role_initial") or "").lower() == "true"), None)
+        final = next((s for s in reversed(snaps) if str(s.get("research_role_final") or "").lower() == "true"), None)
+        if initial is None:
+            initial = snaps[0]
+        if final is None:
+            final = snaps[-1]
+        add(initial.get("snapshot_date"), "research", "Research: initial forecast",
+            _snap_detail(initial), "alert", "🔬")
+        if final is not initial:
+            add(final.get("snapshot_date"), "research", "Research: end forecast",
+                _snap_detail(final), "alert", "🔬")
+
+    events.sort(key=lambda e: (e["date"], e["kind"]))
+    return events
+
+
+def _snap_detail(snap: dict) -> str:
+    """One-line summary of a forecast snapshot for the timeline."""
+    bits = []
+    label = str(snap.get("label") or "").strip()
+    if label:
+        bits.append(label)
+    for key, fmt in (("credits_remaining", "{:,.0f} remaining"),
+                     ("forecast_weekly_burn", "{:,.0f}/wk burn"),
+                     ("forecast_exhaustion_date", "exhaustion {}")):
+        raw = snap.get(key)
+        if raw in (None, "", "nan"):
+            continue
+        try:
+            bits.append(fmt.format(float(raw)) if "{:," in fmt else fmt.format(raw))
+        except (TypeError, ValueError):
+            bits.append(fmt.format(raw))
+    return " · ".join(bits)
+
+
+def _daily_remaining(df: pd.DataFrame, contract: dict, entries: list, start) -> pd.Series:
+    """Daily remaining-credit balance: ledger available on each day minus
+    cumulative usage to that day (same ledger-by-date rule as the burndown)."""
+    if df is None or df.empty:
+        return pd.Series(dtype="float64")
+    if not {"date_partition", "usage_credits"}.issubset(df.columns):
+        return pd.Series(dtype="float64")
+    d = df[["date_partition", "usage_credits"]].copy()
+    d["_day"] = pd.to_datetime(d["date_partition"], errors="coerce").dt.normalize()
+    d["_credits"] = pd.to_numeric(d["usage_credits"], errors="coerce").fillna(0.0)
+    d = d.dropna(subset=["_day"])
+    if not pd.isna(start):
+        d = d[d["_day"] >= start.normalize()]
+    if d.empty:
+        return pd.Series(dtype="float64")
+
+    used = d.groupby("_day")["_credits"].sum().sort_index().cumsum()
+    days = pd.date_range(used.index.min(), used.index.max(), freq="D")
+    used = used.reindex(days, method="ffill").fillna(0.0)
+
+    available = pd.Series(0.0, index=days)
+    for e in entries:
+        ed = pd.to_datetime(e.get("date"), errors="coerce")
+        if pd.isna(ed) or (not pd.isna(start) and ed < start):
+            ed = start
+        if pd.isna(ed):
+            continue
+        available += (days >= ed.normalize()) * float(e.get("credits") or 0)
+    return (available - used).clip(lower=0.0)
