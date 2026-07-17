@@ -94,6 +94,41 @@ def create_forecast_blueprint(services) -> Blueprint:
                 fc['forecast_exhaustion_week'] = fc.get('forecast_exhaustion_week') or fc['forecast_exhaustion_date']
         return cs, fc
 
+    def _snapshot_stats(row):
+        """The frozen MC/ML stats stored on a snapshot row, keyed the same way
+        the live _run_mc/_run_ml metadata dicts are, so snapshot mode's KPI
+        cards and CSV export can both read from the saved numbers."""
+        def _val(key, cast=float):
+            raw = row.get(key)
+            if raw in (None, "", "nan", "None", "null"):
+                return None
+            try:
+                return cast(raw)
+            except (TypeError, ValueError):
+                return None
+
+        def _raw(key):
+            raw = row.get(key)
+            return None if raw in (None, "", "nan", "None", "null") else raw
+
+        return {
+            "mc_exhaustion_prob": _val("mc_exhaustion_prob"),
+            "mc_p50_end_balance": _val("mc_p50_end_balance"),
+            "mc_p10_end_balance": _val("mc_p10_end_balance"),
+            "mc_p90_end_balance": _val("mc_p90_end_balance"),
+            "mc_runs": _val("mc_runs", int),
+            "ml_slope_per_week": _val("ml_slope_per_week"),
+            "ml_r_squared": _raw("ml_r_squared"),
+            "ml_rmse": _val("ml_rmse"),
+            "ml_observations_used": _val("ml_observations_used", int),
+            "ml_model_engine": _raw("ml_model_engine"),
+            "ml_trend_direction": _raw("ml_trend_direction"),
+            "ml_projected_exhaustion_date": _raw("ml_projected_exhaustion_date"),
+            "ml_p10_end_balance": _val("ml_p10_end_balance"),
+            "ml_p50_end_balance": _val("ml_p50_end_balance"),
+            "ml_p90_end_balance": _val("ml_p90_end_balance"),
+        }
+
     def _apply_view_window(svc, data_as_of, exclude_partial):
         """Configure a ForecastingService for the current request's date view.
 
@@ -422,35 +457,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         snapshot_stats = None
         if snapshot_row:
             display_cs, display_fc = _snapshot_status_forecast(snapshot_row)
-            def _val(key, cast=float):
-                raw = snapshot_row.get(key)
-                if raw in (None, "", "nan", "None", "null"):
-                    return None
-                try:
-                    return cast(raw)
-                except (TypeError, ValueError):
-                    return None
-            def _raw(key):
-                raw = snapshot_row.get(key)
-                return None if raw in (None, "", "nan", "None", "null") else raw
-
-            snapshot_stats = {
-                "mc_exhaustion_prob": _val("mc_exhaustion_prob"),
-                "mc_p50_end_balance": _val("mc_p50_end_balance"),
-                "mc_p10_end_balance": _val("mc_p10_end_balance"),
-                "mc_p90_end_balance": _val("mc_p90_end_balance"),
-                "mc_runs": _val("mc_runs", int),
-                "ml_slope_per_week": _val("ml_slope_per_week"),
-                "ml_r_squared": _raw("ml_r_squared"),
-                "ml_rmse": _val("ml_rmse"),
-                "ml_observations_used": _val("ml_observations_used", int),
-                "ml_model_engine": _raw("ml_model_engine"),
-                "ml_trend_direction": _raw("ml_trend_direction"),
-                "ml_projected_exhaustion_date": _raw("ml_projected_exhaustion_date"),
-                "ml_p10_end_balance": _val("ml_p10_end_balance"),
-                "ml_p50_end_balance": _val("ml_p50_end_balance"),
-                "ml_p90_end_balance": _val("ml_p90_end_balance"),
-            }
+            snapshot_stats = _snapshot_stats(snapshot_row)
 
         return render_template(
             template_name,
@@ -962,13 +969,40 @@ def create_forecast_blueprint(services) -> Blueprint:
     @bp.route("/forecast/details-export.csv", methods=["GET"])
     def forecast_details_export_csv() -> object:
         """The Details accordion as CSV — contract & pacing, forecast, and
-        model statistics for the current view (burn window respected)."""
+        model statistics for the current view (burn window respected).
+
+        In snapshot mode (``?snapshot=<ts>``) the KPI cards on the page show
+        the snapshot's frozen numbers, so this export reads from the same
+        saved row instead of recomputing live — otherwise the download would
+        silently disagree with what's on screen."""
+        label = lambda k: k.replace("_", " ").capitalize()  # noqa: E731
+
+        snapshot_ts = request.args.get("snapshot", "").strip()
+        snapshot_row = _snapshot_row(snapshot_ts) if snapshot_ts else None
+        if snapshot_row:
+            cs, fc = _snapshot_status_forecast(snapshot_row)
+            rows = [("Contract & pacing", label(k), v) for k, v in cs.items()]
+            rows += [("Forecast", label(k), v) for k, v in fc.items()]
+            stats = _snapshot_stats(snapshot_row)
+            rows += [
+                ("Linear trend (ML)", label(k[3:]), v)
+                for k, v in stats.items() if k.startswith("ml_") and v is not None
+            ]
+            rows += [
+                ("Monte Carlo", label(k[3:]), v)
+                for k, v in stats.items() if k.startswith("mc_") and v is not None
+            ]
+            return csv_response(
+                _pd.DataFrame(rows, columns=["Section", "Metric", "Value"]),
+                "forecast_details.csv",
+                filters=[("snapshot", snapshot_ts)],
+            )
+
         svc = _forecasting_from_request(config_svc.load_contract())
         if not svc.has_data():
             return Response("No data available", status=404, mimetype="text/plain")
         cs = svc.get_contract_status()
         fc = svc.get_forecast()
-        label = lambda k: k.replace("_", " ").capitalize()  # noqa: E731
         rows = [("Contract & pacing", label(k), v) for k, v in {**cs}.items()]
         rows += [("Forecast", label(k), v) for k, v in {**fc}.items()]
         try:
