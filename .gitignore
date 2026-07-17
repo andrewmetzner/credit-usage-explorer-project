@@ -1,5 +1,6 @@
 data/*
 config/*
+deliverables/*
 
 #py
 __pycache__/
