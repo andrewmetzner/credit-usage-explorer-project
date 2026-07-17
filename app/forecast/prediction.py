@@ -169,11 +169,13 @@ class MonteCarloModel(PredictionModel):
         mults = rng.choice(multipliers, size=(self.runs, n_steps), replace=True)
         period_burns = np.maximum(ctx.forecast_weekly_burn * mults, 0.0) * fracs
         cum = np.cumsum(period_burns, axis=1)
-        remaining = np.maximum(ctx.credits_remaining - cum, 0.0)
+        raw_remaining = ctx.credits_remaining - cum   # unclamped — can go negative
+        remaining = np.maximum(raw_remaining, 0.0)
 
         # Prepend the start point (latest_usage_date -> credits_remaining)
         start_col = np.full((self.runs, 1), ctx.credits_remaining)
         all_rem = np.hstack([start_col, remaining])   # (runs × steps+1)
+        all_rem_raw = np.hstack([start_col, raw_remaining])   # unclamped counterpart
 
         # Each step lands frac*7 days after the previous one, so the final
         # partial week spans its true length (ending at contract end) instead
@@ -189,6 +191,12 @@ class MonteCarloModel(PredictionModel):
         p10 = np.percentile(all_rem, 10, axis=0)
         p50 = np.percentile(all_rem, 50, axis=0)
         p90 = np.percentile(all_rem, 90, axis=0)
+        # Unclamped percentiles at the same steps — these can go negative,
+        # showing how far into deficit a percentile run would be by contract
+        # end rather than flooring it at zero like the displayed bands.
+        p10_raw = np.percentile(all_rem_raw, 10, axis=0)
+        p50_raw = np.percentile(all_rem_raw, 50, axis=0)
+        p90_raw = np.percentile(all_rem_raw, 90, axis=0)
         # "Exhausted by CONTRACT END" — not by the (longer) display horizon.
         end_i = min(contract_steps, all_rem.shape[1] - 1)
         exhaustion_prob = float(np.mean(all_rem[:, end_i] <= 0))
@@ -211,6 +219,9 @@ class MonteCarloModel(PredictionModel):
                 "p10_end_balance": round(float(p10[end_i]), 1),
                 "p50_end_balance": round(float(p50[end_i]), 1),
                 "p90_end_balance": round(float(p90[end_i]), 1),
+                "p10_contract_end_balance": round(float(p10_raw[end_i]), 1),
+                "p50_contract_end_balance": round(float(p50_raw[end_i]), 1),
+                "p90_contract_end_balance": round(float(p90_raw[end_i]), 1),
                 "p10_exhaustion_date": first_zero_date(p10),
                 "p50_exhaustion_date": first_zero_date(p50),
                 "p90_exhaustion_date": first_zero_date(p90),
@@ -299,6 +310,11 @@ class LinearRegressionModel(PredictionModel):
         p50 = [round(float(ctx.credits_remaining), 1)]
         p10 = [round(float(ctx.credits_remaining), 1)]
         p90 = [round(float(ctx.credits_remaining), 1)]
+        # Unclamped counterparts of p10/p50/p90 — can go negative, showing the
+        # deficit magnitude rather than flooring at zero like the display bands.
+        raw_p50 = [round(float(ctx.credits_remaining), 1)]
+        raw_p10 = [round(float(ctx.credits_remaining), 1)]
+        raw_p90 = [round(float(ctx.credits_remaining), 1)]
         weekly_predictions: list[float] = []
         raw_weekly_predictions: list[float] = []
         # Unclamped running balance so the band center keeps declining past 0;
@@ -328,6 +344,9 @@ class LinearRegressionModel(PredictionModel):
             p50.append(round(max(raw_remaining, 0.0), 1))
             p90.append(round(min(max(raw_remaining + band, 0.0), ctx.purchased_credits), 1))
             p10.append(round(max(raw_remaining - band, 0.0), 1))
+            raw_p50.append(round(raw_remaining, 1))
+            raw_p90.append(round(raw_remaining + band, 1))
+            raw_p10.append(round(raw_remaining - band, 1))
             if raw_remaining <= 0.0 and exhaustion_date is None:
                 exhaustion_date = str(d)
             # Stop only once even the optimistic edge is spent, so the band
@@ -386,6 +405,9 @@ class LinearRegressionModel(PredictionModel):
             "p10_end_balance": p10[end_i] if p10 else None,
             "p50_end_balance": p50[end_i] if p50 else None,
             "p90_end_balance": p90[end_i] if p90 else None,
+            "p10_contract_end_balance": raw_p10[end_i] if raw_p10 else None,
+            "p50_contract_end_balance": raw_p50[end_i] if raw_p50 else None,
+            "p90_contract_end_balance": raw_p90[end_i] if raw_p90 else None,
             "p10_exhaustion_date": next((d for d, v in zip(dates, p10) if v <= 0.0), None),
             "p50_exhaustion_date": next((d for d, v in zip(dates, p50) if v <= 0.0), None),
             "p90_exhaustion_date": next((d for d, v in zip(dates, p90) if v <= 0.0), None),
@@ -435,6 +457,9 @@ class LinearRegressionModel(PredictionModel):
             ctx.weeks_remaining,
         )
         end_balance = pts[-1]["value"] if pts else ctx.credits_remaining
+        end_balance_raw = round(
+            float(ctx.credits_remaining - ctx.forecast_weekly_burn * ctx.weeks_remaining), 1
+        )
         return PredictionResult(
             model_id=self.model_id,
             label=self.label,
@@ -460,6 +485,9 @@ class LinearRegressionModel(PredictionModel):
                 "p10_end_balance": end_balance,
                 "p50_end_balance": end_balance,
                 "p90_end_balance": end_balance,
+                "p10_contract_end_balance": end_balance_raw,
+                "p50_contract_end_balance": end_balance_raw,
+                "p90_contract_end_balance": end_balance_raw,
                 "p10_exhaustion_date": next((p["date"] for p in pts if p["value"] <= 0.0), None),
                 "p50_exhaustion_date": next((p["date"] for p in pts if p["value"] <= 0.0), None),
                 "p90_exhaustion_date": next((p["date"] for p in pts if p["value"] <= 0.0), None),
