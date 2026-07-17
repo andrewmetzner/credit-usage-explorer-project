@@ -302,7 +302,7 @@ The model additionally reports an effective slope ($w \cdot b$), a trend directi
 The contract's total credit pool is represented as a list of dated entries of kind `purchased`, `gifted`, or `adjustment`, rather than a single static figure:
 
 $$
-\text{available}(d) = \sum_{\substack{\text{entries } e \\ \text{effective\_date}(e) \le d}} \text{credits}(e)
+\text{available}(d) = \sum_{\text{entries } e \text{ with effective date} \le d} \text{credits}(e)
 $$
 
 $$
@@ -320,20 +320,20 @@ Every downstream computation reads from `remaining(d)`, so a mid-contract grant 
 All governance math operates on a weekly basis. Because tier caps are configured as monthly totals (`cap_period: monthly`), each cap is first converted to a weekly pace:
 
 $$
-\text{weeks\_in\_month}(y, m) = \text{number of Mondays whose date falls within month } m \text{ of year } y
+\text{weeks in month}(y, m) = \text{number of Mondays whose date falls within month } m \text{ of year } y
 $$
 
 $$
-\text{weeks\_per\_month}(\text{week start}) =
+\text{weeks per month}(\text{week start}) =
 \begin{cases}
 4.0, & \text{week start} < \text{cap period change date} \\
-\text{weeks\_in\_month}(\text{year}, \text{month}), & \text{setting is "actual"} \\
+\text{weeks in month}(\text{year}, \text{month}), & \text{setting is "actual"} \\
 \text{configured value (e.g. } 4.345\text{)}, & \text{otherwise}
 \end{cases}
 $$
 
 $$
-\text{weekly cap}(\text{tier}, \text{week}) = \frac{\text{monthly credit cap}}{\text{weeks\_per\_month}(\text{week start})}
+\text{weekly cap}(\text{tier}, \text{week}) = \frac{\text{monthly credit cap}}{\text{weeks per month}(\text{week start})}
 $$
 
 Because a week is assigned to the month of its Monday, and `weeks_in_month` counts Mondays, a tier's weekly caps across any given month sum exactly to its configured monthly cap. Weeks whose Monday falls before `cap_period_change_date` are evaluated under the legacy flat-weekly regime (dividing by 4.0) rather than the monthly-derived pace, so historical governance decisions remain consistent with the caps that were actually in force at the time.
@@ -414,7 +414,7 @@ The reference model's exported specification (`docs/bnl_amu_math_spec.md`, §11 
 
 Stories are short, narrative insights generated per user, each independently computed and rendered only when applicable:
 
-- **Month pace** — the monthly budget for a given calendar month is $\text{weekly cap}(\text{tier}, \text{last week of month}) \times \text{weeks\_in\_month}(\text{month})$, which equals the configured monthly cap after the weekly→monthly switch, or the flat weekly cap times the weeks in that month beforehand. The story reports spend as a share of that allowance, the dates on which 25%, 50%, 75%, and 100% of the allowance were crossed (computed from the daily cumulative sum), and, if applicable, the day the cap was reached. It is toned as an alert at 100% or more of allowance and as notable at 80% or more.
+- **Month pace** — the monthly budget for a given calendar month is $\text{weekly cap}(\text{tier}, \text{last week of month}) \times \text{weeks in month}(\text{month})$, which equals the configured monthly cap after the weekly→monthly switch, or the flat weekly cap times the weeks in that month beforehand. The story reports spend as a share of that allowance, the dates on which 25%, 50%, 75%, and 100% of the allowance were crossed (computed from the daily cumulative sum), and, if applicable, the day the cap was reached. It is toned as an alert at 100% or more of allowance and as notable at 80% or more.
 - **Activity recency** — the gap, in days, between a user's last active day and the newest date present in the dataset (not the calendar date). Toned as an alert at 30 or more days of inactivity and as notable at 14 or more, and separately reports the user's number of active days within the trailing 14 data-days.
 - **Pro + Codex same day** — flags days on which a user issued both Pro-tier prompts and Codex requests, read as a signal of working a difficult problem across multiple tools concurrently.
 
