@@ -1,6 +1,7 @@
 data/*
 config/*
 deliverables/*
+.vscode/*
 
 #py
 __pycache__/
