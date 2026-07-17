@@ -1907,6 +1907,9 @@ if (typeof Chart !== 'undefined') {
     const p10ExhDate = md.p10_exhaustion_date || '—';
     const p50ExhDate = md.p50_exhaustion_date || '—';
     const p90ExhDate = md.p90_exhaustion_date || '—';
+    const p10Ceb = md.p10_contract_end_balance != null ? md.p10_contract_end_balance : null;
+    const p50Ceb = md.p50_contract_end_balance != null ? md.p50_contract_end_balance : null;
+    const p90Ceb = md.p90_contract_end_balance != null ? md.p90_contract_end_balance : null;
 
     const riskCls = ep === null ? '' : ep > 0.5 ? 'text-danger' : ep > 0.1 ? 'text-warning' : 'text-success';
     const balCls  = v => v !== null && v < 0 ? 'text-danger' : v !== null ? 'text-success' : '';
@@ -1950,11 +1953,11 @@ if (typeof Chart !== 'undefined') {
           <div class="col-md-7">
             <p class="text-muted small mb-1 fw-semibold">End Balance Distribution</p>
             <table class="table table-sm mb-0">
-              <thead><tr><th>Percentile</th><th class="text-end">End Balance</th><th class="text-end">Exhaustion Date</th><th class="text-muted text-end" style="font-size:.7rem;">Interpretation</th></tr></thead>
+              <thead><tr><th>Percentile</th><th class="text-end">End Balance</th><th class="text-end">Contract End Balance</th><th class="text-end">Exhaustion Date</th><th class="text-muted text-end" style="font-size:.7rem;">Interpretation</th></tr></thead>
               <tbody>
-                <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end ${balCls(p10End)}">${fmtBal(p10End)}</td><td class="text-end">${p10ExhDate}</td><td class="text-muted text-end small">90% of runs end higher</td></tr>
-                <tr><td>P50 <span class="text-muted small">(median)</span></td><td class="text-end ${balCls(p50End)}">${fmtBal(p50End)}</td><td class="text-end">${p50ExhDate}</td><td class="text-muted text-end small">most likely outcome</td></tr>
-                <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end ${balCls(p90End)}">${fmtBal(p90End)}</td><td class="text-end">${p90ExhDate}</td><td class="text-muted text-end small">10% of runs end higher</td></tr>
+                <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end ${balCls(p10End)}">${fmtBal(p10End)}</td><td class="text-end ${balCls(p10Ceb)}">${fmtBal(p10Ceb)}</td><td class="text-end">${p10ExhDate}</td><td class="text-muted text-end small">90% of runs end higher</td></tr>
+                <tr><td>P50 <span class="text-muted small">(median)</span></td><td class="text-end ${balCls(p50End)}">${fmtBal(p50End)}</td><td class="text-end ${balCls(p50Ceb)}">${fmtBal(p50Ceb)}</td><td class="text-end">${p50ExhDate}</td><td class="text-muted text-end small">most likely outcome</td></tr>
+                <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end ${balCls(p90End)}">${fmtBal(p90End)}</td><td class="text-end ${balCls(p90Ceb)}">${fmtBal(p90Ceb)}</td><td class="text-end">${p90ExhDate}</td><td class="text-muted text-end small">10% of runs end higher</td></tr>
               </tbody>
             </table>
           </div>
@@ -2122,6 +2125,9 @@ if (typeof Chart !== 'undefined') {
     const p10ExhDate = md.p10_exhaustion_date || '—';
     const p50ExhDate = md.p50_exhaustion_date || '—';
     const p90ExhDate = md.p90_exhaustion_date || '—';
+    const p10Ceb = md.p10_contract_end_balance != null ? md.p10_contract_end_balance : null;
+    const p50Ceb = md.p50_contract_end_balance != null ? md.p50_contract_end_balance : null;
+    const p90Ceb = md.p90_contract_end_balance != null ? md.p90_contract_end_balance : null;
     const balCls = v => v != null && v < 0 ? 'text-danger' : v != null ? 'text-success' : '';
     body.innerHTML = `
       <div class="row g-3">
@@ -2139,10 +2145,10 @@ if (typeof Chart !== 'undefined') {
         <div class="col-md-6">
           <p class="text-muted small mb-1 fw-semibold">Projected End Balance</p>
           <table class="table table-sm mb-2">
-            <thead><tr><th></th><th class="text-end">End Balance</th><th class="text-end">Exhaustion Date</th></tr></thead>
-            <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end ${balCls(p10)}">${fmt(p10)}</td><td class="text-end">${p10ExhDate}</td></tr>
-            <tr><td>P50 <span class="text-muted small">(expected)</span></td><td class="text-end ${balCls(p50)}">${fmt(p50)}</td><td class="text-end">${p50ExhDate}</td></tr>
-            <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end ${balCls(p90)}">${fmt(p90)}</td><td class="text-end">${p90ExhDate}</td></tr>
+            <thead><tr><th></th><th class="text-end">End Balance</th><th class="text-end">Contract End Balance</th><th class="text-end">Exhaustion Date</th></tr></thead>
+            <tr><td>P10 <span class="text-muted small">(pessimistic)</span></td><td class="text-end ${balCls(p10)}">${fmt(p10)}</td><td class="text-end ${balCls(p10Ceb)}">${fmt(p10Ceb)}</td><td class="text-end">${p10ExhDate}</td></tr>
+            <tr><td>P50 <span class="text-muted small">(expected)</span></td><td class="text-end ${balCls(p50)}">${fmt(p50)}</td><td class="text-end ${balCls(p50Ceb)}">${fmt(p50Ceb)}</td><td class="text-end">${p50ExhDate}</td></tr>
+            <tr><td>P90 <span class="text-muted small">(optimistic)</span></td><td class="text-end ${balCls(p90)}">${fmt(p90)}</td><td class="text-end ${balCls(p90Ceb)}">${fmt(p90Ceb)}</td><td class="text-end">${p90ExhDate}</td></tr>
           </table>
           ${md.projected_exhaustion_date
             ? `<p class="mb-0 small text-danger">Trend projects exhaustion around ${md.projected_exhaustion_date}.</p>`

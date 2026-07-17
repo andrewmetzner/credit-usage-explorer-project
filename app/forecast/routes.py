@@ -756,6 +756,119 @@ def create_forecast_blueprint(services) -> Blueprint:
         flash(", ".join(parts) + ".", "success" if resynced else "warning")
         return redirect(request.referrer or url_for("settings.settings_page"))
 
+    _BACKFILL_COLUMNS = (
+        "mc_p10_contract_end_balance", "mc_p50_contract_end_balance", "mc_p90_contract_end_balance",
+        "mc_p10_exhaustion_date", "mc_p50_exhaustion_date", "mc_p90_exhaustion_date",
+        "ml_p10_contract_end_balance", "ml_p50_contract_end_balance", "ml_p90_contract_end_balance",
+        "ml_p10_exhaustion_date", "ml_p50_exhaustion_date", "ml_p90_exhaustion_date",
+    )
+
+    @bp.route("/forecast/snapshot/backfill-stats", methods=["POST"])
+    def backfill_snapshot_stats() -> object:
+        """Fill in the contract-end-balance / exhaustion-date columns on
+        EXISTING snapshot rows that predate those fields — without touching
+        anything else already frozen on those rows (unlike resync, which
+        deliberately re-derives every stat against today's credit ledger).
+
+        Rebuilds each snapshot's own historical/ledger window (same technique
+        as resync) purely to recompute the MC/ML PredictionResult, then writes
+        only the cells that are still blank. Note this is a best-effort
+        reconstruction, not a guaranteed byte-for-byte match to what would
+        have been saved originally — if the contract config (weights, etc.)
+        changed since, the newly-added cells use today's config."""
+        history_path = pipeline.processed_dir / "forecast_history.csv"
+        if not history_path.exists():
+            flash("No snapshot history file found.", "info")
+            return redirect(request.referrer or url_for("settings.settings_page"))
+
+        df = _pd.read_csv(history_path, dtype=str, keep_default_na=False)
+        for col in _BACKFILL_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+
+        def _blank(v) -> bool:
+            return str(v).strip() in ("", "nan", "None")
+
+        rows_needing = [
+            idx for idx in df.index
+            if any(_blank(df.at[idx, col]) for col in _BACKFILL_COLUMNS)
+        ]
+        if not rows_needing:
+            flash("Every saved snapshot already has these stats.", "info")
+            return redirect(request.referrer or url_for("settings.settings_page"))
+
+        config = copy.deepcopy(config_svc.load_contract())
+        hist_df = pipeline.get_historical_weekly_summary()
+        op_df = pipeline.get_operational_weekly_summary()
+        if op_df is None or op_df.empty:
+            daily_df = _get_store_df()
+            if daily_df is not None and not daily_df.empty:
+                _tmp = ForecastingService(config, hist_df, None, daily_df)
+                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
+                    op_df = _tmp.operational_df
+                if hist_df is None and _tmp.historical_df is not None:
+                    hist_df = _tmp.historical_df
+        if op_df is None or op_df.empty:
+            flash("No operational data available to recompute snapshots from.", "warning")
+            return redirect(request.referrer or url_for("settings.settings_page"))
+
+        op_sorted = op_df.sort_values("week_start").reset_index(drop=True)
+        filled = errors = 0
+        for idx in rows_needing:
+            row = df.loc[idx]
+            try:
+                data_as_of = _pd.to_datetime(row.get("latest_usage_date"), errors="coerce")
+                snap_date = str(row.get("snapshot_date") or "").strip()
+                ledger_as_of = _pd.to_datetime(snap_date, errors="coerce")
+                truncated_op = (
+                    op_sorted[op_sorted["week_end"] <= data_as_of] if not _pd.isna(data_as_of) else op_sorted
+                )
+                if truncated_op.empty:
+                    errors += 1
+                    continue
+
+                week_config = _config_as_of(config, ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of)
+                svc = ForecastingService(week_config, hist_df, truncated_op.copy())
+                if not svc.has_data():
+                    errors += 1
+                    continue
+
+                cs = svc.get_contract_status()
+                fc = svc.get_forecast()
+                mmd = (svc._run_mc(cs, fc).metadata or {})
+                lmd = (svc._run_ml(cs, fc).metadata or {})
+
+                field_map = {
+                    "mc_p10_contract_end_balance": mmd.get("p10_contract_end_balance"),
+                    "mc_p50_contract_end_balance": mmd.get("p50_contract_end_balance"),
+                    "mc_p90_contract_end_balance": mmd.get("p90_contract_end_balance"),
+                    "mc_p10_exhaustion_date": mmd.get("p10_exhaustion_date"),
+                    "mc_p50_exhaustion_date": mmd.get("p50_exhaustion_date"),
+                    "mc_p90_exhaustion_date": mmd.get("p90_exhaustion_date"),
+                    "ml_p10_contract_end_balance": lmd.get("p10_contract_end_balance"),
+                    "ml_p50_contract_end_balance": lmd.get("p50_contract_end_balance"),
+                    "ml_p90_contract_end_balance": lmd.get("p90_contract_end_balance"),
+                    "ml_p10_exhaustion_date": lmd.get("p10_exhaustion_date"),
+                    "ml_p50_exhaustion_date": lmd.get("p50_exhaustion_date"),
+                    "ml_p90_exhaustion_date": lmd.get("p90_exhaustion_date"),
+                }
+                # Only ever fill blanks — never overwrite a value already on
+                # the row (from a real save or an earlier backfill pass).
+                for col, val in field_map.items():
+                    if _blank(df.at[idx, col]) and val is not None:
+                        df.at[idx, col] = str(val)
+                filled += 1
+            except Exception:
+                errors += 1
+
+        df.to_csv(history_path, index=False)
+
+        parts = [f"{filled} snapshot{'s' if filled != 1 else ''} backfilled"]
+        if errors:
+            parts.append(f"{errors} failed")
+        flash(", ".join(parts) + ".", "success" if filled else "warning")
+        return redirect(request.referrer or url_for("settings.settings_page"))
+
     @bp.route("/forecast/history/rename", methods=["POST"])
     def rename_forecast_snapshot() -> object:
         snapshot_ts = request.form.get("snapshot_ts", "")

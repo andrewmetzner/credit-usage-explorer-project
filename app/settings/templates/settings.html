@@ -469,6 +469,13 @@
             &#8635; Resync snapshots to current credit ledger
           </button>
         </form>
+        <form method="post" action="{{ url_for('forecast.backfill_snapshot_stats') }}" class="mt-2"
+              onsubmit="return confirm('Fill in the P10/P50/P90 contract-end balance and exhaustion-date columns on existing snapshots? Only blank cells are written — everything else already saved on those snapshots is left untouched.');">
+          <button class="btn btn-outline-secondary btn-sm" type="submit"
+                  title="Adds the contract-end balance / exhaustion-date columns to snapshots saved before those stats existed. Purely additive — only fills blank cells, never changes an existing saved value.">
+            &#43; Backfill contract-end balance &amp; exhaustion dates
+          </button>
+        </form>
 
         <div class="mt-4 border rounded-3 p-3 bg-light">
           <h6 class="mb-3">Research snapshot bookends</h6>
