@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from flask import Flask
@@ -40,16 +41,37 @@ def create_app() -> Flask:
     for _d in (CONFIG_DIR, PROCESSED_DIR, HISTORICAL_DIR, UPLOADS_DIR, CURRENT_DATA_PATH.parent):
         _d.mkdir(parents=True, exist_ok=True)
 
+    # Resolution order: the cached upload path (from the last /upload-data),
+    # then the canonical current_data.csv (what uploads always save to),
+    # then a legacy current_data.xlsx, then the bundled default.
+    # A cache entry that no longer resolves (e.g. the project folder was
+    # moved or renamed) is treated as stale and skipped with a warning,
+    # rather than silently falling all the way back to an empty dataset.
+    current_data_csv = CURRENT_DATA_PATH.with_suffix(".csv")
     initial_path = DEFAULT_DATA_PATH
+    resolved = False
+
     if CURRENT_DATA_PATH_CACHE.exists():
         try:
             cached = Path(CURRENT_DATA_PATH_CACHE.read_text().strip())
-            if cached.exists():
-                initial_path = cached
         except Exception:
-            pass
-    elif CURRENT_DATA_PATH.exists():
-        initial_path = CURRENT_DATA_PATH
+            cached = None
+        if cached and cached.exists():
+            initial_path = cached
+            resolved = True
+        elif cached:
+            warnings.warn(
+                f"config/data_path.txt points to a missing file "
+                f"({cached}); falling back to the current data directory. "
+                f"Re-upload data or fix config/data_path.txt if this is wrong.",
+                RuntimeWarning,
+            )
+
+    if not resolved:
+        if current_data_csv.exists():
+            initial_path = current_data_csv
+        elif CURRENT_DATA_PATH.exists():
+            initial_path = CURRENT_DATA_PATH
 
     store = DataStore(initial_path)
     pipeline = IngestionPipeline(PROCESSED_DIR)
