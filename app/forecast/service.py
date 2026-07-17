@@ -639,6 +639,9 @@ class ForecastingService:
                         round(mc_result.burndown[-1]["value"], 1) if mc_result.burndown else None),
                     "mc_p90_end_balance": md.get("p90_end_balance",
                         round(mc_result.p90[-1]["value"], 1) if mc_result.p90 else None),
+                    "mc_p10_exhaustion_date": md.get("p10_exhaustion_date"),
+                    "mc_p50_exhaustion_date": md.get("p50_exhaustion_date"),
+                    "mc_p90_exhaustion_date": md.get("p90_exhaustion_date"),
                 }
             except Exception:
                 pass
@@ -669,6 +672,9 @@ class ForecastingService:
                     "ml_p10_end_balance": md.get("p10_end_balance"),
                     "ml_p50_end_balance": md.get("p50_end_balance"),
                     "ml_p90_end_balance": md.get("p90_end_balance"),
+                    "ml_p10_exhaustion_date": md.get("p10_exhaustion_date"),
+                    "ml_p50_exhaustion_date": md.get("p50_exhaustion_date"),
+                    "ml_p90_exhaustion_date": md.get("p90_exhaustion_date"),
                 }
             except Exception:
                 pass

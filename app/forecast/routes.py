@@ -111,11 +111,46 @@ def create_forecast_blueprint(services) -> Blueprint:
             raw = row.get(key)
             return None if raw in (None, "", "nan", "None", "null") else raw
 
+        mc_p10_date = _raw("mc_p10_exhaustion_date")
+        mc_p50_date = _raw("mc_p50_exhaustion_date")
+        mc_p90_date = _raw("mc_p90_exhaustion_date")
+        ml_p10_date = _raw("ml_p10_exhaustion_date")
+        ml_p50_date = _raw("ml_p50_exhaustion_date")
+        ml_p90_date = _raw("ml_p90_exhaustion_date")
+
+        # Snapshots saved before these columns existed have no exhaustion-date
+        # fields on their forecast_history.csv row, but the full P10/50/90
+        # time series was already being saved alongside them — derive the
+        # missing dates from that series instead of leaving them blank.
+        if not (mc_p10_date and mc_p50_date and mc_p90_date
+                and ml_p10_date and ml_p50_date and ml_p90_date):
+            ts = row.get("snapshot_ts")
+            series = pipeline.get_snapshot_series(ts) if ts else None
+            if series:
+                def _first_zero(points):
+                    for p in points or []:
+                        v = p.get("value")
+                        if v is not None and v <= 0:
+                            return str(p.get("date", ""))[:10]
+                    return None
+
+                mc = series.get("mc") or {}
+                ml = series.get("ml") or {}
+                mc_p10_date = mc_p10_date or _first_zero(mc.get("p10"))
+                mc_p50_date = mc_p50_date or _first_zero(mc.get("p50"))
+                mc_p90_date = mc_p90_date or _first_zero(mc.get("p90"))
+                ml_p10_date = ml_p10_date or _first_zero(ml.get("p10"))
+                ml_p50_date = ml_p50_date or _first_zero(ml.get("p50"))
+                ml_p90_date = ml_p90_date or _first_zero(ml.get("p90"))
+
         return {
             "mc_exhaustion_prob": _val("mc_exhaustion_prob"),
             "mc_p50_end_balance": _val("mc_p50_end_balance"),
             "mc_p10_end_balance": _val("mc_p10_end_balance"),
             "mc_p90_end_balance": _val("mc_p90_end_balance"),
+            "mc_p10_exhaustion_date": mc_p10_date,
+            "mc_p50_exhaustion_date": mc_p50_date,
+            "mc_p90_exhaustion_date": mc_p90_date,
             "mc_runs": _val("mc_runs", int),
             "ml_slope_per_week": _val("ml_slope_per_week"),
             "ml_r_squared": _raw("ml_r_squared"),
@@ -127,6 +162,9 @@ def create_forecast_blueprint(services) -> Blueprint:
             "ml_p10_end_balance": _val("ml_p10_end_balance"),
             "ml_p50_end_balance": _val("ml_p50_end_balance"),
             "ml_p90_end_balance": _val("ml_p90_end_balance"),
+            "ml_p10_exhaustion_date": ml_p10_date,
+            "ml_p50_exhaustion_date": ml_p50_date,
+            "ml_p90_exhaustion_date": ml_p90_date,
         }
 
     def _apply_view_window(svc, data_as_of, exclude_partial):
@@ -1081,8 +1119,19 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         if keys:
             rows = [h for h in rows if row_key(h) in keys]
+        # Older rows predate the exhaustion-date columns; _snapshot_stats
+        # backfills them from each snapshot's saved P10/50/90 series so every
+        # exported row has them, not just ones saved after the columns existed.
+        exh_keys = (
+            "mc_p10_exhaustion_date", "mc_p50_exhaustion_date", "mc_p90_exhaustion_date",
+            "ml_p10_exhaustion_date", "ml_p50_exhaustion_date", "ml_p90_exhaustion_date",
+        )
+        enriched_rows = []
+        for h in rows:
+            stats = _snapshot_stats(h)
+            enriched_rows.append({**h, **{k: stats.get(k) for k in exh_keys}})
         return csv_response(
-            _pd.DataFrame(rows),
+            _pd.DataFrame(enriched_rows),
             "forecast_snapshots.csv",
             filters=[("selected", len(keys) if keys else "")],
         )

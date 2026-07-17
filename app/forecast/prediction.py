@@ -196,6 +196,9 @@ class MonteCarloModel(PredictionModel):
         def pts(arr: np.ndarray) -> list[dict]:
             return [{"date": d, "value": round(float(v), 1)} for d, v in zip(dates, arr)]
 
+        def first_zero_date(arr: np.ndarray) -> str | None:
+            return next((d for d, v in zip(dates, arr) if v <= 0.0), None)
+
         return PredictionResult(
             model_id=self.model_id,
             label=self.label,
@@ -208,6 +211,9 @@ class MonteCarloModel(PredictionModel):
                 "p10_end_balance": round(float(p10[end_i]), 1),
                 "p50_end_balance": round(float(p50[end_i]), 1),
                 "p90_end_balance": round(float(p90[end_i]), 1),
+                "p10_exhaustion_date": first_zero_date(p10),
+                "p50_exhaustion_date": first_zero_date(p50),
+                "p90_exhaustion_date": first_zero_date(p90),
                 "contract_end_date": dates[end_i],
                 "observations_used": int(len(multipliers)),
                 "random_seed": self.random_seed,
@@ -380,6 +386,9 @@ class LinearRegressionModel(PredictionModel):
             "p10_end_balance": p10[end_i] if p10 else None,
             "p50_end_balance": p50[end_i] if p50 else None,
             "p90_end_balance": p90[end_i] if p90 else None,
+            "p10_exhaustion_date": next((d for d, v in zip(dates, p10) if v <= 0.0), None),
+            "p50_exhaustion_date": next((d for d, v in zip(dates, p50) if v <= 0.0), None),
+            "p90_exhaustion_date": next((d for d, v in zip(dates, p90) if v <= 0.0), None),
             "weekly_predictions": weekly_predictions[:26],
             "raw_weekly_predictions": raw_weekly_predictions[:26],
         }
@@ -451,6 +460,9 @@ class LinearRegressionModel(PredictionModel):
                 "p10_end_balance": end_balance,
                 "p50_end_balance": end_balance,
                 "p90_end_balance": end_balance,
+                "p10_exhaustion_date": next((p["date"] for p in pts if p["value"] <= 0.0), None),
+                "p50_exhaustion_date": next((p["date"] for p in pts if p["value"] <= 0.0), None),
+                "p90_exhaustion_date": next((p["date"] for p in pts if p["value"] <= 0.0), None),
             },
         )
 
