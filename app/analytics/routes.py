@@ -58,17 +58,19 @@ def create_analytics_blueprint(services) -> Blueprint:
 
         return d.filter_by_credits(df, min_credits, max_credits, zero_credits)
 
-    def _basic_user_rows(d: CreditUsageData) -> list[dict]:
+    def _aggregate_basic_users(d: CreditUsageData) -> pd.DataFrame:
         name_query = request.args.get("name_query", "").strip()
         email_query = request.args.get("email_query", "").strip()
         tier_query = request.args.get("tier_query", "").strip()
         date_field = request.args.get("date_field", "date_partition")
         start_date = request.args.get("start_date", "")
         end_date = request.args.get("end_date", "")
-        top_n = result_limit("top_n", 50)
         min_credits = request.args.get("min_credits", "").strip()
         max_credits = request.args.get("max_credits", "").strip()
         zero_credits = request.args.get("zero_credits", "")
+        sort_by = request.args.get("sort", "credits").strip()
+        if sort_by not in {"credits", "alpha"}:
+            sort_by = "credits"
 
         df = d.df.copy()
         if name_query and "name" in df.columns:
@@ -83,7 +85,7 @@ def create_analytics_blueprint(services) -> Blueprint:
 
         group_cols = [c for c in ["name", "email"] if c in df.columns]
         if not group_cols:
-            return []
+            return pd.DataFrame()
         df = df.copy()
         if "usage_units" in df.columns and "usage_quantity" in df.columns:
             df["tokens_qty"] = df["usage_quantity"].where(df["usage_units"] == "tokens", 0.0)
@@ -102,10 +104,16 @@ def create_analytics_blueprint(services) -> Blueprint:
                 total_duration_s=("duration_qty", "sum"),
             )
             .reset_index()
-            .sort_values("total_credits", ascending=False)
-            .head(top_n)
         )
-        return agg.to_dict(orient="records")
+        if sort_by == "alpha":
+            label_col = "name" if "name" in agg.columns else "email"
+            agg["_sort_key"] = agg[label_col].fillna("").astype(str).str.lower()
+            if label_col == "name" and "email" in agg.columns:
+                agg.loc[agg["_sort_key"] == "", "_sort_key"] = agg["email"].fillna("").astype(str).str.lower()
+            agg = agg.sort_values("_sort_key").drop(columns="_sort_key")
+        else:
+            agg = agg.sort_values("total_credits", ascending=False)
+        return agg
 
     @bp.route("/leaderboard", methods=["GET"])
     def leaderboard_page() -> str:
@@ -456,8 +464,14 @@ def create_analytics_blueprint(services) -> Blueprint:
         except Exception:
             pass
 
-        user_was_summer_intern = "2026 Summer Interns" in services.governance.tier_history_map().get(
+        user_tier_history_list = services.governance.tier_history_map().get(
             str(email or "").strip().lower(), []
+        )
+        user_was_summer_intern = "2026 Summer Interns" in user_tier_history_list
+        # Matches any "... AI Jam Captain(s)" group label so this keeps working
+        # across future tierlist imports (e.g. a "2027 Summer AI Jam Captains").
+        user_was_ai_jam_captain = any(
+            "ai jam captain" in str(t).lower() for t in user_tier_history_list
         )
 
         user_weekly_json = "[]"
@@ -535,6 +549,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             user_cap_weekly=user_cap_weekly,
             user_cap_monthly=user_cap_monthly,
             user_was_summer_intern=user_was_summer_intern,
+            user_was_ai_jam_captain=user_was_ai_jam_captain,
             user_monthly_cap_exceeded=user_monthly_cap_exceeded,
             user_usage_type_weekly=usage_type_weekly_json(df),
             type_chart_json=type_chart_json,
@@ -853,6 +868,14 @@ def create_analytics_blueprint(services) -> Blueprint:
         min_credits = request.args.get("min_credits", "").strip()
         max_credits = request.args.get("max_credits", "").strip()
         zero_credits = request.args.get("zero_credits", "")
+        sort_by = request.args.get("sort", "credits").strip()
+        if sort_by not in {"credits", "alpha"}:
+            sort_by = "credits"
+        per_page = 25
+        try:
+            page = max(1, int(request.args.get("page", 1) or 1))
+        except (TypeError, ValueError):
+            page = 1
 
         # The name/email/tier search applies in both modes.
         df = d.df.copy()
@@ -887,6 +910,8 @@ def create_analytics_blueprint(services) -> Blueprint:
         outlier_count = 0
         outlier_columns: list[dict] = []
         window_start = window_end = ""
+        total_users = 0
+        total_pages = 1
 
         if mode == "advanced":
             outlier_rows, outlier_count, window_start, window_end, outlier_columns = compute_outliers(
@@ -896,10 +921,16 @@ def create_analytics_blueprint(services) -> Blueprint:
                 top_n=top_n,
             )
         else:
-            user_list = _basic_user_rows(d)
+            total_agg = _aggregate_basic_users(d)
+            total_users = len(total_agg)
+            total_pages = max(1, -(-total_users // per_page))
+            page = min(page, total_pages)
+            start = (page - 1) * per_page
+            user_list = total_agg.iloc[start:start + per_page].to_dict(orient="records")
 
-        # Query string (minus `view`) so the cards/table/list toggle can switch
-        # the view while preserving the active search/filters.
+        # Query string (minus `view`/`page`) so the cards/table/list toggle and
+        # the pagination links can switch those while preserving the active
+        # search/filters.
         base_params = {k: v for k, v in {
             "mode": "basic",
             "name_query": name_query,
@@ -912,6 +943,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             "min_credits": min_credits,
             "max_credits": max_credits,
             "zero_credits": zero_credits,
+            "sort": sort_by if sort_by != "credits" else "",
         }.items() if v}
 
         return render_template(
@@ -933,6 +965,11 @@ def create_analytics_blueprint(services) -> Blueprint:
             min_credits=min_credits,
             max_credits=max_credits,
             zero_credits=zero_credits,
+            sort_by=sort_by,
+            page=page,
+            per_page=per_page,
+            total_users=total_users,
+            total_pages=total_pages,
             # advanced mode
             metric=metric,
             outlier_views=OUTLIER_VIEWS,
@@ -961,7 +998,7 @@ def create_analytics_blueprint(services) -> Blueprint:
                 ("Tokens", "total_tokens"), ("Messages", "total_counts"),
                 ("Duration seconds", "total_duration_s"),
             ]
-            rows = _basic_user_rows(d)
+            rows = _aggregate_basic_users(d).to_dict(orient="records")
             export_df = pd.DataFrame(
                 [{label: row.get(key, "") for label, key in columns} for row in rows],
                 columns=[label for label, _ in columns],

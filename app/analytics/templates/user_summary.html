@@ -22,6 +22,9 @@
           {% if user_was_summer_intern %}
           <span class="badge bg-warning text-dark" title="This user was a 2026 Summer Intern at some point. Their current tier/cap below reflects the highest-allotment group they've held, per governance rules.">&#127891; 2026 Summer Intern</span>
           {% endif %}
+          {% if user_was_ai_jam_captain %}
+          <span class="badge bg-primary" title="This user belongs to an AI Jam Captains group in the tierlist import.">&#127942; AI Jam Captain</span>
+          {% endif %}
         </div>
 
         {% if (email and email != display_name) or account_id or account_user_id or public_id %}
