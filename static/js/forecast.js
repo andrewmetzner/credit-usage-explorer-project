@@ -1077,10 +1077,12 @@ if (typeof Chart !== 'undefined') {
     .filter(p => Number.isFinite(p[1]));
 
   // Known-facts bridge: usage uploads lag the calendar, so past the LAST REAL
-  // data point of a series, remaining is flat except for ledger entries
-  // landing in the gap (each +N steps up on its date). Runs to today; newly
-  // uploaded data simply shortens it. Built per series from that series' own
-  // last point, so the line is always continuous.
+  // data point of a series, remaining only steps for ledger entries landing
+  // in the gap (each +N on its date) — real, known facts. It does NOT guess
+  // a flat line out to today: with periodic file uploads that guess is often
+  // wrong (usage keeps happening) and reads as though nothing changed, which
+  // misrepresents the actual credit position. Built per series from that
+  // series' own last point, so the line is always continuous.
   const todayStr = D.today || '';
   const addDaysStr = (dstr, n) => {
     const d = new Date(dstr + 'T12:00:00');
@@ -1094,18 +1096,31 @@ if (typeof Chart !== 'undefined') {
       .sort((a, b) => (a.effective_date < b.effective_date ? -1 : 1));
     const levelBy = dstr =>
       lastPt[1] + gapEvents.reduce((s, e) => s + (e.effective_date <= dstr ? e.credits : 0), 0);
-    const pts = [];
     if (weekly) {
-      // Weekly view stays on the series' weekly cadence: one point per
-      // elapsed week, the last landing on the week boundary on/after today —
-      // no single-day hover categories on a weekly chart.
-      let d = lastPt[0];
-      while (d < todayStr) {
-        d = addDaysStr(d, 7);
-        pts.push([d, levelBy(d)]);
-      }
-      return pts;
+      // Weekly view augments the completed-week rollup with the single
+      // latest REAL per-day actual already uploaded past the last complete
+      // week (the current, still-accumulating week) — a real fact from the
+      // upload, not a flat guess. Only that one point is added (not every
+      // day in between) so the weekly chart keeps its weekly hover cadence
+      // instead of exposing single-day categories. A credit grant landing
+      // after that point still steps the line from there.
+      const dailyTail = dailyActualPts.filter(p => p[0] > lastPt[0]);
+      const latestReal = dailyTail.length ? [dailyTail[dailyTail.length - 1]] : [];
+      const baseline = latestReal.length ? latestReal[0] : lastPt;
+      const extraGrants = gapEvents
+        .filter(e => e.effective_date > baseline[0])
+        .reduce((acc, e) => {
+          const prevVal = acc.length ? acc[acc.length - 1][1] : baseline[1];
+          acc.push([e.effective_date, prevVal + e.credits]);
+          return acc;
+        }, []);
+      return latestReal.concat(extraGrants);
     }
+    // Daily view: only step for real known facts (credit grants landing in
+    // the gap) — no synthetic "unchanged until today" filler. If the upload
+    // doesn't reach today, today isn't plotted as actual; the projected
+    // (forecast) line picks it up from the last real point instead.
+    const pts = [];
     let prev = lastPt[0];
     gapEvents.forEach(e => {
       const dayBefore = addDaysStr(e.effective_date, -1);
@@ -1113,7 +1128,6 @@ if (typeof Chart !== 'undefined') {
       pts.push([e.effective_date, levelBy(e.effective_date)]);
       prev = e.effective_date;
     });
-    if (!pts.length || pts[pts.length - 1][0] !== todayStr) pts.push([todayStr, levelBy(todayStr)]);
     return pts;
   }
   function extendWithBridge(pts, weekly) {
@@ -1124,14 +1138,9 @@ if (typeof Chart !== 'undefined') {
     });
     return lastReal;
   }
-  const weeklyLastReal = extendWithBridge(actualPts, true);
+  extendWithBridge(actualPts, true);
   extendWithBridge(dailyActualPts, false);
   const useDaily = (D.granularity || 'weekly') === 'daily' && dailyActualPts.length > 0;
-  // Weekly-only: the bridge past the last fully-recorded week represents an
-  // in-progress (incomplete) week, so it draws dashed. Daily view has exact
-  // per-day data up to "today" and credit-event steps are known facts either
-  // way, so neither gets dashed.
-  const lastCompleteWeek = weeklyLastReal ? weeklyLastReal[0] : null;
   const activeSeries = useDaily ? dailyActualPts : actualPts;
   const activeLast = activeSeries.length ? activeSeries[activeSeries.length - 1] : [latestDate, remaining];
   const projAnchorDate = activeLast[0];
@@ -1441,14 +1450,6 @@ if (typeof Chart !== 'undefined') {
           data: allLabels.map(l => lookup(activeActualPts(), l)),
           borderColor: getChartColor('actual'), backgroundColor: hexToRgba(getChartColor('actual'), 0.07),
           fill: true, tension: 0.1, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
-          // Weekly only: the current, still-accumulating week draws dashed
-          // since it isn't a finished week of recorded usage yet.
-          segment: !useDaily ? {
-            borderDash: ctx => {
-              const lbl = allLabels[ctx.p1DataIndex];
-              return lbl && lastCompleteWeek && lbl > lastCompleteWeek ? [4, 4] : undefined;
-            },
-          } : undefined,
         },
         {
           label: 'Projected remaining',
@@ -1720,14 +1721,12 @@ if (typeof Chart !== 'undefined') {
 (function () {
   if (!document.getElementById('burndownChart')) return;
   // The server's MC/ML series anchor exactly at "today" with today's precise
-  // value. In weekly view, the actual line's known-facts bridge only steps
-  // forward in whole weeks, so its last point is the next Monday on/after
-  // today — a few days later, still holding the LAST KNOWN flat value (no
-  // new data yet). That date/value gap between the two anchors showed up as
-  // MC/ML visibly not connecting to the actual line (daily view doesn't have
-  // this problem: its bridge already lands exactly on "today"). Shift the
-  // whole band so its first plotted point lands exactly on the actual line,
-  // mirroring the snapshot overlay's own alignToActual.
+  // value, while the actual line (weekly view especially) may end earlier, at
+  // the last uploaded week (or a known credit-grant date in between) rather
+  // than today itself. Shift the whole band so its first plotted point lands
+  // exactly on the actual line wherever the two overlap, mirroring the
+  // snapshot overlay's own alignToActual. No-op when they don't overlap at
+  // all (e.g. weekly view with a multi-week-old upload).
   function alignOverlayToActual(bc, allLabels, primary, ...others) {
     const idx = primary.findIndex(v => v !== null && v !== undefined);
     if (idx < 0) return;

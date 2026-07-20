@@ -44,8 +44,11 @@
   <!-- Key Metrics -->
   <div class="dash-metric-row">
     <div class="dash-metric">
-      <div class="dash-metric-label">Total Credits</div>
+      <div class="dash-metric-label">Total Credits Spent</div>
       <div class="dash-metric-value">{{ '{:,.0f}'.format(metrics.total_credits) }}</div>
+      {% if metrics.in_contract_credits is not none %}
+      <div class="dash-metric-sub">In contract: {{ '{:,.0f}'.format(metrics.in_contract_credits) }}</div>
+      {% endif %}
     </div>
     <div class="dash-metric">
       <div class="dash-metric-label">Unique Users</div>

@@ -202,17 +202,32 @@ def create_forecast_blueprint(services) -> Blueprint:
         svc._as_of = effective_as_of
         svc._today = effective_today
 
-        # Cap operational data at the as-of date. A rewound view (view_to set)
-        # ALWAYS caps — both granularities — so daily mode rewinds too (else it
-        # keeps current weeks and computes today's remaining, not the view's).
-        # On the live page it's just the weekly partial-week exclusion.
-        if (view_to or exclude_partial) and svc.operational_df is not None and not svc.operational_df.empty:
+        # Weekly view's partial-week exclusion: the still-accumulating current
+        # week (derived from raw daily rows) carries a theoretical week_end
+        # past the freshest upload, so it looks "incomplete" here — right for
+        # BURN-RATE purposes (a partial week's total would understate the
+        # weekly pace), so it's kept out of the window used for that calc
+        # only. It must NOT be dropped from `operational_df` itself — that
+        # drives credits_remaining/the credit total, which should always
+        # count every day of usage that's actually happened, complete week
+        # or not (otherwise the weekly view's headline number goes stale
+        # relative to the daily view's).
+        if exclude_partial and svc.operational_df is not None and not svc.operational_df.empty:
+            complete_weeks = svc.operational_df[svc.operational_df["week_end"] <= effective_as_of]
+            if not complete_weeks.empty:
+                svc._forecast_op_df = complete_weeks.copy()
+
+        # A rewound view (view_to set) genuinely pretends we're at a past
+        # date, so it caps the real totals too — both granularities, so daily
+        # mode rewinds as well (else it'd keep current weeks and compute
+        # today's remaining instead of the view's).
+        if view_to and svc.operational_df is not None and not svc.operational_df.empty:
             svc.operational_df = svc.operational_df[
                 svc.operational_df["week_end"] <= effective_as_of
             ].copy()
 
         if (burn_from or burn_to) and svc.operational_df is not None and not svc.operational_df.empty:
-            win = svc.operational_df.copy()
+            win = svc._forecast_op_df if svc._forecast_op_df is not None else svc.operational_df.copy()
             if burn_from:
                 win = win[win["week_start"] >= _pd.to_datetime(burn_from)]
             if burn_to:

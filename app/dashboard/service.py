@@ -99,7 +99,7 @@ def build_record_view(df: pd.DataFrame, selected_fields: list[str]) -> tuple[lis
     return columns, rows
 
 
-def compute_summary_metrics(df: pd.DataFrame) -> dict:
+def compute_summary_metrics(df: pd.DataFrame, contract_start: str = "") -> dict:
     total_credits = float(df["usage_credits"].sum()) if "usage_credits" in df.columns else 0.0
     unique_users = int(df["email"].nunique()) if "email" in df.columns else 0
     total_records = len(df)
@@ -107,6 +107,10 @@ def compute_summary_metrics(df: pd.DataFrame) -> dict:
 
     date_min = date_max = None
     active_users_recent = 0
+    # In-contract spend (>= contract start) vs. the all-time total above, which
+    # also includes any pre-contract usage — the two get confused for each
+    # other otherwise since both are just "credits spent".
+    in_contract_credits: float | None = None
     if "date_partition" in df.columns:
         dates = pd.to_datetime(df["date_partition"], errors="coerce").dropna()
         if not dates.empty:
@@ -119,9 +123,15 @@ def compute_summary_metrics(df: pd.DataFrame) -> dict:
                 active_users_recent = int(
                     recent_df[recent_df["usage_credits"] > 0]["email"].nunique()
                 )
+        if contract_start and "usage_credits" in df.columns:
+            start = pd.to_datetime(contract_start, errors="coerce")
+            if not pd.isna(start):
+                all_dates = pd.to_datetime(df["date_partition"], errors="coerce")
+                in_contract_credits = float(df.loc[all_dates >= start, "usage_credits"].sum())
 
     return {
         "total_credits": total_credits,
+        "in_contract_credits": in_contract_credits,
         "unique_users": unique_users,
         "total_records": total_records,
         "usage_types": usage_types,

@@ -169,10 +169,9 @@ def create_dashboard_blueprint(services) -> Blueprint:
         d = data()
         df = d.df
 
-        metrics = compute_summary_metrics(df)
-
         # Contract start drives the in-contract / pre-contract split shared by
-        # the Summary charts (weekly-burn gray coloring + scope dropdowns).
+        # the Summary charts (weekly-burn gray coloring + scope dropdowns) and
+        # the Total Credits Spent metric's "in contract" sub-line.
         contract_start_str = ""
         try:
             contract_start_str = str(
@@ -180,6 +179,8 @@ def create_dashboard_blueprint(services) -> Blueprint:
             )
         except Exception:
             contract_start_str = ""
+
+        metrics = compute_summary_metrics(df, contract_start_str)
 
         weekly_trend = compute_weekly_trend(df, contract_start_str)
         daily_trend = compute_daily_trend(df, contract_start_str)
