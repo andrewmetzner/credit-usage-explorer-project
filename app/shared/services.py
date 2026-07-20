@@ -51,12 +51,20 @@ class Services:
         that construction lives, instead of being copy-pasted across routes.
         """
         from app.forecast.service import ForecastingService
+        from .forecast_window import anchor_live_forecast, latest_data_date
 
         if config is None:
             config = self.config_svc.load_contract()
         hist_df = self.pipeline.get_historical_weekly_summary()
         op_df = self.pipeline.get_operational_weekly_summary()
-        daily = None
-        if daily_fallback and hist_df is None and op_df is None:
-            daily = self.store.data.df
-        return ForecastingService(config, hist_df, op_df, daily)
+        daily_df = self.store.data.df if daily_fallback else None
+        daily = daily_df if (hist_df is None and op_df is None) else None
+        svc = ForecastingService(config, hist_df, op_df, daily)
+        # Same lag-aware anchoring the live Forecast page applies, so a
+        # fresh upload can't leave this page's numbers (pacing, burn rate,
+        # exhaustion date) disagreeing with the Forecast page's.
+        data_as_of = latest_data_date(
+            (daily_df, "date_partition"), (op_df, "week_end"), (hist_df, "period_end"),
+        )
+        anchor_live_forecast(svc, data_as_of)
+        return svc

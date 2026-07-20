@@ -10,6 +10,7 @@ from flask import Blueprint, Response, flash, jsonify, redirect, render_template
 from app.shared.chart_data import usage_type_weekly_json
 from app.shared.credit_ledger import sync_credit_ledger
 from app.shared.csv_export import csv_response, range_slug
+from app.shared.forecast_window import exclude_incomplete_week_from_burn, latest_data_date
 from .models import PriceModel
 from .prediction import get_model
 from .service import ChartDataBuilder, ForecastingService
@@ -23,17 +24,6 @@ def create_forecast_blueprint(services) -> Blueprint:
 
     def _get_store_df():
         return store.data.df if store is not None else None
-
-    def _latest_data_date(*frames) -> _pd.Timestamp:
-        """Return the newest date actually present in the uploaded data."""
-        candidates: list[_pd.Timestamp] = []
-        for df, col in frames:
-            if df is None or df.empty or col not in df.columns:
-                continue
-            dates = _pd.to_datetime(df[col], errors="coerce").dropna()
-            if not dates.empty:
-                candidates.append(dates.max().normalize())
-        return max(candidates) if candidates else _pd.Timestamp("today").normalize()
 
     def _snapshot_row(ts):
         """The forecast_history row for a snapshot timestamp, or None."""
@@ -202,20 +192,13 @@ def create_forecast_blueprint(services) -> Blueprint:
         svc._as_of = effective_as_of
         svc._today = effective_today
 
-        # Weekly view's partial-week exclusion: the still-accumulating current
-        # week (derived from raw daily rows) carries a theoretical week_end
-        # past the freshest upload, so it looks "incomplete" here — right for
-        # BURN-RATE purposes (a partial week's total would understate the
-        # weekly pace), so it's kept out of the window used for that calc
-        # only. It must NOT be dropped from `operational_df` itself — that
-        # drives credits_remaining/the credit total, which should always
-        # count every day of usage that's actually happened, complete week
-        # or not (otherwise the weekly view's headline number goes stale
-        # relative to the daily view's).
-        if exclude_partial and svc.operational_df is not None and not svc.operational_df.empty:
-            complete_weeks = svc.operational_df[svc.operational_df["week_end"] <= effective_as_of]
-            if not complete_weeks.empty:
-                svc._forecast_op_df = complete_weeks.copy()
+        # Weekly view's partial-week exclusion: keep a still-accumulating
+        # current week out of the burn-RATE window without dropping it from
+        # `operational_df` itself (see exclude_incomplete_week_from_burn —
+        # shared with build_forecasting_service so the Summary page/alerts
+        # can't drift from this page the way credits_remaining once did).
+        if exclude_partial:
+            exclude_incomplete_week_from_burn(svc, effective_as_of)
 
         # A rewound view (view_to set) genuinely pretends we're at a past
         # date, so it caps the real totals too — both granularities, so daily
@@ -407,7 +390,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         if granularity not in {"weekly", "daily"}:
             granularity = "weekly"
         exclude_partial = granularity == "weekly"
-        data_as_of = _latest_data_date(
+        data_as_of = latest_data_date(
             (daily_fallback_df, "date_partition"),
             (op_df, "week_end"),
             (hist_df, "period_end"),
@@ -979,6 +962,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         for i in range(len(op_sorted)):
             row = op_sorted.iloc[i]
             week_start_str = str(_pd.Timestamp(row["week_start"]).date())
+            week_end_str = str(_pd.Timestamp(row["week_end"]).date())
             label = f"Week of {week_start_str}"
             snap_ts = f"{week_start_str}T00:00:00"
 
@@ -1070,6 +1054,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             for i in range(total):
                 row = op_sorted.iloc[i]
                 week_start_str = str(_pd.Timestamp(row["week_start"]).date())
+                week_end_str = str(_pd.Timestamp(row["week_end"]).date())
                 label = f"Week of {week_start_str}"
                 snap_ts = f"{week_start_str}T00:00:00"
                 pct = int((i + 1) / total * 100)
@@ -1130,7 +1115,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         svc = ForecastingService(
             config, hist_df, op_df, daily_fallback_df if op_df is None else None
         )
-        data_as_of = _latest_data_date(
+        data_as_of = latest_data_date(
             (daily_fallback_df, "date_partition"),
             (op_df, "week_end"),
             (hist_df, "period_end"),
