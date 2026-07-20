@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,27 @@ import pandas as pd
 
 from .data_filters import apply_usage_corrections
 from .utils import parse_usage_type
+
+
+def read_tabular_file(source: "Path | bytes", suffix: str) -> pd.DataFrame:
+    """Read a tabular data file (xlsx/xls/csv) from either a path on disk or
+    raw in-memory bytes (an upload) — pandas' readers accept both. CSVs try
+    utf-8-sig first (handles a BOM some export tools add), falling back to
+    cp1252 for older Windows-exported files that trip UnicodeDecodeError.
+    Re-opens `source` fresh for each read attempt: a Path just reopens the
+    file, and bytes get wrapped in a new BytesIO each time so a failed
+    utf-8-sig attempt can't leave the buffer partially consumed for the
+    cp1252 retry."""
+    def _open():
+        return source if isinstance(source, Path) else io.BytesIO(source)
+
+    suffix = suffix.lower()
+    if suffix in (".xlsx", ".xls"):
+        return pd.read_excel(_open(), sheet_name=0)
+    try:
+        return pd.read_csv(_open(), encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return pd.read_csv(_open(), encoding="cp1252")
 
 
 class DataStore:
@@ -40,14 +62,7 @@ class CreditUsageData:
     def _load_data(self) -> pd.DataFrame:
         if not self.data_path.exists():
             return pd.DataFrame()
-        suffix = self.data_path.suffix.lower()
-        if suffix in (".xlsx", ".xls"):
-            df = pd.read_excel(self.data_path, sheet_name=0)
-        else:
-            try:
-                df = pd.read_csv(self.data_path, encoding="utf-8-sig")
-            except UnicodeDecodeError:
-                df = pd.read_csv(self.data_path, encoding="cp1252")
+        df = read_tabular_file(self.data_path, self.data_path.suffix)
 
         if "usage_credits" in df.columns:
             df["usage_credits"] = pd.to_numeric(df["usage_credits"], errors="coerce").fillna(0.0)

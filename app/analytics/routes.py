@@ -36,6 +36,18 @@ def create_analytics_blueprint(services) -> Blueprint:
     def _tier_search(df: pd.DataFrame, tier_query: str) -> pd.Series:
         return services.governance.tier_search_column(df, tier_query)
 
+    def _apply_user_search_filters(df: pd.DataFrame, name_query: str, email_query: str, tier_query: str) -> pd.DataFrame:
+        """The name/email/tier free-text search shared by the basic user
+        aggregation, the user-cards page, and its CSV export — so the three
+        stay in agreement about what "matches" means."""
+        if name_query and "name" in df.columns:
+            df = df[df["name"].astype(str).str.contains(name_query, case=False, na=False, regex=False)]
+        if email_query and "email" in df.columns:
+            df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
+        if tier_query and "email" in df.columns:
+            df = df[_tier_search(df, tier_query)]
+        return df
+
     def _leaderboard_filtered_df(d: CreditUsageData) -> pd.DataFrame:
         usage_type_filter = request.args.get("usage_type_filter", "")
         model_filter = request.args.get("model_filter", "")
@@ -73,12 +85,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             sort_by = "credits"
 
         df = d.df.copy()
-        if name_query and "name" in df.columns:
-            df = df[df["name"].astype(str).str.contains(name_query, case=False, na=False, regex=False)]
-        if email_query and "email" in df.columns:
-            df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
-        if tier_query and "email" in df.columns:
-            df = df[_tier_search(df, tier_query)]
+        df = _apply_user_search_filters(df, name_query, email_query, tier_query)
         if date_field and (start_date or end_date):
             df = d.filter_by_date(df, start_date, end_date, col=date_field)
         df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
@@ -664,14 +671,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         contract_config = config_svc.load_contract()
         live_forecast = None
         try:
-            from app.forecast.service import ForecastingService
-
-            fsvc = ForecastingService(
-                contract_config,
-                services.pipeline.get_historical_weekly_summary(),
-                services.pipeline.get_operational_weekly_summary(),
-                store.data.df,
-            )
+            fsvc = services.build_forecasting_service(contract_config, anchor=False)
             if fsvc.has_data():
                 live_forecast = fsvc.get_forecast()
         except Exception:
@@ -879,12 +879,7 @@ def create_analytics_blueprint(services) -> Blueprint:
 
         # The name/email/tier search applies in both modes.
         df = d.df.copy()
-        if name_query and "name" in df.columns:
-            df = df[df["name"].astype(str).str.contains(name_query, case=False, na=False, regex=False)]
-        if email_query and "email" in df.columns:
-            df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
-        if tier_query and "email" in df.columns:
-            df = df[_tier_search(df, tier_query)]
+        df = _apply_user_search_filters(df, name_query, email_query, tier_query)
 
         # Advanced (outlier) controls + result.
         metric = request.args.get("metric", "per_user_window").strip()
@@ -1038,12 +1033,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         end_date = request.args.get("end_date", "")
 
         df = d.df.copy()
-        if name_query and "name" in df.columns:
-            df = df[df["name"].astype(str).str.contains(name_query, case=False, na=False, regex=False)]
-        if email_query and "email" in df.columns:
-            df = df[df["email"].astype(str).str.contains(email_query, case=False, na=False, regex=False)]
-        if tier_query and "email" in df.columns:
-            df = df[_tier_search(df, tier_query)]
+        df = _apply_user_search_filters(df, name_query, email_query, tier_query)
 
         rows, count, win_start, win_end, columns = compute_outliers(
             df, metric, credit_threshold, lookback_days,

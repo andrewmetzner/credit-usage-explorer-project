@@ -30,6 +30,25 @@ def create_settings_blueprint(services) -> Blueprint:
     store = services.store
     bp = Blueprint("settings", __name__, template_folder="templates", url_prefix="/settings")
 
+    def _validate_upload_file(allowed_suffixes: set[str], allowed_desc: str, *, label: str = "file"):
+        """The upload-file validation every upload route repeats: present in
+        the request, has a filename, and has an allowed suffix — flashing
+        the same "No X provided"/"No X selected"/"Invalid X type" messages
+        each already used. Returns the validated FileStorage, or None after
+        already flashing (the caller should redirect back to Settings)."""
+        if "file" not in request.files:
+            flash(f"No {label} provided.", "danger")
+            return None
+        file = request.files["file"]
+        if not file.filename:
+            flash(f"No {label} selected.", "danger")
+            return None
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in allowed_suffixes:
+            flash(f"Invalid {label} type '{suffix}'. Must be {allowed_desc}.", "danger")
+            return None
+        return file
+
     @bp.route("", methods=["GET"])
     def settings_page() -> str:
         saved_contract = config_svc.load_contract()
@@ -41,9 +60,7 @@ def create_settings_blueprint(services) -> Blueprint:
 
         credit_status = None
         try:
-            from app.forecast.service import ForecastingService
-
-            svc = ForecastingService(saved_contract, pipeline.get_historical_weekly_summary(), pipeline.get_operational_weekly_summary(), store.data.df)
+            svc = services.build_forecasting_service(saved_contract, anchor=False)
             if svc.has_data():
                 credit_status = svc.get_contract_status()
         except Exception:
@@ -279,18 +296,8 @@ def create_settings_blueprint(services) -> Blueprint:
 
     @bp.route("/tiers/import", methods=["POST"])
     def import_tier_assignments() -> object:
-        if "file" not in request.files:
-            flash("No tierlist file provided.", "danger")
-            return redirect(url_for("settings.settings_page"))
-
-        file = request.files["file"]
-        if not file.filename:
-            flash("No tierlist file selected.", "danger")
-            return redirect(url_for("settings.settings_page"))
-
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in ALLOWED_TIERLIST:
-            flash(f"Invalid tierlist file type '{suffix}'. Must be .csv.", "danger")
+        file = _validate_upload_file(ALLOWED_TIERLIST, ".csv", label="tierlist file")
+        if file is None:
             return redirect(url_for("settings.settings_page"))
 
         try:
@@ -360,18 +367,8 @@ def create_settings_blueprint(services) -> Blueprint:
     def upload_historical() -> object:
         from config import HISTORICAL_DIR
 
-        if "file" not in request.files:
-            flash("No file provided.", "danger")
-            return redirect(url_for("settings.settings_page"))
-
-        file = request.files["file"]
-        if not file.filename:
-            flash("No file selected.", "danger")
-            return redirect(url_for("settings.settings_page"))
-
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in ALLOWED_HISTORICAL:
-            flash(f"Invalid file type '{suffix}'. Must be .xlsx, .xls, or .csv.", "danger")
+        file = _validate_upload_file(ALLOWED_HISTORICAL, ".xlsx, .xls, or .csv")
+        if file is None:
             return redirect(url_for("settings.settings_page"))
 
         filename = secure_filename(file.filename)
@@ -396,18 +393,8 @@ def create_settings_blueprint(services) -> Blueprint:
     def upload_weekly() -> object:
         from config import UPLOADS_DIR
 
-        if "file" not in request.files:
-            flash("No file provided.", "danger")
-            return redirect(url_for("settings.settings_page"))
-
-        file = request.files["file"]
-        if not file.filename:
-            flash("No file selected.", "danger")
-            return redirect(url_for("settings.settings_page"))
-
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in ALLOWED_WEEKLY:
-            flash(f"Invalid file type '{suffix}'. Must be .csv.", "danger")
+        file = _validate_upload_file(ALLOWED_WEEKLY, ".csv")
+        if file is None:
             return redirect(url_for("settings.settings_page"))
 
         inferred_start, inferred_end = _infer_week_from_filename(Path(file.filename))

@@ -42,29 +42,49 @@ class Services:
         return GovernanceService(self.config_svc)
 
     def build_forecasting_service(
-        self, config: dict | None = None, *, daily_fallback: bool = True
+        self, config: dict | None = None, *, daily_fallback: bool = True, anchor: bool = True
     ) -> "ForecastingService":
         """Construct a ForecastingService from the pipeline summaries.
 
         Falls back to deriving weekly data from the daily store frame when no
         pipeline (historical/operational) summaries exist. This is the one place
         that construction lives, instead of being copy-pasted across routes.
+
+        anchor=True (the default) additionally applies the same lag-aware
+        "now" anchoring the live Forecast page uses (see
+        forecast_window.anchor_live_forecast) — needed by any caller whose
+        numbers should agree with the Forecast page's (dashboard KPI card,
+        exhaustion alert, diagnostics). Pass anchor=False for callers that
+        need ForecastingService's own un-nudged computation instead — e.g.
+        the analytics storyboard's "live forecast" timeline marker — where
+        the goal is only removing the duplicated construction, not shifting
+        already-established numbers. The un-anchored path also passes the
+        daily frame through unconditionally rather than gating it on both
+        historical/operational being absent — ForecastingService's own
+        __init__ already only uses it to derive whichever one is missing,
+        so this matches exactly what those callers' inlined construction
+        did before, without the anchored path's narrower gate.
         """
         from app.forecast.service import ForecastingService
-        from .forecast_window import anchor_live_forecast, latest_data_date
 
         if config is None:
             config = self.config_svc.load_contract()
         hist_df = self.pipeline.get_historical_weekly_summary()
         op_df = self.pipeline.get_operational_weekly_summary()
         daily_df = self.store.data.df if daily_fallback else None
-        daily = daily_df if (hist_df is None and op_df is None) else None
+        if not anchor:
+            daily = daily_df
+        else:
+            daily = daily_df if (hist_df is None and op_df is None) else None
         svc = ForecastingService(config, hist_df, op_df, daily)
-        # Same lag-aware anchoring the live Forecast page applies, so a
-        # fresh upload can't leave this page's numbers (pacing, burn rate,
-        # exhaustion date) disagreeing with the Forecast page's.
-        data_as_of = latest_data_date(
-            (daily_df, "date_partition"), (op_df, "week_end"), (hist_df, "period_end"),
-        )
-        anchor_live_forecast(svc, data_as_of)
+        if anchor:
+            from .forecast_window import anchor_live_forecast, latest_data_date
+
+            # Same lag-aware anchoring the live Forecast page applies, so a
+            # fresh upload can't leave this page's numbers (pacing, burn
+            # rate, exhaustion date) disagreeing with the Forecast page's.
+            data_as_of = latest_data_date(
+                (daily_df, "date_partition"), (op_df, "week_end"), (hist_df, "period_end"),
+            )
+            anchor_live_forecast(svc, data_as_of)
         return svc

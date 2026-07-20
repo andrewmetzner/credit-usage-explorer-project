@@ -236,6 +236,18 @@ def story_activity(df: pd.DataFrame, reference_date: object = None) -> Story | N
     )
 
 
+def _pro_codex_masks(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Boolean masks for 'Pro' usage_type rows and 'Codex'
+    usage_type_parsed_type rows, defaulting to all-False when the relevant
+    column is missing so callers can combine them without their own
+    column-existence check."""
+    is_pro = df["usage_type"].astype(str).str.contains("pro", case=False, na=False) \
+        if "usage_type" in df.columns else pd.Series(False, index=df.index)
+    is_codex = df["usage_type_parsed_type"].astype(str).str.lower().eq("codex") \
+        if "usage_type_parsed_type" in df.columns else pd.Series(False, index=df.index)
+    return is_pro, is_codex
+
+
 def story_pro_then_codex(df: pd.DataFrame) -> Story | None:
     """Days where the user used both Pro prompts and Codex — a signal of working
     a hard problem across tools in a single day."""
@@ -246,10 +258,7 @@ def story_pro_then_codex(df: pd.DataFrame) -> Story | None:
     if raw_type is None and parsed is None:
         return None
 
-    is_pro = df["usage_type"].astype(str).str.contains("pro", case=False, na=False) \
-        if "usage_type" in df.columns else pd.Series(False, index=df.index)
-    is_codex = df["usage_type_parsed_type"].astype(str).str.lower().eq("codex") \
-        if "usage_type_parsed_type" in df.columns else pd.Series(False, index=df.index)
+    is_pro, is_codex = _pro_codex_masks(df)
     if not bool(is_pro.any()) or not bool(is_codex.any()):
         return None
 
@@ -412,10 +421,7 @@ def story_metric_matches(
         cutoff = ref - pd.Timedelta(days=days - 1)
         w = d[d["_date"] >= cutoff]
         if not w.empty:
-            is_pro = w["usage_type"].astype(str).str.contains("pro", case=False, na=False) \
-                if "usage_type" in w.columns else pd.Series(False, index=w.index)
-            is_cx = w["usage_type_parsed_type"].astype(str).str.lower().eq("codex") \
-                if "usage_type_parsed_type" in w.columns else pd.Series(False, index=w.index)
+            is_pro, is_cx = _pro_codex_masks(w)
             ww = w.assign(_d=w["_date"].dt.normalize(), _pro=is_pro, _cx=is_cx)
             by = ww.groupby(["_email", "_d"]).agg(pro=("_pro", "any"), cx=("_cx", "any"))
             both = by[by["pro"] & by["cx"]].reset_index()

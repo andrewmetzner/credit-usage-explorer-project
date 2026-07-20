@@ -277,10 +277,14 @@ function bnlDeepCloneKeepFns(v) {
   return v; // primitives and functions both pass through as-is
 }
 
-// Build a disposable, off-screen clone of a live Chart.js instance (same
-// technique as the fullscreen modal) — so exports that need to mutate
-// visibility/fonts never touch what's actually rendered on the page.
-function bnlCloneChartOffscreen(src) {
+// Build a Chart.js config cloning a live chart's datasets/labels/options —
+// deep-cloning objects/arrays but keeping function values by reference (see
+// bnlDeepCloneKeepFns), so no callback is ever lost — plus the tweaks every
+// disposable copy needs regardless of where it renders: no animation (it's
+// built and read immediately) and no zoom plugin (a copy's pan/zoom state
+// can't carry over cleanly). Shared by the off-screen export clone and the
+// fullscreen modal clone; callers layer their own canvas/sizing on top.
+function bnlCloneChartConfig(src) {
   const datasets = src.data.datasets.map(ds => ({
     ...ds,
     data: Array.isArray(ds.data) ? [...ds.data] : ds.data,
@@ -291,13 +295,21 @@ function bnlCloneChartOffscreen(src) {
     options: bnlDeepCloneKeepFns(src.options || {}),
   };
   cfg.options.animation = false;
+  cfg.options.maintainAspectRatio = false;
   if (cfg.options.plugins) delete cfg.options.plugins.zoom;
+  return cfg;
+}
+
+// Build a disposable, off-screen clone of a live Chart.js instance (same
+// technique as the fullscreen modal) — so exports that need to mutate
+// visibility/fonts never touch what's actually rendered on the page.
+function bnlCloneChartOffscreen(src) {
+  const cfg = bnlCloneChartConfig(src);
   // Fixed size, not responsive: a detached canvas has no sized parent for
   // Chart.js's ResizeObserver to measure, so with responsive left on it was
   // sizing (and cropping the aspect ratio) as if it were the fullscreen
   // modal instead of matching the on-page chart it's a copy of.
   cfg.options.responsive = false;
-  cfg.options.maintainAspectRatio = false;
   const canvas = document.createElement('canvas');
   const width = src.canvas.width || src.width || 1200;
   const height = src.canvas.height || src.height || 600;
@@ -394,19 +406,7 @@ class BNLChart {
 
     const onShown = () => {
       const src = this.chart;
-      const datasets = src.data.datasets.map(ds => ({
-        ...ds,
-        data: Array.isArray(ds.data) ? [...ds.data] : ds.data,
-      }));
-      const cfg = {
-        type: src.config.type,
-        data: { labels: [...(src.data.labels || [])], datasets },
-        options: bnlDeepCloneKeepFns(src.options || {}),
-      };
-      cfg.options.maintainAspectRatio = false;
-      cfg.options.animation = false;
-      // Disable zoom plugin in modal (pan state won't carry over cleanly)
-      if (cfg.options.plugins) delete cfg.options.plugins.zoom;
+      const cfg = bnlCloneChartConfig(src);
 
       if (fsChart) { fsChart.destroy(); }
       fsChart = new Chart(document.getElementById(`${MODAL_ID}-canvas`), cfg);

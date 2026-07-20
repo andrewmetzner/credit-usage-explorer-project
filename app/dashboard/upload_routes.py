@@ -1,13 +1,13 @@
 """Multi-sheet upload + merge route on the `main` blueprint."""
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import pandas as pd
 from flask import flash, redirect, request, url_for
 
 from app.shared.data_merge import merge_usage_data
+from app.shared.data_store import read_tabular_file
 
 # Columns the ingestion step derives from `usage_type`; dropped before re-merge
 # so they get recomputed cleanly rather than duplicated.
@@ -24,14 +24,8 @@ def register_upload_routes(bp, services) -> None:
 
     def _read_upload(file_storage) -> pd.DataFrame:
         """Read an uploaded sheet (xlsx/xls/csv) into a DataFrame from memory."""
-        suffix = Path(file_storage.filename).suffix.lower()
-        raw = file_storage.read()
-        if suffix in (".xlsx", ".xls"):
-            return pd.read_excel(io.BytesIO(raw), sheet_name=0)
-        try:
-            return pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            return pd.read_csv(io.BytesIO(raw), encoding="cp1252")
+        suffix = Path(file_storage.filename).suffix
+        return read_tabular_file(file_storage.read(), suffix)
 
     @bp.route("/upload-data", methods=["POST"])
     def upload_data() -> object:

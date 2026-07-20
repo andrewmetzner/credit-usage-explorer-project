@@ -1781,14 +1781,20 @@ if (typeof Chart !== 'undefined') {
     }
   };
 
+  // Shared by getLrData/getMcData: current-URL params plus the model-specific
+  // ones, fetched from the /forecast/model-data endpoint they both hit.
+  function fetchModelData(extraParams) {
+    const params = new URLSearchParams(window.location.search);
+    Object.entries(extraParams).forEach(([k, v]) => params.set(k, v));
+    return fetch('/forecast/model-data?' + params.toString())
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  }
+
   // ── Linear Trend (ML) overlay ──
   function getLrData() {
     if (lrCache) return Promise.resolve(lrCache);
     if (!lrLoading) {
-      const params = new URLSearchParams(window.location.search);
-      params.set('model', 'linear_regression');
-      lrLoading = fetch('/forecast/model-data?' + params.toString())
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      lrLoading = fetchModelData({ model: 'linear_regression' })
         .then(data => { lrCache = data; lrLoading = null; return data; })
         .catch(e => { lrLoading = null; throw e; });
     }
@@ -1865,11 +1871,7 @@ if (typeof Chart !== 'undefined') {
   function getMcData() {
     if (mcCache) return Promise.resolve(mcCache);
     if (!mcLoading) {
-      const params = new URLSearchParams(window.location.search);
-      params.set('model', 'monte_carlo');
-      params.set('runs', MC_RUNS);
-      mcLoading = fetch('/forecast/model-data?' + params.toString())
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      mcLoading = fetchModelData({ model: 'monte_carlo', runs: MC_RUNS })
         .then(data => { mcCache = data; mcLoading = null; return data; })
         .catch(e => { mcLoading = null; throw e; });
     }

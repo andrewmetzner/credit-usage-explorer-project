@@ -429,29 +429,61 @@ class IngestionPipeline:
         except Exception:
             return []
 
+    @staticmethod
+    def _locate_snapshot_mask(
+        df: pd.DataFrame, snapshot_ts: str, snapshot_date: str, label: str, *, clean_label: bool = False
+    ) -> tuple["pd.Series[bool]", str]:
+        """Boolean mask selecting the row(s) for a snapshot: by `snapshot_ts`
+        when there is one, else by the `(snapshot_date, label)` fallback —
+        older rows saved before snapshot_ts existed only have the latter.
+        Returns `(mask, cleaned_ts)`; the cleaned ts also tells callers
+        whether a per-snapshot JSON series file could exist to patch (only
+        real timestamps have one)."""
+        ts_clean = snapshot_ts if snapshot_ts not in ("nan", "None", None) else ""
+        if ts_clean and "snapshot_ts" in df.columns:
+            return df["snapshot_ts"] == ts_clean, ts_clean
+        date_mask = df["snapshot_date"] == snapshot_date
+        lbl_col = df["label"] if "label" in df.columns else pd.Series([""] * len(df), index=df.index)
+        lbl = (label if label not in ("nan", "None", None) else "") if clean_label else label
+        return date_mask & (lbl_col == lbl), ts_clean
+
+    def _write_history_csv(self, path: Path, df: pd.DataFrame, *, reset_index: bool = False) -> None:
+        """Atomic write (via temp file + replace) so a reader never sees a
+        half-written CSV."""
+        tmp = path.with_suffix(".tmp")
+        (df.reset_index(drop=True) if reset_index else df).to_csv(tmp, index=False)
+        tmp.replace(path)
+
+    def _patch_snapshot_json(self, ts_clean: str, patch: dict) -> None:
+        """Best-effort patch of a snapshot's companion JSON series file with
+        the same field(s) its history-CSV row was just updated with, so
+        readers of the JSON (chart series) stay in sync. Silently no-ops
+        without a real ts or an existing file — this is a convenience mirror
+        of the CSV row, not the source of truth, so it's fine to skip."""
+        if not ts_clean:
+            return
+        json_path = self._ts_to_series_path(self.processed_dir, ts_clean)
+        if not json_path.exists():
+            return
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            data.update(patch)
+            jtmp = json_path.with_suffix(".tmp")
+            jtmp.write_text(json.dumps(data), encoding="utf-8")
+            jtmp.replace(json_path)
+        except Exception:
+            pass
+
     def delete_snapshot(self, snapshot_ts: str, snapshot_date: str = "", label: str = "") -> tuple[bool, str]:
         path = self.processed_dir / self.FORECAST_HISTORY
         if not path.exists():
             return False, "History file not found."
         try:
             df = pd.read_csv(path, dtype=str, keep_default_na=False)
-            before = len(df)
-            ts_clean = snapshot_ts if snapshot_ts not in ("nan", "None") else ""
-            lbl_clean = label if label not in ("nan", "None") else ""
-            if ts_clean and "snapshot_ts" in df.columns:
-                df = df[df["snapshot_ts"] != ts_clean]
-            else:
-                date_mask = df["snapshot_date"] == snapshot_date
-                label_col = (
-                    df["label"] if "label" in df.columns
-                    else pd.Series([""] * len(df), index=df.index)
-                )
-                df = df[~(date_mask & (label_col == lbl_clean))]
-            if len(df) == before:
+            mask, ts_clean = self._locate_snapshot_mask(df, snapshot_ts, snapshot_date, label, clean_label=True)
+            if not mask.any():
                 return False, "No matching snapshot found."
-            tmp = path.with_suffix(".tmp")
-            df.reset_index(drop=True).to_csv(tmp, index=False)
-            tmp.replace(path)
+            self._write_history_csv(path, df[~mask], reset_index=True)
             if ts_clean:
                 json_path = self._ts_to_series_path(self.processed_dir, ts_clean)
                 if json_path.exists():
@@ -471,36 +503,14 @@ class IngestionPipeline:
             return False, "History file not found."
         try:
             df = pd.read_csv(path, dtype=str, keep_default_na=False)
-            ts_clean = snapshot_ts if snapshot_ts not in ("nan", "None") else ""
-            if ts_clean and "snapshot_ts" in df.columns:
-                mask = df["snapshot_ts"] == ts_clean
-            else:
-                date_mask = df["snapshot_date"] == snapshot_date
-                lbl_col = (
-                    df["label"] if "label" in df.columns
-                    else pd.Series([""] * len(df), index=df.index)
-                )
-                mask = date_mask & (lbl_col == old_label)
+            mask, ts_clean = self._locate_snapshot_mask(df, snapshot_ts, snapshot_date, old_label)
             if not mask.any():
                 return False, "No matching snapshot found."
             if "label" not in df.columns:
                 df["label"] = ""
             df.loc[mask, "label"] = new_label
-            tmp = path.with_suffix(".tmp")
-            df.to_csv(tmp, index=False)
-            tmp.replace(path)
-            if ts_clean:
-                json_path = self._ts_to_series_path(self.processed_dir, ts_clean)
-                if json_path.exists():
-                    try:
-                        import json as _json
-                        data = _json.loads(json_path.read_text(encoding="utf-8"))
-                        data["label"] = new_label
-                        jtmp = json_path.with_suffix(".tmp")
-                        jtmp.write_text(_json.dumps(data), encoding="utf-8")
-                        jtmp.replace(json_path)
-                    except Exception:
-                        pass
+            self._write_history_csv(path, df)
+            self._patch_snapshot_json(ts_clean, {"label": new_label})
             return True, ""
         except Exception as exc:
             return False, str(exc)
@@ -513,36 +523,14 @@ class IngestionPipeline:
             return False, "History file not found."
         try:
             df = pd.read_csv(path, dtype=str, keep_default_na=False)
-            ts_clean = snapshot_ts if snapshot_ts not in ("nan", "None") else ""
-            if ts_clean and "snapshot_ts" in df.columns:
-                mask = df["snapshot_ts"] == ts_clean
-            else:
-                date_mask = df["snapshot_date"] == snapshot_date
-                lbl_col = (
-                    df["label"] if "label" in df.columns
-                    else pd.Series([""] * len(df), index=df.index)
-                )
-                mask = date_mask & (lbl_col == label)
+            mask, ts_clean = self._locate_snapshot_mask(df, snapshot_ts, snapshot_date, label)
             if not mask.any():
                 return False, "No matching snapshot found."
             if "color" not in df.columns:
                 df["color"] = ""
             df.loc[mask, "color"] = color
-            tmp = path.with_suffix(".tmp")
-            df.to_csv(tmp, index=False)
-            tmp.replace(path)
-            if ts_clean:
-                json_path = self._ts_to_series_path(self.processed_dir, ts_clean)
-                if json_path.exists():
-                    try:
-                        import json as _json
-                        data = _json.loads(json_path.read_text(encoding="utf-8"))
-                        data["color"] = color
-                        jtmp = json_path.with_suffix(".tmp")
-                        jtmp.write_text(_json.dumps(data), encoding="utf-8")
-                        jtmp.replace(json_path)
-                    except Exception:
-                        pass
+            self._write_history_csv(path, df)
+            self._patch_snapshot_json(ts_clean, {"color": color})
             return True, ""
         except Exception as exc:
             return False, str(exc)
@@ -564,12 +552,7 @@ class IngestionPipeline:
             if ts_clean and "|" in ts_clean and ("snapshot_ts" not in df.columns or not (df["snapshot_ts"] == ts_clean).any()):
                 snapshot_date, label = ts_clean.split("|", 1)
                 ts_clean = ""
-            if ts_clean and "snapshot_ts" in df.columns:
-                mask = df["snapshot_ts"] == ts_clean
-            else:
-                date_mask = df["snapshot_date"] == snapshot_date
-                lbl_col = df["label"] if "label" in df.columns else pd.Series([""] * len(df), index=df.index)
-                mask = date_mask & (lbl_col == label)
+            mask, ts_clean = self._locate_snapshot_mask(df, ts_clean, snapshot_date, label)
             if not mask.any():
                 return False, "No matching snapshot found."
             if "research_role_initial" not in df.columns:
@@ -589,22 +572,11 @@ class IngestionPipeline:
                 df.loc[mask, "research_role_initial"] = ""
             if not final:
                 df.loc[mask, "research_role_final"] = ""
-            tmp = path.with_suffix(".tmp")
-            df.to_csv(tmp, index=False)
-            tmp.replace(path)
-            if ts_clean:
-                json_path = self._ts_to_series_path(self.processed_dir, ts_clean)
-                if json_path.exists():
-                    try:
-                        import json as _json
-                        data = _json.loads(json_path.read_text(encoding="utf-8"))
-                        data["research_role_initial"] = "true" if initial else ""
-                        data["research_role_final"] = "true" if final else ""
-                        jtmp = json_path.with_suffix(".tmp")
-                        jtmp.write_text(_json.dumps(data), encoding="utf-8")
-                        jtmp.replace(json_path)
-                    except Exception:
-                        pass
+            self._write_history_csv(path, df)
+            self._patch_snapshot_json(ts_clean, {
+                "research_role_initial": "true" if initial else "",
+                "research_role_final": "true" if final else "",
+            })
             return True, ""
         except Exception as exc:
             return False, str(exc)
@@ -619,9 +591,7 @@ class IngestionPipeline:
                 return True, ""
             df[role] = df[role].fillna("")
             df.loc[:, role] = ""
-            tmp = path.with_suffix(".tmp")
-            df.to_csv(tmp, index=False)
-            tmp.replace(path)
+            self._write_history_csv(path, df)
             return True, ""
         except Exception as exc:
             return False, str(exc)

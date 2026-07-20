@@ -25,6 +25,41 @@ def create_forecast_blueprint(services) -> Blueprint:
     def _get_store_df():
         return store.data.df if store is not None else None
 
+    def _build_live_service(config: dict):
+        """A ForecastingService constructed the standard way: pipeline
+        historical/operational summaries, falling back to the raw daily
+        store frame (for ForecastingService's own derivation) when there's
+        no operational summary yet. Returns the frames alongside the
+        service since several callers also need them directly (data_as_of,
+        the daily-actual burndown series) — the one place this 3-line
+        pattern lives instead of being copy-pasted at every route that
+        needs a live-page-equivalent service."""
+        hist_df = pipeline.get_historical_weekly_summary()
+        op_df = pipeline.get_operational_weekly_summary()
+        daily_df = _get_store_df()
+        daily_fallback = daily_df if op_df is None else None
+        svc = ForecastingService(config, hist_df, op_df, daily_fallback)
+        return svc, hist_df, op_df, daily_df
+
+    def _resolve_operational_frames(config: dict, hist_df, op_df):
+        """When there's no pipeline-processed weekly operational summary,
+        derive one from the raw daily store data (the same derivation
+        ForecastingService does internally) and hand back the resolved
+        (hist_df, op_df) pair. For routes that need the raw weekly
+        dataframe itself — to truncate it per-week when rebuilding
+        snapshots — rather than just a single constructed service."""
+        if op_df is not None and not op_df.empty:
+            return hist_df, op_df
+        daily_df = _get_store_df()
+        if daily_df is None or daily_df.empty:
+            return hist_df, op_df
+        _tmp = ForecastingService(config, hist_df, None, daily_df)
+        if _tmp.operational_df is not None and not _tmp.operational_df.empty:
+            op_df = _tmp.operational_df
+        if hist_df is None and _tmp.historical_df is not None:
+            hist_df = _tmp.historical_df
+        return hist_df, op_df
+
     def _snapshot_row(ts):
         """The forecast_history row for a snapshot timestamp, or None."""
         ts = (ts or "").strip()
@@ -252,6 +287,21 @@ def create_forecast_blueprint(services) -> Blueprint:
         contract["purchased_credits"] = credit_entries_total(entries)
         return cfg
 
+    def _service_for_week(config: dict, hist_df, truncated_op, ledger_as_of):
+        """A ForecastingService reconstructing "the world as it looked as of
+        a specific week": historical data through only that week, and a
+        ledger clamped via `_config_as_of` to what had actually been
+        granted by `ledger_as_of` — so a later-dated grant doesn't leak into
+        a week that predates it. Returns None (instead of a service with no
+        data) when there's nothing to build from, so every snapshot-rebuild
+        route (resync, backfill, generate-weekly, generate-all) can share
+        the same "skip/count as an error" check rather than reimplementing
+        it. Callers own the truncation itself (by iloc slice or by a
+        week_end date filter — those differ) and pass the result in."""
+        week_config = _config_as_of(config, ledger_as_of)
+        svc = ForecastingService(week_config, hist_df, truncated_op.copy() if truncated_op is not None else None)
+        return svc if svc.has_data() else None
+
     def _credit_events(contract_start, as_of=None) -> list[dict]:
         """Credit-ledger entries as chart events, each clamped to contract start.
 
@@ -350,6 +400,72 @@ def create_forecast_blueprint(services) -> Blueprint:
     def _has_mc_stats(row: dict) -> bool:
         return _has_stat(row, ("mc_exhaustion_prob", "mc_p50_end_balance", "mc_runs"))
 
+    def _generate_missing_week_snapshots(config, hist_df, op_sorted, existing_by_label, include_mc):
+        """Walk each week in `op_sorted`, generating a forecast snapshot for
+        it — or regenerating it if it's missing ML/MC stats. Shared by the
+        synchronous batch route (generate-weekly) and the SSE streaming
+        route (generate-all-stream), which previously each carried their
+        own copy of this per-week build/save loop.
+
+        Yields two events per week so a caller can report progress before
+        the (possibly slow, MC-involving) work starts, same as the
+        streaming route always has:
+          {"phase": "start", "index", "total", "week_end"}
+          {"phase": "result", "index", "total", "week_end", "status"}
+        where status is "skipped" | "generated" | "error". Mutates
+        `existing_by_label` in place as snapshots are (re)saved.
+        """
+        total = len(op_sorted)
+        for i in range(total):
+            row = op_sorted.iloc[i]
+            week_start_str = str(_pd.Timestamp(row["week_start"]).date())
+            week_end_str = str(_pd.Timestamp(row["week_end"]).date())
+            label = f"Week of {week_start_str}"
+            snap_ts = f"{week_start_str}T00:00:00"
+            yield {"phase": "start", "index": i, "total": total, "week_end": week_end_str}
+
+            existing = existing_by_label.get(label)
+            if existing:
+                needs_ml = not _has_ml_stats(existing)
+                needs_mc = include_mc and not _has_mc_stats(existing)
+                if not needs_ml and not needs_mc:
+                    yield {"phase": "result", "index": i, "total": total, "week_end": week_end_str, "status": "skipped"}
+                    continue
+                # Regenerate old snapshots that are missing ML/MC statistics
+                # so chart overlays and comparison cards have complete
+                # model data.
+                try:
+                    pipeline.delete_snapshot(
+                        existing.get("snapshot_ts", snap_ts),
+                        existing.get("snapshot_date", week_end_str),
+                        existing.get("label", label),
+                    )
+                except Exception:
+                    pass
+
+            # Build a service that only sees data through this week — and a
+            # ledger that only counts credits granted by this week, so a
+            # later-dated grant (even a real, current one) doesn't leak
+            # into a week that predates it.
+            truncated_op = op_sorted.iloc[: i + 1].copy()
+            try:
+                svc = _service_for_week(config, hist_df, truncated_op, week_end_str)
+                if svc is None:
+                    yield {"phase": "result", "index": i, "total": total, "week_end": week_end_str, "status": "error"}
+                    continue
+                svc.save_to_dir(
+                    pipeline.processed_dir,
+                    once_per_day=False,
+                    label=label,
+                    snapshot_ts=snap_ts,
+                    snapshot_date=week_end_str,
+                    skip_mc=not include_mc,
+                )
+                existing_by_label[label] = {"label": label, "snapshot_ts": snap_ts, "snapshot_date": week_end_str}
+                yield {"phase": "result", "index": i, "total": total, "week_end": week_end_str, "status": "generated"}
+            except Exception:
+                yield {"phase": "result", "index": i, "total": total, "week_end": week_end_str, "status": "error"}
+
     def _build_forecast_context(template_name: str) -> str:
         cost_per_credit = float(request.args.get("cost_per_credit", 0) or 0)
         available_credits = float(request.args.get("available_credits", 0) or 0)
@@ -379,12 +495,7 @@ def create_forecast_blueprint(services) -> Blueprint:
                 elif key in ("historical_weight", "latest_week_weight", "recent_average_weight"):
                     config["forecast"][key] = float(request.args.get(key))
 
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-        daily_fallback_df = _get_store_df()
-        daily_fallback = daily_fallback_df if op_df is None else None
-
-        forecasting = ForecastingService(config, hist_df, op_df, daily_fallback)
+        forecasting, hist_df, op_df, daily_fallback_df = _build_live_service(config)
 
         granularity = request.args.get("granularity", "weekly")
         if granularity not in {"weekly", "daily"}:
@@ -635,11 +746,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             if val:
                 config["forecast"][wkey] = float(val)
 
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-        daily_fallback_df = _get_store_df()
-        daily_fallback = daily_fallback_df if op_df is None else None
-        svc = ForecastingService(config, hist_df, op_df, daily_fallback)
+        svc, _hist_df, _op_df, _daily_df = _build_live_service(config)
         label = request.form.get("snapshot_label", "").strip()
 
         if svc.has_data():
@@ -668,16 +775,9 @@ def create_forecast_blueprint(services) -> Blueprint:
         actually contained by then" gets corrected.
         """
         config = copy.deepcopy(config_svc.load_contract())
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-        if op_df is None or op_df.empty:
-            daily_df = _get_store_df()
-            if daily_df is not None and not daily_df.empty:
-                _tmp = ForecastingService(config, hist_df, None, daily_df)
-                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
-                    op_df = _tmp.operational_df
-                if hist_df is None and _tmp.historical_df is not None:
-                    hist_df = _tmp.historical_df
+        hist_df, op_df = _resolve_operational_frames(
+            config, pipeline.get_historical_weekly_summary(), pipeline.get_operational_weekly_summary()
+        )
 
         rows = pipeline.get_forecast_history(limit=1000)
         if not rows:
@@ -725,9 +825,11 @@ def create_forecast_blueprint(services) -> Blueprint:
                 pipeline.delete_snapshot(ts, snap_date, label)
                 # Ledger entries dated after this snapshot's own date must not
                 # count yet — only what the pool actually held then.
-                week_config = _config_as_of(config, ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of)
-                svc = ForecastingService(week_config, hist_df, truncated_op.copy())
-                if not svc.has_data():
+                svc = _service_for_week(
+                    config, hist_df, truncated_op,
+                    ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of,
+                )
+                if svc is None:
                     errors += 1
                     continue
                 svc.save_to_dir(
@@ -796,16 +898,9 @@ def create_forecast_blueprint(services) -> Blueprint:
             return redirect(request.referrer or url_for("settings.settings_page"))
 
         config = copy.deepcopy(config_svc.load_contract())
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-        if op_df is None or op_df.empty:
-            daily_df = _get_store_df()
-            if daily_df is not None and not daily_df.empty:
-                _tmp = ForecastingService(config, hist_df, None, daily_df)
-                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
-                    op_df = _tmp.operational_df
-                if hist_df is None and _tmp.historical_df is not None:
-                    hist_df = _tmp.historical_df
+        hist_df, op_df = _resolve_operational_frames(
+            config, pipeline.get_historical_weekly_summary(), pipeline.get_operational_weekly_summary()
+        )
         if op_df is None or op_df.empty:
             flash("No operational data available to recompute snapshots from.", "warning")
             return redirect(request.referrer or url_for("settings.settings_page"))
@@ -825,9 +920,11 @@ def create_forecast_blueprint(services) -> Blueprint:
                     errors += 1
                     continue
 
-                week_config = _config_as_of(config, ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of)
-                svc = ForecastingService(week_config, hist_df, truncated_op.copy())
-                if not svc.has_data():
+                svc = _service_for_week(
+                    config, hist_df, truncated_op,
+                    ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of,
+                )
+                if svc is None:
                     errors += 1
                     continue
 
@@ -931,18 +1028,9 @@ def create_forecast_blueprint(services) -> Blueprint:
     @bp.route("/forecast/snapshot/generate-weekly", methods=["POST"])
     def generate_weekly_snapshots() -> object:
         config = copy.deepcopy(config_svc.load_contract())
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-
-        # If no pipeline operational data, derive weekly summaries from the daily store data
-        if (op_df is None or op_df.empty) and store is not None:
-            daily_df = _get_store_df()
-            if daily_df is not None and not daily_df.empty:
-                _tmp = ForecastingService(config, hist_df, None, daily_df)
-                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
-                    op_df = _tmp.operational_df
-                if hist_df is None and _tmp.historical_df is not None:
-                    hist_df = _tmp.historical_df
+        hist_df, op_df = _resolve_operational_frames(
+            config, pipeline.get_historical_weekly_summary(), pipeline.get_operational_weekly_summary()
+        )
 
         if op_df is None or op_df.empty:
             flash("No data available. Upload a data sheet on the Summary page first.", "warning")
@@ -959,53 +1047,14 @@ def create_forecast_blueprint(services) -> Blueprint:
         op_sorted = op_df.sort_values("week_start").reset_index(drop=True)
         generated = skipped = errors = 0
 
-        for i in range(len(op_sorted)):
-            row = op_sorted.iloc[i]
-            week_start_str = str(_pd.Timestamp(row["week_start"]).date())
-            week_end_str = str(_pd.Timestamp(row["week_end"]).date())
-            label = f"Week of {week_start_str}"
-            snap_ts = f"{week_start_str}T00:00:00"
-
-            existing = existing_by_label.get(label)
-            if existing:
-                needs_ml = not _has_ml_stats(existing)
-                needs_mc = include_mc and not _has_mc_stats(existing)
-                if not needs_ml and not needs_mc:
-                    skipped += 1
-                    continue
-                # Regenerate old snapshots that are missing ML/MC statistics so
-                # chart overlays and comparison cards have complete model data.
-                try:
-                    pipeline.delete_snapshot(
-                        existing.get("snapshot_ts", snap_ts),
-                        existing.get("snapshot_date", week_end_str),
-                        existing.get("label", label),
-                    )
-                except Exception:
-                    pass
-
-            # Build a service that only sees data through this week — and a
-            # ledger that only counts credits granted by this week, so a
-            # later-dated grant (even a real, current one) doesn't leak into
-            # a week that predates it.
-            truncated_op = op_sorted.iloc[: i + 1].copy()
-            try:
-                week_config = _config_as_of(config, week_end_str)
-                svc = ForecastingService(week_config, hist_df, truncated_op)
-                if not svc.has_data():
-                    errors += 1
-                    continue
-                svc.save_to_dir(
-                    pipeline.processed_dir,
-                    once_per_day=False,
-                    label=label,
-                    snapshot_ts=snap_ts,
-                    snapshot_date=week_end_str,
-                    skip_mc=not include_mc,
-                )
-                existing_by_label[label] = {"label": label, "snapshot_ts": snap_ts, "snapshot_date": week_end_str}
+        for event in _generate_missing_week_snapshots(config, hist_df, op_sorted, existing_by_label, include_mc):
+            if event["phase"] != "result":
+                continue
+            if event["status"] == "generated":
                 generated += 1
-            except Exception:
+            elif event["status"] == "skipped":
+                skipped += 1
+            else:
                 errors += 1
 
         parts = []
@@ -1028,16 +1077,9 @@ def create_forecast_blueprint(services) -> Blueprint:
     def generate_all_snapshots_stream() -> object:
         def _stream():
             config = copy.deepcopy(config_svc.load_contract())
-            hist_df = pipeline.get_historical_weekly_summary()
-            op_df = pipeline.get_operational_weekly_summary()
-            daily_df = _get_store_df()
-
-            if (op_df is None or op_df.empty) and daily_df is not None and not daily_df.empty:
-                _tmp = ForecastingService(config, hist_df, None, daily_df)
-                if _tmp.operational_df is not None and not _tmp.operational_df.empty:
-                    op_df = _tmp.operational_df
-                if hist_df is None and _tmp.historical_df is not None:
-                    hist_df = _tmp.historical_df
+            hist_df, op_df = _resolve_operational_frames(
+                config, pipeline.get_historical_weekly_summary(), pipeline.get_operational_weekly_summary()
+            )
 
             if op_df is None or op_df.empty:
                 yield f"data: {json.dumps({'error': 'No data available. Upload data first.'})}\n\n"
@@ -1047,53 +1089,19 @@ def create_forecast_blueprint(services) -> Blueprint:
             cfg_fc["monte_carlo_runs"] = min(int(cfg_fc.get("monte_carlo_runs", 10000)), 1000)
 
             op_sorted = op_df.sort_values("week_start").reset_index(drop=True)
-            total = len(op_sorted)
             existing_by_label = {h.get("label", ""): h for h in pipeline.get_forecast_history()}
             generated = skipped = errors = 0
 
-            for i in range(total):
-                row = op_sorted.iloc[i]
-                week_start_str = str(_pd.Timestamp(row["week_start"]).date())
-                week_end_str = str(_pd.Timestamp(row["week_end"]).date())
-                label = f"Week of {week_start_str}"
-                snap_ts = f"{week_start_str}T00:00:00"
-                pct = int((i + 1) / total * 100)
-                yield f"data: {json.dumps({'progress': pct, 'current': i + 1, 'total': total, 'week': week_end_str})}\n\n"
-
-                existing = existing_by_label.get(label)
-                if existing:
-                    needs_ml = not _has_ml_stats(existing)
-                    needs_mc = not _has_mc_stats(existing)
-                    if not needs_ml and not needs_mc:
-                        skipped += 1
-                        continue
-                    try:
-                        pipeline.delete_snapshot(
-                            existing.get("snapshot_ts", snap_ts),
-                            existing.get("snapshot_date", week_end_str),
-                            existing.get("label", label),
-                        )
-                    except Exception:
-                        pass
-
-                truncated_op = op_sorted.iloc[: i + 1].copy()
-                try:
-                    week_config = _config_as_of(config, week_end_str)
-                    svc = ForecastingService(week_config, hist_df, truncated_op)
-                    if not svc.has_data():
-                        errors += 1
-                        continue
-                    svc.save_to_dir(
-                        pipeline.processed_dir,
-                        once_per_day=False,
-                        label=label,
-                        snapshot_ts=snap_ts,
-                        snapshot_date=week_end_str,
-                        skip_mc=False,
-                    )
-                    existing_by_label[label] = {"label": label, "snapshot_ts": snap_ts, "snapshot_date": week_end_str}
+            for event in _generate_missing_week_snapshots(config, hist_df, op_sorted, existing_by_label, True):
+                if event["phase"] == "start":
+                    pct = int((event["index"] + 1) / event["total"] * 100)
+                    yield f"data: {json.dumps({'progress': pct, 'current': event['index'] + 1, 'total': event['total'], 'week': event['week_end']})}\n\n"
+                    continue
+                if event["status"] == "generated":
                     generated += 1
-                except Exception:
+                elif event["status"] == "skipped":
+                    skipped += 1
+                else:
                     errors += 1
 
             yield f"data: {json.dumps({'done': True, 'generated': generated, 'skipped': skipped, 'errors': errors})}\n\n"
@@ -1109,12 +1117,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         as-of/today anchors, optional partial-week exclusion, and the date-range
         view / burn window from the current request's query args — so exports
         (details, model-data) match whatever window the page is showing."""
-        hist_df = pipeline.get_historical_weekly_summary()
-        op_df = pipeline.get_operational_weekly_summary()
-        daily_fallback_df = _get_store_df()
-        svc = ForecastingService(
-            config, hist_df, op_df, daily_fallback_df if op_df is None else None
-        )
+        svc, hist_df, op_df, daily_fallback_df = _build_live_service(config)
         data_as_of = latest_data_date(
             (daily_fallback_df, "date_partition"),
             (op_df, "week_end"),
