@@ -282,8 +282,12 @@ window.clearViewAsOf = function () {
   const statusEl = document.getElementById('view-as-of-status');
   if (dateEl) dateEl.value = '';
   if (statusEl) statusEl.textContent = '';
-  if (typeof window.clearActualCutoffs === 'function') window.clearActualCutoffs();
+  // Remove the view-as-of snapshot from the comparison FIRST — clearing the
+  // cutoff now reloads the page (see applyActualCutoffs), and it snapshots
+  // the current selection into sessionStorage right before doing so, so
+  // that has to reflect the removal, not the stale pre-removal selection.
   _removeViewAsOfSnap();
+  if (typeof window.clearActualCutoffs === 'function') window.clearActualCutoffs();
 };
 
 // Download the selected snapshots' history rows as CSV (all when none picked).
@@ -1619,6 +1623,21 @@ if (typeof Chart !== 'undefined') {
       else localStorage.removeItem('fc-actual-cutoff');
       if (after) localStorage.setItem('fc-actual-cutoff-to', after);
       else localStorage.removeItem('fc-actual-cutoff-to');
+      // A real (persist=true) cutoff change reloads the page instead of
+      // patching the chart in place — no-animation in-place updates still
+      // left the line's shape reading "off" until a fresh render, so this
+      // just re-initializes the chart directly from the (now-persisted)
+      // cutoff state, same as how a granularity switch already reloads
+      // rather than redraws live. Scroll position and the current snapshot
+      // selection are preserved the same way setBurndownGranularity does;
+      // the on-load restore IIFE below picks the cutoff itself back up
+      // from localStorage (persist=false, so it won't loop).
+      sessionStorage.setItem('forecast-scroll', window.scrollY);
+      if (typeof selectedSnaps !== 'undefined' && selectedSnaps.size > 0) {
+        sessionStorage.setItem('forecast-snap-keys', JSON.stringify([...selectedSnaps.keys()]));
+      }
+      window.location.reload();
+      return;
     }
     const labels = bc.data.labels;
     const values = labels.map(
@@ -1633,7 +1652,12 @@ if (typeof Chart !== 'undefined') {
     // short. Use the REAL value there (daily-resolution data when available,
     // so a weekly gap reflects the actual trend across those days rather
     // than a flat plateau); only fall back to repeating the last visible
-    // value if no real data exists that far out at all.
+    // value if no real data exists that far out at all. Using the real
+    // value here (not a fabricated flat/interpolated one) is also what
+    // makes this connect to the dot exactly: alignToActual looks up the
+    // actual line's value at that same label to anchor the snapshot
+    // overlay, so whatever real number lands here is exactly what the dot
+    // snaps to — never a mismatch.
     if (after) {
       let lastVisible = -1;
       for (let i = 0; i < values.length; i++) if (values[i] != null) lastVisible = i;
@@ -1644,7 +1668,15 @@ if (typeof Chart !== 'undefined') {
       }
     }
     bc.data.datasets[idx].data = values;
-    bc.chart.update();
+    // No animation: Chart.js's default eased transition interpolates the
+    // actual line frame-by-frame between its old (uncut) and new (cut)
+    // shape, and the removed points make that in-between animation dip
+    // below the real trend for a moment — reading as a "sag" even though
+    // the settled end state (and any other dataset using the same values,
+    // e.g. a snapshot's aligned dot) was correct the whole time. Same
+    // no-animation convention already used for other instant chart-state
+    // updates in this file (view range, colors, legend toggles).
+    bc.chart.update('none');
   };
   window.clearActualCutoffs = function () {
     ['actual-cutoff', 'actual-cutoff-to'].forEach(id => {
