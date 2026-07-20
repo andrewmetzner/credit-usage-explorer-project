@@ -1145,6 +1145,13 @@ if (typeof Chart !== 'undefined') {
   const activeLast = activeSeries.length ? activeSeries[activeSeries.length - 1] : [latestDate, remaining];
   const projAnchorDate = activeLast[0];
   const projAnchorRemaining = activeLast[1];
+  // Exposed so the MC/ML overlay IIFE (separate scope, loads its bands
+  // later/async) can snap its series onto the exact point where the actual
+  // line stops and the projection takes over — same anchor the red
+  // "Projected remaining" line uses — instead of the server's raw "today"
+  // anchor, which can sit many days past the last known-real data point and
+  // otherwise leaves the band floating with a visible gap.
+  window.burndownProjAnchor = { date: projAnchorDate, remaining: projAnchorRemaining };
 
   function buildProjPts(granularity) {
     // Anchored at the end of the known-facts bridge (today, when data lags)
@@ -1723,20 +1730,30 @@ if (typeof Chart !== 'undefined') {
   // The server's MC/ML series anchor exactly at "today" with today's precise
   // value, while the actual line (weekly view especially) may end earlier, at
   // the last uploaded week (or a known credit-grant date in between) rather
-  // than today itself. Shift the whole band so its first plotted point lands
-  // exactly on the actual line wherever the two overlap, mirroring the
-  // snapshot overlay's own alignToActual. No-op when they don't overlap at
-  // all (e.g. weekly view with a multi-week-old upload).
-  function alignOverlayToActual(bc, allLabels, primary, ...others) {
-    const idx = primary.findIndex(v => v !== null && v !== undefined);
-    if (idx < 0) return;
-    const actualDs = bc.data.datasets.find(d => d.label === 'Actual remaining');
-    const target = actualDs && actualDs.data ? actualDs.data[idx] : null;
-    if (target == null || primary[idx] == null) return;
-    const delta = target - primary[idx];
-    if (!delta) return;
-    [primary, ...others].forEach(arr => {
-      for (let j = 0; j < arr.length; j++) if (arr[j] != null) arr[j] = Math.max(arr[j] + delta, 0);
+  // than today itself. A same-index value-only shift left the band floating
+  // with a visible x/y gap whenever the actual line had no plotted value at
+  // MC/ML's own "today" label (routine once data lags by more than a few
+  // days). Instead, date-shift + value-shift the RAW series so its very
+  // first point lands exactly on window.burndownProjAnchor — the same
+  // anchor the red "Projected remaining" line starts from — before it's
+  // interpolated onto the chart's labels, guaranteeing the band starts
+  // exactly where the actual line stops.
+  function anchorShiftFor(series, dateKey, valKey) {
+    const anchor = window.burndownProjAnchor;
+    if (!anchor || !series || !series.length) return null;
+    const first = series[0];
+    const deltaDays = Math.round(
+      (new Date(anchor.date + 'T12:00:00') - new Date(first[dateKey] + 'T12:00:00')) / 86400000
+    );
+    const deltaVal = anchor.remaining - first[valKey];
+    return (deltaDays || deltaVal) ? { deltaDays, deltaVal } : null;
+  }
+  function applyShift(series, shift, dateKey, valKey) {
+    if (!shift || !series || !series.length) return series;
+    return series.map(p => {
+      const d = new Date(p[dateKey] + 'T12:00:00');
+      d.setDate(d.getDate() + shift.deltaDays);
+      return { ...p, [dateKey]: d.toISOString().slice(0, 10), [valKey]: Math.max(p[valKey] + shift.deltaVal, 0) };
     });
   }
   const MC_RUNS = D.mcRuns;
@@ -1784,11 +1801,11 @@ if (typeof Chart !== 'undefined') {
     bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
     const allLabels = bc.data.labels;
     const C = '#198754';
-    let p50 = interpDateSeries(data.burndown, allLabels);
+    const shift = anchorShiftFor(data.burndown, 'date', 'value');
+    let p50 = interpDateSeries(applyShift(data.burndown, shift, 'date', 'value'), allLabels);
     const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
-    let p90 = hasBand ? interpDateSeries(data.p90, allLabels) : null;
-    let p10 = hasBand ? interpDateSeries(data.p10, allLabels) : null;
-    alignOverlayToActual(bc, allLabels, p50, p10 || [], p90 || []);
+    let p90 = hasBand ? interpDateSeries(applyShift(data.p90, shift, 'date', 'value'), allLabels) : null;
+    let p10 = hasBand ? interpDateSeries(applyShift(data.p10, shift, 'date', 'value'), allLabels) : null;
     p50 = extendBelowZero(p50);
     if (hasBand) { p90 = extendBelowZero(p90); p10 = extendBelowZero(p10); }
     if (hasBand) {
@@ -1976,10 +1993,10 @@ if (typeof Chart !== 'undefined') {
     const data      = mcCache;
     const allLabels = bc.data.labels;
 
-    let p90data = interpDateSeries(data.p90, allLabels);
-    let p50data = interpDateSeries(data.burndown, allLabels);
-    let p10data = interpDateSeries(data.p10, allLabels);
-    alignOverlayToActual(bc, allLabels, p50data, p10data, p90data);
+    const shift = anchorShiftFor(data.burndown, 'date', 'value');
+    let p90data = interpDateSeries(applyShift(data.p90, shift, 'date', 'value'), allLabels);
+    let p50data = interpDateSeries(applyShift(data.burndown, shift, 'date', 'value'), allLabels);
+    let p10data = interpDateSeries(applyShift(data.p10, shift, 'date', 'value'), allLabels);
     p90data = extendBelowZero(p90data);
     p50data = extendBelowZero(p50data);
     p10data = extendBelowZero(p10data);
