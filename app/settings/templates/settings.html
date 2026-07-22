@@ -15,7 +15,35 @@
         </div>
       </div>
 
-      {# Pipeline Status #}
+      <!-- SETTINGS TABS -->
+      <ul class="nav nav-tabs" id="settingsTab" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-data" type="button" role="tab">Data</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-contract" type="button" role="tab">Contract &amp; Forecast</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-snapshots" type="button" role="tab">Snapshots</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tierpolicy" type="button" role="tab">Tier Policy</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-appearance" type="button" role="tab">Appearance</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-export" type="button" role="tab">Export</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link text-danger" data-bs-toggle="tab" data-bs-target="#pane-danger" type="button" role="tab">Danger Zone</button>
+        </li>
+      </ul>
+
+      <div class="tab-content" id="settingsTabContent">
+
+      {# Data: pipeline status, ingested weeks, upload log, advanced uploads #}
+      <div class="tab-pane fade show active" id="pane-data" role="tabpanel">
       <div class="settings-section">
         <h5>Pipeline Status</h5>
 
@@ -218,11 +246,13 @@
 
         </div>
       </div>
+      </div><!-- /pane-data -->
 
       {# Contract and Forecast Settings #}
       {% set c = saved_contract.contract %}
       {% set p = saved_contract.pricing %}
       {% set f = saved_contract.forecast %}
+      <div class="tab-pane fade" id="pane-contract" role="tabpanel">
       <div class="settings-section">
         <h5>Contract &amp; Forecast Settings</h5>
         <form id="config-save-form" method="post" action="{{ url_for('forecast.save_forecast_config') }}">
@@ -445,8 +475,10 @@
           <button class="btn btn-primary btn-sm" type="submit">Save Config</button>
         </form>
       </div>
+      </div><!-- /pane-contract -->
 
       {# Snapshot Settings #}
+      <div class="tab-pane fade" id="pane-snapshots" role="tabpanel">
       <div class="settings-section">
         <h5>Snapshot Settings</h5>
         <p class="text-muted small mb-3">
@@ -512,8 +544,10 @@
         </div>
         {% endif %}
       </div>
+      </div><!-- /pane-snapshots -->
 
       {# Tier Policy #}
+      <div class="tab-pane fade" id="pane-tierpolicy" role="tabpanel">
       <div class="settings-section">
 
         <h5>Tier Policy</h5>
@@ -572,51 +606,6 @@
             </div>
           </div>
         </form>
-
-        {# Manual tier overrides list -- bulk/global reset actions live in the Danger Zone at the bottom of the page #}
-        <div class="border rounded-3 p-3 mb-3">
-          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
-            <div>
-              <strong>Manual tier overrides</strong>
-              <div class="text-muted small">Users whose current tier differs from the imported tierlist value.</div>
-            </div>
-          </div>
-
-          {% if tier_overrides %}
-          <p class="text-muted small mb-2">{{ tier_overrides | length }} user{{ '' if tier_overrides | length == 1 else 's' }} currently differ from the tierlist:</p>
-          <div class="table-responsive">
-            <table class="settings-table mb-0">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th>Current tier</th>
-                  <th>Tierlist tier</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for o in tier_overrides %}
-                <tr>
-                  <td>{{ o.email }}</td>
-                  <td>{{ o.current_tier }}</td>
-                  <td>{{ o.tierlist_tier or 'Baseline default' }}</td>
-                  <td class="text-end">
-                    <form method="post" action="{{ url_for('optimization.reset_user_tier') }}">
-                      <input type="hidden" name="email" value="{{ o.email }}">
-                      <input type="hidden" name="next" value="{{ url_for('settings.settings_page') }}">
-                      <button type="submit" class="btn btn-outline-secondary btn-sm py-0 px-2"
-                              title="Reset {{ o.email }} to the tierlist value">Reset</button>
-                    </form>
-                  </td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% else %}
-          <div class="text-muted small">No manual overrides &mdash; every assigned user matches the imported tierlist.</div>
-          {% endif %}
-        </div>
 
         <form method="post" action="{{ url_for('settings.update_tiers') }}">
           {% set period = (tiers.cap_period or 'weekly')|lower %}
@@ -684,9 +673,56 @@
           </div>
           <button class="btn btn-primary btn-sm" type="submit">Save tier policy</button>
         </form>
+
+        {# Manual tier overrides list -- bulk/global reset actions live in the Danger Zone at the bottom of the page #}
+        <div class="border rounded-3 p-3 mb-3 mt-3">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+            <div>
+              <strong>Manual tier overrides</strong>
+              <div class="text-muted small">Users whose current tier differs from the imported tierlist value.</div>
+            </div>
+          </div>
+
+          {% if tier_overrides %}
+          <p class="text-muted small mb-2">{{ tier_overrides | length }} user{{ '' if tier_overrides | length == 1 else 's' }} currently differ from the tierlist:</p>
+          <div class="table-responsive">
+            <table class="settings-table mb-0">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Current tier</th>
+                  <th>Tierlist tier</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for o in tier_overrides %}
+                <tr>
+                  <td>{{ o.email }}</td>
+                  <td>{{ o.current_tier }}</td>
+                  <td>{{ o.tierlist_tier or 'Baseline default' }}</td>
+                  <td class="text-end">
+                    <form method="post" action="{{ url_for('optimization.reset_user_tier') }}">
+                      <input type="hidden" name="email" value="{{ o.email }}">
+                      <input type="hidden" name="next" value="{{ url_for('settings.settings_page') }}">
+                      <button type="submit" class="btn btn-outline-secondary btn-sm py-0 px-2"
+                              title="Reset {{ o.email }} to the tierlist value">Reset</button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="text-muted small">No manual overrides &mdash; every assigned user matches the imported tierlist.</div>
+          {% endif %}
+        </div>
       </div>
+      </div><!-- /pane-tierpolicy -->
 
       {# Appearance #}
+      <div class="tab-pane fade" id="pane-appearance" role="tabpanel">
       <div class="settings-section">
         <h5>Appearance</h5>
         <p class="text-muted small mb-3">Theme is saved per browser and applies to every page, charts included.</p>
@@ -699,8 +735,10 @@
           </label>
         </div>
       </div>
+      </div><!-- /pane-appearance -->
 
       {# Export Data #}
+      <div class="tab-pane fade" id="pane-export" role="tabpanel">
       <div class="settings-section">
         <h5>Export Data</h5>
         <p class="text-muted small mb-3">Download the current loaded data file.</p>
@@ -708,8 +746,10 @@
           Download current_data
         </a>
       </div>
+      </div><!-- /pane-export -->
 
       {# Danger Zone -- every bulk delete/reset action on this page lives here #}
+      <div class="tab-pane fade" id="pane-danger" role="tabpanel">
       <div class="settings-section" style="border-color:rgba(220,53,69,.4);">
         <h5 style="color:#dc3545;">Danger Zone</h5>
         <p class="text-muted small mb-3">
@@ -777,6 +817,9 @@
           </button>
         </div>
       </div>
+      </div><!-- /pane-danger -->
+
+      </div><!-- /tab-content -->
 
     </div>
 
@@ -811,6 +854,25 @@
 
 {% block scripts %}
     <script>
+      // Settings tabs: forms on this page submit and redirect back to the
+      // plain settings URL, which would otherwise always reopen on
+      // "Pipeline Status". Remember the last tab per browser so saving a
+      // form (tier policy, contract config, ...) lands back where it was.
+      (function () {
+        const KEY = 'settingsActiveTab';
+        const tabEl = document.getElementById('settingsTab');
+        if (!tabEl) return;
+        const triggers = tabEl.querySelectorAll('button[data-bs-toggle="tab"]');
+        triggers.forEach(t => t.addEventListener('shown.bs.tab', e => {
+          sessionStorage.setItem(KEY, e.target.getAttribute('data-bs-target'));
+        }));
+        const saved = sessionStorage.getItem(KEY);
+        if (saved) {
+          const trigger = tabEl.querySelector(`button[data-bs-target="${saved}"]`);
+          if (trigger) new bootstrap.Tab(trigger).show();
+        }
+      })();
+
       // Appearance: reflect the active theme in the dark-mode switch.
       (function () {
         const sw = document.getElementById('dark-mode-switch');
