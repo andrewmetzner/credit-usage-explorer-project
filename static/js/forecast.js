@@ -1752,6 +1752,33 @@ if (typeof Chart !== 'undefined') {
   initBurndownViewRange();
   initBurndownYRange();
   restorePendingSnapshotSelections();
+
+  // Confirmed bug: after some container resizes, Chart.js recomputes the x
+  // scale (so ticks and the credit-marker plugin, which reads
+  // scales.x.getPixelForValue() fresh every draw, land correctly) but leaves
+  // the dataset's cached point positions (meta.data[i].x) stale — the
+  // actual/projected LINE then renders at an old x that no longer matches
+  // the axis, until something forces a full update. A one-time fix at
+  // window 'load' only catches a resize that happens to land before that
+  // event; any later resize (sidebar content shifting, font swap, etc.)
+  // reintroduces the same desync. Watch the container directly and force a
+  // full update (not just resize()) on every observed size change so
+  // dataset positions are always recomputed to match the current scale.
+  if (typeof ResizeObserver !== 'undefined') {
+    const container = window.burndownChart.chart.canvas.parentElement;
+    if (container) {
+      let raf = null;
+      const ro = new ResizeObserver(() => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => {
+          raf = null;
+          const bc = window.burndownChart;
+          if (bc && bc.chart) bc.chart.update();
+        });
+      });
+      ro.observe(container);
+    }
+  }
 })();
 
 /* ===================================================================== *
