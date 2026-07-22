@@ -52,6 +52,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         usage_type_filter = request.args.get("usage_type_filter", "")
         model_filter = request.args.get("model_filter", "")
         tier_filter = request.args.get("tier_filter", "").strip()
+        tier_exact = request.args.get("tier_exact", "").strip()
         start_date = request.args.get("start_date", "")
         end_date = request.args.get("end_date", "")
         min_credits = request.args.get("min_credits", "").strip()
@@ -67,8 +68,19 @@ def create_analytics_blueprint(services) -> Blueprint:
             df = df[df["usage_type_model"] == model_filter]
         if tier_filter and "email" in df.columns:
             df = df[_tier_search(df, tier_filter)]
+        if tier_exact and "email" in df.columns:
+            # Exact match on each row's *current* resolved tier — the "Who's
+            # in this tier" drill from the By-tier board uses this so it
+            # shows exactly the people counted in that tier's total, not
+            # everyone who ever held the tier (that broader search is what
+            # tier_filter above is for).
+            df = df[services.governance.tier_column(df) == tier_exact]
 
-        return d.filter_by_credits(df, min_credits, max_credits, zero_credits)
+        df = d.filter_by_credits(df, min_credits, max_credits, zero_credits)
+        if "email" in df.columns:
+            df = df.copy()
+            df["tier"] = services.governance.tier_column(df)
+        return df
 
     def _aggregate_basic_users(d: CreditUsageData) -> pd.DataFrame:
         name_query = request.args.get("name_query", "").strip()
@@ -129,6 +141,7 @@ def create_analytics_blueprint(services) -> Blueprint:
         usage_type_filter = request.args.get("usage_type_filter", "")
         model_filter = request.args.get("model_filter", "")
         tier_filter = request.args.get("tier_filter", "").strip()
+        tier_exact = request.args.get("tier_exact", "").strip()
         start_date = request.args.get("start_date", "")
         end_date = request.args.get("end_date", "")
         top_n = result_limit("top_n", 25, 5)
@@ -156,6 +169,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             "users_by_type": ("lb_users_by_type", lb.by_user_type),
             "models": ("lb_models", lb.by_model),
             "usage_types": ("lb_usage_types", lb.by_usage_type),
+            "tiers": ("lb_tiers", lb.by_tier),
             "biggest_single": ("lb_biggest_single", lb.biggest_single),
             "daily": ("lb_daily", lb.daily),
             "weekly": ("lb_weekly", lb.weekly),
@@ -170,6 +184,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             "usage_type_filter": usage_type_filter,
             "model_filter": model_filter,
             "tier_filter": tier_filter,
+            "tier_exact": tier_exact,
             "start_date": start_date,
             "end_date": end_date,
             "top_n": top_n if top_n != 25 else "",
@@ -184,6 +199,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             usage_type_filter=usage_type_filter,
             model_filter=model_filter,
             tier_filter=tier_filter,
+            tier_exact=tier_exact,
             start_date=start_date,
             end_date=end_date,
             top_n=top_n,
@@ -234,6 +250,14 @@ def create_analytics_blueprint(services) -> Blueprint:
                 lb.by_usage_type(),
                 [
                     ("Rank", "_rank"), ("Usage Type", "usage_type_parsed_type"),
+                    ("Credits", "total_credits"), ("Records", "rows"),
+                    ("Unique users", "unique_users"),
+                ],
+            ),
+            "tiers": (
+                lb.by_tier(),
+                [
+                    ("Rank", "_rank"), ("Tier", "tier"),
                     ("Credits", "total_credits"), ("Records", "rows"),
                     ("Unique users", "unique_users"),
                 ],

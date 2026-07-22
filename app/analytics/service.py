@@ -120,6 +120,9 @@ class Leaderboards:
     def by_usage_type(self) -> list[dict]:
         return self.by_dimension("usage_type_parsed_type")
 
+    def by_tier(self) -> list[dict]:
+        return self.by_dimension("tier")
+
     def biggest_single(self) -> list[dict]:
         if "usage_credits" not in self.df.columns:
             return []

@@ -14,6 +14,7 @@
       <!-- FILTER BAR -->
       <form method="get" action="{{ url_for('analytics.leaderboard_page') }}" id="filter-form">
         <input type="hidden" name="active_tab" value="{{ active_tab }}">
+        <input type="hidden" name="tier_exact" value="{{ tier_exact }}">
 
         <div class="filter-bar">
           <div class="row g-2 align-items-end">
@@ -76,6 +77,12 @@
         </div>
       </form>
 
+      <!-- EXPORT -->
+      <div class="d-flex justify-content-end mb-2">
+        {{ export_csv_chip(url_for('analytics.leaderboard_export_csv') ~ '?' ~ base_query ~ ('&' if base_query else '') ~ 'active_tab=' ~ active_tab,
+                           'Download the active tab with current filters applied') }}
+      </div>
+
       <!-- TABS -->
       <div class="tier-tabs">
         <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=users"
@@ -89,6 +96,9 @@
 
         <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=usage_types"
            class="tier-tab {% if active_tab == 'usage_types' %}active{% endif %}">Usage types</a>
+
+        <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=tiers"
+           class="tier-tab {% if active_tab == 'tiers' %}active{% endif %}">By tier</a>
 
         <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=biggest_single"
            class="tier-tab {% if active_tab == 'biggest_single' %}active{% endif %}">Credit per record</a>
@@ -104,18 +114,13 @@
 
         <a href="?{{ base_query }}{% if base_query %}&{% endif %}active_tab=daily"
            class="tier-tab {% if active_tab == 'daily' %}active{% endif %}">Daily</a>
-
-        <span class="ms-auto align-self-center">
-          {{ export_csv_chip(url_for('analytics.leaderboard_export_csv') ~ '?' ~ base_query ~ ('&' if base_query else '') ~ 'active_tab=' ~ active_tab,
-                             'Download the active tab with current filters applied') }}
-        </span>
       </div>
 
       <!-- USERS TAB -->
       <div class="tab-panel {% if active_tab == 'users' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Top {{ top_n }} users by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Top {{ top_n }} users by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_users | length }} results</span>
           </div>
 
@@ -158,7 +163,7 @@
       <div class="tab-panel {% if active_tab == 'users_by_type' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Top {{ top_n }} users by usage type</span>
+            <span class="title">Top {{ top_n }} users by usage type{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_users_by_type | length }} results</span>
           </div>
 
@@ -201,7 +206,7 @@
       <div class="tab-panel {% if active_tab == 'models' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Models ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}</span>
+            <span class="title">Models ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_models | length }} results</span>
           </div>
 
@@ -250,7 +255,7 @@
       <div class="tab-panel {% if active_tab == 'usage_types' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Usage types ranked by credits{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Usage types ranked by credits{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_usage_types | length }} results</span>
           </div>
 
@@ -295,11 +300,62 @@
         </div>
       </div>
 
+      <!-- TIERS TAB -->
+      <div class="tab-panel {% if active_tab == 'tiers' %}active{% endif %}">
+        <div class="lb-card">
+          <div class="lb-card-header">
+            <span class="title">Tiers ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
+            <span class="count">{{ lb_tiers | length }} results</span>
+          </div>
+
+          <div class="lb-scroll">
+            <table class="lb-table">
+              <thead>
+                <tr>
+                  <th class="w-rank">#</th>
+                  <th>Tier</th>
+                  <th>Credits</th>
+                  <th>Records</th>
+                  <th>Unique users</th>
+                  <th></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for item in lb_tiers %}
+                <tr class="rank-{{ loop.index }}">
+                  <td class="rank">{{ loop.index }}</td>
+                  <td>{{ item.tier }}</td>
+                  <td class="credits">{{ '{:,.2f}'.format(item.total_credits) }}</td>
+                  <td>{{ '{:,}'.format(item.rows) }}</td>
+                  <td>{{ item.unique_users }}</td>
+                  <td>
+                    <a class="drill-link" href="{{ url_for('analytics.leaderboard_page',
+                        active_tab='users',
+                        tier_exact=item.tier,
+                        tier_filter=tier_filter,
+                        usage_type_filter=usage_type_filter,
+                        model_filter=model_filter,
+                        start_date=start_date,
+                        end_date=end_date,
+                        top_n=top_n
+                      ) }}">Who's in this tier &rarr;</a>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="empty-state">No data</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <!-- BIGGEST SINGLE TAB -->
       <div class="tab-panel {% if active_tab == 'biggest_single' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Highest Single-Record Credit Spend{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Highest Single-Record Credit Spend{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_biggest_single | length }} results</span>
           </div>
 
@@ -364,7 +420,7 @@
       <div class="tab-panel {% if active_tab == 'yearly' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Years ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Years ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_yearly | length }} results</span>
           </div>
           <div class="lb-scroll">
@@ -400,7 +456,7 @@
       <div class="tab-panel {% if active_tab == 'monthly' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Months ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Months ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_monthly | length }} results</span>
           </div>
           <div class="lb-scroll">
@@ -436,7 +492,7 @@
       <div class="tab-panel {% if active_tab == 'weekly' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Weeks ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Weeks ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_weekly | length }} results</span>
           </div>
           <div class="lb-scroll">
@@ -472,7 +528,7 @@
       <div class="tab-panel {% if active_tab == 'daily' %}active{% endif %}">
         <div class="lb-card">
           <div class="lb-card-header">
-            <span class="title">Days ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}</span>
+            <span class="title">Days ranked by credits{% if usage_type_filter %} &mdash; {{ usage_type_filter }}{% endif %}{% if model_filter %} &mdash; {{ model_filter }}{% endif %}{% if tier_filter %} &mdash; tier search: {{ tier_filter }}{% endif %}{% if tier_exact %} &mdash; current tier: {{ tier_exact }}{% endif %}</span>
             <span class="count">{{ lb_daily | length }} results</span>
           </div>
           <div class="lb-scroll">
