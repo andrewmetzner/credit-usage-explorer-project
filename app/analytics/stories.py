@@ -595,13 +595,23 @@ def build_contract_timeline(
             "Weeks from here are scored against the monthly cap; earlier weeks "
             "keep the old flat weekly caps.", "notable", "🔀")
 
-    # 4. Balance milestones — each `step` the remaining pool falls through
+    # 4. Balance milestones — each `step` the remaining pool falls through.
+    # `level` tracks the running peak-so-far, not the all-time max: credits
+    # were unlimited before the contract, so the pool never actually held
+    # a later top-up's balance on day one. Anchoring to the all-time max
+    # made a later injection retroactively "explain" several 100k drops
+    # crammed onto the contract's first day. Tracking the peak as it's
+    # reached keeps every milestone tied to a real decline that happened by
+    # that date.
     daily = _daily_remaining(df, contract, entries, start)
     if not daily.empty:
-        peak = float(daily.max())
-        level = (int(peak // step)) * step
         seen: set[float] = set()
+        peak_so_far = 0.0
+        level = 0.0
         for day, remaining in daily.items():
+            if remaining > peak_so_far:
+                peak_so_far = remaining
+                level = (int(peak_so_far // step)) * step
             while level > 0 and remaining <= level:
                 if level not in seen:
                     add(day, "balance", f"Credits fall below {level:,.0f}",
