@@ -24,6 +24,29 @@
              if (host) host.innerHTML = `<p class="text-muted small mb-0 p-3">${msg}</p>`; }
   };
 
+  // Remember each chart control's last value per browser, so leaving the page
+  // (e.g. to change a setting) and coming back doesn't silently reset every
+  // chart to its defaults (weekly view, all weeks, negatives shown, ...).
+  const PREF_PREFIX = 'summaryChartPref.';
+  const getPref = key => { try { return localStorage.getItem(PREF_PREFIX + key); } catch (_) { return null; } };
+  const setPref = (key, val) => { try { localStorage.setItem(PREF_PREFIX + key, val); } catch (_) { /* noop */ } };
+  // Restores a select/checkbox from its saved value (if any options already
+  // match — callers that populate <option>s dynamically must do so first)
+  // and keeps future changes saved. Returns the element for convenience.
+  function persistControl(id) {
+    const el = document.getElementById(id);
+    if (!el) return el;
+    const saved = getPref(id);
+    if (saved !== null) {
+      if (el.type === 'checkbox') el.checked = saved === '1';
+      else el.value = saved;
+    }
+    el.addEventListener('change', () => {
+      setPref(id, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value);
+    });
+    return el;
+  }
+
   // ===== Credits by usage type per week (stacked bar) =====
   (function initUsageType() {
     const data = D.usageType;
@@ -43,6 +66,8 @@
       typeSel.insertAdjacentHTML('beforeend',
         data.series.map(s => `<option value="${s.name}">${s.name}</option>`).join(''));
     }
+    // Restore saved filter choices now that typeSel's per-type options exist.
+    [typeSel, weeksSel, scopeSel].forEach(s => s && persistControl(s.id));
 
     function apply() {
       const type = typeSel ? typeSel.value : '__all__';
@@ -64,6 +89,7 @@
       c.update();
     }
     [typeSel, weeksSel, scopeSel].forEach(s => s && s.addEventListener('change', apply));
+    apply();  // reflect any restored filter choice immediately
   })();
 
   // ===== Weekly credit burn =====
@@ -87,10 +113,22 @@
     const dailyBtn = document.getElementById('wb-gran-daily');
     const weeksSel = document.getElementById('wb-weeks-filter');
     const scopeSel = document.getElementById('wb-scope-filter');
+    const hideNegSel = document.getElementById('wb-hide-negatives');
     const rangeOptions = Array.from(weeksSel ? weeksSel.options : []);
+    [weeksSel, scopeSel, hideNegSel].forEach(s => s && persistControl(s.id));
+
     let currentMode = series.weekly.length ? 'weekly' : 'daily';
+    const savedMode = getPref('wb-granularity');
+    if (savedMode && series[savedMode] && series[savedMode].length) currentMode = savedMode;
     let currentRows = series[currentMode];
     let curIc = currentRows.map(d => d.in_contract);
+
+    // "Hide negatives": a big same-day refund/correction can drag the net
+    // total below zero and bury real usage under it. When on, the bar shows
+    // only the positive (consumed) portion; the tooltip footer notes what
+    // was refunded so the dip isn't just silently dropped.
+    const hidingNegatives = () => !!(hideNegSel && hideNegSel.checked);
+    const valueFor = d => (hidingNegatives() ? d.positive_credits : d.total_credits);
 
     function modeConfig(mode) {
       return mode === 'daily'
@@ -136,7 +174,7 @@
         labels: currentRows.map(d => d[modeConfig(currentMode).labelKey]),
         datasets: [{
           label: 'Credits used',
-          data: currentRows.map(d => d.total_credits),
+          data: currentRows.map(valueFor),
           backgroundColor: bgFor(currentRows),
           borderColor: bdFor(currentRows),
           borderWidth: 1,
@@ -149,7 +187,16 @@
           legend: { display: false },
           tooltip: { callbacks: {
             title: items => (modeConfig(currentMode).labelPrefix + items[0].label),
-            footer: items => (curIc[items[0].dataIndex] ? '' : 'Pre-contract'),
+            footer: items => {
+              const i = items[0].dataIndex;
+              const lines = [];
+              if (!curIc[i]) lines.push('Pre-contract');
+              const refunded = currentRows[i] && currentRows[i].refunded_credits;
+              if (hidingNegatives() && refunded > 0) {
+                lines.push(`Refunded ${refunded.toLocaleString()} credits that ${currentMode === 'daily' ? 'day' : 'week'}`);
+              }
+              return lines;
+            },
           } },
         },
         scales: {
@@ -168,7 +215,7 @@
       curIc = rows.map(d => d.in_contract);
       const c = window.summaryWeeklyChart.chart;
       c.data.labels = rows.map(d => d[cfg.labelKey]);
-      c.data.datasets[0].data = rows.map(d => d.total_credits);
+      c.data.datasets[0].data = rows.map(valueFor);
       c.data.datasets[0].backgroundColor = bgFor(rows);
       c.data.datasets[0].borderColor = bdFor(rows);
       c.update();
@@ -177,6 +224,7 @@
     window.setSummaryBurnGranularity = function (mode, btn) {
       if (!series[mode] || mode === currentMode) return;
       currentMode = mode;
+      setPref('wb-granularity', mode);
       refreshGranularityUI();
       apply();
       if (btn && btn.parentElement) {
@@ -186,7 +234,7 @@
       }
     };
 
-    [weeksSel, scopeSel].forEach(s => s && s.addEventListener('change', apply));
+    [weeksSel, scopeSel, hideNegSel].forEach(s => s && s.addEventListener('change', apply));
     refreshGranularityUI();
     apply();
     if (!series.daily.length && dailyBtn) dailyBtn.disabled = true;
@@ -230,6 +278,7 @@
 
     const weeksSel = document.getElementById('au-weeks-filter');
     const scopeSel = document.getElementById('au-scope-filter');
+    [weeksSel, scopeSel].forEach(s => s && persistControl(s.id));
     function apply() {
       let rows = auData;
       if (scopeSel && scopeSel.value === 'contract') rows = rows.filter(d => d.in_contract);
@@ -242,5 +291,6 @@
       c.update();
     }
     [weeksSel, scopeSel].forEach(s => s && s.addEventListener('change', apply));
+    apply();  // reflect any restored filter choice immediately
   })();
 })();

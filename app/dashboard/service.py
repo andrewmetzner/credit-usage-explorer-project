@@ -148,9 +148,19 @@ def compute_weekly_trend(df: pd.DataFrame, contract_start: str = "") -> str:
     wdf["_date"] = pd.to_datetime(wdf["date_partition"], errors="coerce")
     wdf = wdf.dropna(subset=["_date"])
     wdf["week"] = wdf["_date"] - pd.to_timedelta(wdf["_date"].dt.dayofweek, unit="D")
+    # Split each row into its positive (usage) and negative (refund/correction)
+    # part so the chart can optionally show burn without a refund dragging a
+    # week's bar below zero, while still surfacing how much was refunded.
+    wdf["_pos"] = wdf["usage_credits"].clip(lower=0)
+    wdf["_neg"] = wdf["usage_credits"].clip(upper=0)
     weekly = (
         wdf.groupby("week", as_index=False)
-        .agg(total_credits=("usage_credits", "sum"), unique_users=("email", "nunique"))
+        .agg(
+            total_credits=("usage_credits", "sum"),
+            unique_users=("email", "nunique"),
+            positive_credits=("_pos", "sum"),
+            neg_credits=("_neg", "sum"),
+        )
         .sort_values("week")
     )
     # Weeks starting before the contract are "pre-contract" (rendered gray and
@@ -162,6 +172,8 @@ def compute_weekly_trend(df: pd.DataFrame, contract_start: str = "") -> str:
         {
             "week": str(row["week"].date()),
             "total_credits": round(float(row["total_credits"]), 2),
+            "positive_credits": round(float(row["positive_credits"]), 2),
+            "refunded_credits": round(float(-row["neg_credits"]), 2),
             "unique_users": int(row["unique_users"]),
             "in_contract": bool(cstart is None or row["week"] >= cstart),
         }
@@ -180,16 +192,28 @@ def compute_daily_trend(df: pd.DataFrame, contract_start: str = "") -> str:
     if ddf.empty:
         return "[]"
     ddf["_day"] = ddf["_date"].dt.normalize()
+    # Same positive/negative split as the weekly trend (see comment there) —
+    # a day with a big refund/correction can otherwise swing the whole bar
+    # negative and bury real same-day usage.
+    ddf["_pos"] = ddf["usage_credits"].clip(lower=0)
+    ddf["_neg"] = ddf["usage_credits"].clip(upper=0)
 
     daily = (
         ddf.groupby("_day", as_index=False)
-        .agg(total_credits=("usage_credits", "sum"), unique_users=("email", "nunique"))
+        .agg(
+            total_credits=("usage_credits", "sum"),
+            unique_users=("email", "nunique"),
+            positive_credits=("_pos", "sum"),
+            neg_credits=("_neg", "sum"),
+        )
         .sort_values("_day")
         .rename(columns={"_day": "day"})
     )
 
     full_days = pd.DataFrame({"day": pd.date_range(daily["day"].min(), daily["day"].max(), freq="D")})
-    daily = full_days.merge(daily, on="day", how="left").fillna({"total_credits": 0.0, "unique_users": 0})
+    daily = full_days.merge(daily, on="day", how="left").fillna(
+        {"total_credits": 0.0, "unique_users": 0, "positive_credits": 0.0, "neg_credits": 0.0}
+    )
 
     cstart = pd.to_datetime(contract_start, errors="coerce")
     cstart = None if pd.isna(cstart) else cstart
@@ -197,6 +221,8 @@ def compute_daily_trend(df: pd.DataFrame, contract_start: str = "") -> str:
         {
             "day": str(row["day"].date()),
             "total_credits": round(float(row["total_credits"]), 2),
+            "positive_credits": round(float(row["positive_credits"]), 2),
+            "refunded_credits": round(float(-row["neg_credits"]), 2),
             "unique_users": int(row["unique_users"]),
             "in_contract": bool(cstart is None or row["day"] >= cstart),
         }
