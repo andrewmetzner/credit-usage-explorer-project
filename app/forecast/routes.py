@@ -8,7 +8,6 @@ import json
 from flask import Blueprint, Response, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
 
 from app.shared.chart_data import usage_type_weekly_json
-from app.shared.credit_ledger import sync_credit_ledger
 from app.shared.csv_export import csv_response, range_slug
 from app.shared.forecast_window import exclude_incomplete_week_from_burn, latest_data_date
 from .models import PriceModel
@@ -272,38 +271,86 @@ def create_forecast_blueprint(services) -> Blueprint:
             "as_of": effective_as_of, "today": effective_today,
         }
 
-    def _config_as_of(config: dict, as_of: object) -> dict:
-        """A config copy whose credit ledger only includes entries effective
-        by `as_of` — so a historical/backfilled snapshot doesn't count
-        credits that hadn't been granted yet as of its own date. Used
+    def _config_as_of(as_of: object, forecast_overrides: dict | None = None) -> dict:
+        """The legacy-shaped contract config for whichever configured
+        contract governed `as_of` (see app/shared/contracts.py), with its
+        credit ledger further clamped to entries effective by `as_of` — so
+        a historical/backfilled snapshot uses the SAME contract (dates,
+        price, ledger) that was actually active back then, not today's, and
+        doesn't count credits granted after its own date. `forecast_overrides`
+        lets batch-generation routes carry over an adjustment (e.g. a capped
+        `monte_carlo_runs`) made to today's global forecast settings. Used
         wherever a ForecastingService is built to reconstruct the past
         (weekly-snapshot backfill, snapshot resync)."""
+        from app.shared.contracts import resolve_contract_config
         from app.shared.credit_ledger import credit_entries_as_of, credit_entries_total
 
-        cfg = copy.deepcopy(config)
+        cfg = resolve_contract_config(config_svc, pipeline=pipeline, as_of=as_of)
+        if forecast_overrides:
+            cfg["forecast"] = {**cfg.get("forecast", {}), **forecast_overrides}
         contract = cfg.setdefault("contract", {})
         entries = credit_entries_as_of(contract, as_of)
         contract["credit_entries"] = entries
         contract["purchased_credits"] = credit_entries_total(entries)
         return cfg
 
-    def _service_for_week(config: dict, hist_df, truncated_op, ledger_as_of):
+    def _service_for_week(hist_df, truncated_op, ledger_as_of, forecast_overrides: dict | None = None):
         """A ForecastingService reconstructing "the world as it looked as of
         a specific week": historical data through only that week, and a
         ledger clamped via `_config_as_of` to what had actually been
-        granted by `ledger_as_of` — so a later-dated grant doesn't leak into
-        a week that predates it. Returns None (instead of a service with no
-        data) when there's nothing to build from, so every snapshot-rebuild
-        route (resync, backfill, generate-weekly, generate-all) can share
-        the same "skip/count as an error" check rather than reimplementing
-        it. Callers own the truncation itself (by iloc slice or by a
-        week_end date filter — those differ) and pass the result in."""
-        week_config = _config_as_of(config, ledger_as_of)
+        granted by `ledger_as_of` (against whichever contract governed that
+        date) — so a later-dated grant, or a later contract, doesn't leak
+        into a week that predates it. Returns None (instead of a service
+        with no data) when there's nothing to build from, so every
+        snapshot-rebuild route (resync, backfill, generate-weekly,
+        generate-all) can share the same "skip/count as an error" check
+        rather than reimplementing it. Callers own the truncation itself (by
+        iloc slice or by a week_end date filter — those differ) and pass the
+        result in."""
+        week_config = _config_as_of(ledger_as_of, forecast_overrides)
         svc = ForecastingService(week_config, hist_df, truncated_op.copy() if truncated_op is not None else None)
         return svc if svc.has_data() else None
 
-    def _credit_events(contract_start, as_of=None) -> list[dict]:
-        """Credit-ledger entries as chart events, each clamped to contract start.
+    def _build_expiration_overview(contracts, active_id, projected_expirations) -> dict:
+        """Summarize credit expiration across the active + future contracts.
+
+        "Credit expiration" = a contract whose ``rollover_allowed`` is off, so
+        any credits still unspent at its end date lapse instead of carrying
+        into the next contract. Returns per-contract rows (label, dates,
+        credits, rollover flag, expiry status) plus the total credits the
+        chained burndown projects will be lost to expiry."""
+        from app.shared.contracts import sort_contracts
+        from app.shared.credit_ledger import credit_entries_total, normalize_credit_entries
+
+        ordered = sort_contracts(contracts or [])
+        idx = next((i for i, c in enumerate(ordered) if c.get("id") == active_id), None)
+        relevant = ordered[idx:] if idx is not None else ordered
+
+        lost_by_date = {e["date"]: e for e in (projected_expirations or [])}
+        total_lost = round(sum(float(e.get("amount") or 0) for e in (projected_expirations or [])), 1)
+
+        rows = []
+        for c in relevant:
+            end = str(c.get("contract_end_date") or "")
+            rolls = bool(c.get("rollover_allowed"))
+            row = {
+                "id": c.get("id"),
+                "label": c.get("label") or "Contract",
+                "start": str(c.get("contract_start_date") or ""),
+                "end": end,
+                "credits": credit_entries_total(normalize_credit_entries(c)),
+                "rollover": rolls,
+                "is_active": c.get("id") == active_id,
+                # Projected credits this contract loses to expiry (only known
+                # for the ones the chained burndown actually reaches).
+                "projected_expired": lost_by_date.get(end, {}).get("amount") if not rolls else None,
+            }
+            rows.append(row)
+        return {"contracts": rows, "total_projected_expired": total_lost, "has_future": len(relevant) > 1}
+
+    def _events_for_contract(contract: dict, as_of=None) -> list[dict]:
+        """Credit-ledger entries for ONE contract dict, as chart events, each
+        clamped to that contract's own start.
 
         effective_date is when the entry starts counting toward "available";
         undated or pre-contract entries count from contract start. ``as_of``
@@ -311,8 +358,8 @@ def create_forecast_blueprint(services) -> Blueprint:
         shows grants that had actually happened by then."""
         from app.shared.credit_ledger import credit_kind_label, normalize_credit_entries
 
-        entries = normalize_credit_entries(config_svc.load_contract().get("contract", {}))
-        start = _pd.to_datetime(contract_start, errors="coerce")
+        entries = normalize_credit_entries(contract or {})
+        start = _pd.to_datetime((contract or {}).get("contract_start_date"), errors="coerce")
         cutoff = _pd.to_datetime(as_of, errors="coerce") if as_of is not None else _pd.NaT
         events = []
         for e in entries:
@@ -332,6 +379,31 @@ def create_forecast_blueprint(services) -> Blueprint:
                 "notes": str(e.get("notes") or ""),
             })
         return events
+
+    def _credit_events(contract_start, as_of=None) -> list[dict]:
+        """Credit-ledger entries for the ACTIVE contract (see
+        `_events_for_contract` for the per-contract version used by the
+        "view other contracts" chart mode)."""
+        return _events_for_contract(config_svc.load_contract().get("contract", {}), as_of=as_of)
+
+    def _all_contracts_view(contracts: list[dict]) -> list[dict]:
+        """Every configured contract's own id/label/dates/credits/ledger, for
+        the burndown chart's "view other contracts" mode — lets the client
+        rebuild any single contract's own actual+projected line without a
+        server round-trip per selection."""
+        from app.shared.credit_ledger import credit_entries_total, normalize_credit_entries
+
+        out = []
+        for c in contracts or []:
+            out.append({
+                "id": c.get("id"),
+                "label": str(c.get("label") or "Contract"),
+                "start": str(c.get("contract_start_date") or ""),
+                "end": str(c.get("contract_end_date") or ""),
+                "purchased": credit_entries_total(normalize_credit_entries(c)),
+                "creditEvents": _events_for_contract(c),
+            })
+        return out
 
     def _daily_actual_burndown_json(df, contract_status: dict | None, as_of=None) -> str:
         """Daily actual remaining points for the burndown chart.
@@ -449,7 +521,7 @@ def create_forecast_blueprint(services) -> Blueprint:
             # into a week that predates it.
             truncated_op = op_sorted.iloc[: i + 1].copy()
             try:
-                svc = _service_for_week(config, hist_df, truncated_op, week_end_str)
+                svc = _service_for_week(hist_df, truncated_op, week_end_str, forecast_overrides=config.get("forecast"))
                 if svc is None:
                     yield {"phase": "result", "index": i, "total": total, "week_end": week_end_str, "status": "error"}
                     continue
@@ -471,7 +543,9 @@ def create_forecast_blueprint(services) -> Blueprint:
         available_credits = float(request.args.get("available_credits", 0) or 0)
         total_credit_cost = float(request.args.get("total_credit_cost", 0) or 0)
 
-        config = config_svc.load_contract()
+        from app.shared.contracts import resolve_contract_config
+
+        config = resolve_contract_config(config_svc, pipeline=pipeline)
 
         is_preview = False
         preview_keys = [
@@ -560,6 +634,12 @@ def create_forecast_blueprint(services) -> Blueprint:
                 credit_events="[]",
                 cumulative_chart_data="[]",
                 active_users_data="[]",
+                chained_burndown_data="[]",
+                contract_boundaries_data="[]",
+                contract_expirations_data="[]",
+                all_contracts_data=json.dumps(_all_contracts_view(config.get("contracts", []))),
+                chained_final=None,
+                expiration_overview=None,
                 usage_type_weekly=usage_type_weekly,
                 pipeline_status=pipeline.status(),
                 forecast_history=[],
@@ -603,6 +683,31 @@ def create_forecast_blueprint(services) -> Blueprint:
         contract_start_str = str(contract_status.get("contract_start_date", ""))
         active_users_data = chart_builder.active_users_json(contract_start_str)
 
+        # Deterministic projection chained across any future contract(s)
+        # configured to start after the active one — empty when there's
+        # nothing to chain into, in which case the page falls back to the
+        # ordinary single-contract projection it's always drawn.
+        from .service import build_chained_projection
+
+        chained = build_chained_projection(
+            config.get("contracts", []),
+            config.get("contract", {}).get("id"),
+            contract_status.get("latest_usage_date"),
+            forecast_data.get("credits_remaining", 0.0),
+            forecast_data.get("forecast_weekly_burn", 0.0),
+        )
+        all_contracts_data = json.dumps(_all_contracts_view(config.get("contracts", [])))
+        chained_burndown_data = json.dumps(chained["points"])
+        contract_boundaries_data = json.dumps(chained["boundaries"])
+        contract_expirations_data = json.dumps(chained["expirations"])
+        chained_final = chained["points"][-1] if chained["points"] else None
+        # Credit-expiration overview: which future contracts let their
+        # leftover credits lapse (rollover off) vs. carry forward, plus the
+        # projected credits lost to expiry from the chained burndown above.
+        expiration_overview = _build_expiration_overview(
+            config.get("contracts", []), config.get("contract", {}).get("id"), chained["expirations"]
+        )
+
         # Snapshot mode: the KPI cards (status, credit position, burn, MC/ML)
         # show the snapshot's FROZEN numbers, while the chart/island keep LIVE
         # values so the window and cut-and-overlay match the live forecast.
@@ -627,6 +732,12 @@ def create_forecast_blueprint(services) -> Blueprint:
             credit_events=credit_events,
             cumulative_chart_data=cumulative_chart_data,
             active_users_data=active_users_data,
+            chained_burndown_data=chained_burndown_data,
+            contract_boundaries_data=contract_boundaries_data,
+            contract_expirations_data=contract_expirations_data,
+            all_contracts_data=all_contracts_data,
+            chained_final=chained_final,
+            expiration_overview=expiration_overview,
             usage_type_weekly=usage_type_weekly,
             pipeline_status=pipeline.status(),
             forecast_history=_history_in_window(),
@@ -655,22 +766,12 @@ def create_forecast_blueprint(services) -> Blueprint:
 
     @bp.route("/forecast/save-config", methods=["POST"])
     def save_forecast_config() -> object:
+        """Saves the global Forecast settings only (weights/MC/snapshot
+        cadence) — contract dates, credit ledger, price, and rollover are
+        edited per-contract from Settings' Contracts manager instead (see
+        app/settings/routes.py)."""
         contract = config_svc.load_contract()
 
-        if request.form.get("contract_start_date"):
-            contract["contract"]["contract_start_date"] = request.form.get("contract_start_date")
-        if request.form.get("contract_end_date"):
-            contract["contract"]["contract_end_date"] = request.form.get("contract_end_date")
-        if request.form.get("purchased_credits"):
-            contract["contract"]["purchased_credits"] = float(request.form.get("purchased_credits"))
-        if request.form.get("purchased_credits_date"):
-            contract["contract"]["purchased_credits_date"] = request.form.get("purchased_credits_date")
-        if request.form.get("rollover_allowed"):
-            contract["contract"]["rollover_allowed"] = request.form.get("rollover_allowed") == "on"
-        if request.form.get("current_price_per_credit"):
-            contract["pricing"]["current_price_per_credit"] = float(request.form.get("current_price_per_credit"))
-        if request.form.get("next_contract_price_per_credit"):
-            contract["pricing"]["next_contract_price_per_credit"] = float(request.form.get("next_contract_price_per_credit"))
         if request.form.get("forecast_mode"):
             contract["forecast"]["mode"] = request.form.get("forecast_mode")
         if request.form.get("recent_average_window_weeks"):
@@ -694,7 +795,6 @@ def create_forecast_blueprint(services) -> Blueprint:
             except (ValueError, TypeError):
                 pass
 
-        sync_credit_ledger(contract["contract"])
         config_svc.save_contract(contract)
         flash("Forecast config saved.", "success")
         next_page = request.form.get("next_page", "settings")
@@ -826,8 +926,9 @@ def create_forecast_blueprint(services) -> Blueprint:
                 # Ledger entries dated after this snapshot's own date must not
                 # count yet — only what the pool actually held then.
                 svc = _service_for_week(
-                    config, hist_df, truncated_op,
+                    hist_df, truncated_op,
                     ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of,
+                    forecast_overrides=config.get("forecast"),
                 )
                 if svc is None:
                     errors += 1
@@ -921,8 +1022,9 @@ def create_forecast_blueprint(services) -> Blueprint:
                     continue
 
                 svc = _service_for_week(
-                    config, hist_df, truncated_op,
+                    hist_df, truncated_op,
                     ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of,
+                    forecast_overrides=config.get("forecast"),
                 )
                 if svc is None:
                     errors += 1
@@ -1158,7 +1260,9 @@ def create_forecast_blueprint(services) -> Blueprint:
                 filters=[("snapshot", snapshot_ts)],
             )
 
-        svc = _forecasting_from_request(config_svc.load_contract())
+        from app.shared.contracts import resolve_contract_config
+
+        svc = _forecasting_from_request(resolve_contract_config(config_svc, pipeline=pipeline))
         if not svc.has_data():
             return Response("No data available", status=404, mimetype="text/plain")
         cs = svc.get_contract_status()
@@ -1258,6 +1362,44 @@ def create_forecast_blueprint(services) -> Blueprint:
             filters=[("selected", len(keys) if keys else "")],
         )
 
+    def _config_for_contract_id(contract_id: str) -> dict | None:
+        """The legacy-shaped config for ONE specific configured contract, by
+        id — not "whichever is active today" (resolve_contract_config), but
+        exactly the one requested. Backs the "view other contracts" chart
+        mode's Monte Carlo / ML overlays, which need to run the forecast
+        engine against that contract's own dates/ledger rather than the
+        live active one."""
+        doc = config_svc.load_document()
+        contracts = doc.get("contracts", [])
+        contract = next((c for c in contracts if c.get("id") == contract_id), None)
+        if contract is None:
+            return None
+        return {
+            "contract": contract,
+            "pricing": {"current_price_per_credit": float(contract.get("price_per_credit") or 0)},
+            "forecast": doc.get("forecast", {}),
+            "contracts": contracts,
+        }
+
+    def _apply_burn_window_only(svc, data_from: str, data_to: str) -> None:
+        """Narrow which operational weeks feed the burn RATE — same idea as
+        _apply_view_window's data_from/data_to handling, but WITHOUT any live
+        "today" anchoring (svc._as_of/_today stay unset). Used for the
+        contract_id-scoped model-data path below: "today" anchoring only
+        makes sense for whichever contract is actually active right now, and
+        would otherwise zero out a not-yet-started future contract's credits
+        (its ledger entries are dated at ITS OWN start, which is after
+        today, so an as-of-today ledger read finds nothing granted yet)."""
+        if not (data_from or data_to) or svc.operational_df is None or svc.operational_df.empty:
+            return
+        win = svc.operational_df.copy()
+        if data_from:
+            win = win[win["week_start"] >= _pd.to_datetime(data_from)]
+        if data_to:
+            win = win[win["week_end"] <= _pd.to_datetime(data_to)]
+        if not win.empty:
+            svc._forecast_op_df = win
+
     @bp.route("/forecast/model-data", methods=["GET"])
     def model_data() -> object:
         model_id = request.args.get("model", "monte_carlo")
@@ -1266,18 +1408,64 @@ def create_forecast_blueprint(services) -> Blueprint:
             granularity = "weekly"
         exclude_partial = granularity == "weekly"
 
-        config = config_svc.load_contract()
+        from app.shared.contracts import resolve_contract_config
+
+        contract_id = request.args.get("contract_id", "").strip()
+        if contract_id:
+            config = _config_for_contract_id(contract_id)
+            if config is None:
+                return jsonify({"error": f"Unknown contract_id: {contract_id!r}"}), 404
+            svc, _hist_df, _op_df, _daily_df = _build_live_service(config)
+            _apply_burn_window_only(
+                svc, request.args.get("data_from", "").strip(), request.args.get("data_to", "").strip()
+            )
+        else:
+            config = resolve_contract_config(config_svc, pipeline=pipeline)
+            svc = _forecasting_from_request(config, exclude_partial)
         cfg_runs = int(config.get("forecast", {}).get("monte_carlo_runs", 10000))
         try:
             runs = min(int(request.args.get("runs", cfg_runs) or cfg_runs), 20000)
         except (ValueError, TypeError):
             runs = cfg_runs
-        svc = _forecasting_from_request(config, exclude_partial)
         if not svc.has_data():
             return jsonify({"error": "No data available"}), 404
 
         cs = svc.get_contract_status()
         fc = svc.get_forecast()
+
+        if contract_id:
+            # A genuinely future "other contract" (hasn't started yet) has no
+            # data of its own — get_contract_status()'s latest_usage_date
+            # falls back to the pipeline-wide latest date, which predates
+            # this contract's own start. Anchor at its own start instead,
+            # with its own full credit pool, so the forecast previews "if
+            # this contract were live starting on its own date" rather than
+            # nonsensically reading as fully spent before it even begins.
+            contract_start = _pd.to_datetime(config["contract"].get("contract_start_date"), errors="coerce")
+            if not _pd.isna(contract_start) and _pd.to_datetime(cs.latest_usage_date) < contract_start:
+                contract_end = _pd.to_datetime(config["contract"].get("contract_end_date"), errors="coerce")
+                cs.latest_usage_date = contract_start.date()
+                cs.credits_remaining = cs.purchased_credits
+                cs.elapsed_days = 0
+                if not _pd.isna(contract_end):
+                    cs.remaining_days = max((contract_end - contract_start).days, 0)
+                    cs.weeks_remaining = cs.remaining_days / 7
+                fc.credits_remaining = cs.credits_remaining
+                fc.weeks_remaining = cs.weeks_remaining
+
+            # The chained chart's next-contract band needs to start from
+            # that contract's CARRIED-OVER balance when its predecessor
+            # rolls over (delta + leftover), not just its own fresh credits
+            # — the client already computes this exactly (see
+            # buildFutureContractSegments) and passes it through here rather
+            # than this route re-deriving the whole chain.
+            override = request.args.get("credits_override", "").strip()
+            if override:
+                try:
+                    cs.credits_remaining = max(float(override), 0.0)
+                    fc.credits_remaining = cs.credits_remaining
+                except (TypeError, ValueError):
+                    pass
 
         try:
             ctx = svc.build_forecast_context(cs, fc)

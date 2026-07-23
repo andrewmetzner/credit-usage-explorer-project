@@ -3,26 +3,29 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import yaml
 
 from .alert_rules import DEFAULT_ALERT_RULES, AlertRule
-from .credit_ledger import credit_entries_total, normalize_credit_entries
+from .credit_ledger import (
+    build_credit_entry,
+    credit_entries_total,
+    normalize_credit_entries,
+    sync_credit_ledger,
+)
+
+
+def _to_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
 
 # Used when no contract_config.yaml exists yet (fresh install / setup wizard).
 DEFAULT_CONTRACT_CONFIG: dict = {
-    "contract": {
-        "contract_start_date": "",
-        "contract_end_date": "",
-        "purchased_credits": 0,
-        "purchased_credits_date": "",
-        "credit_entries": [],
-        "rollover_allowed": False,
-    },
-    "pricing": {
-        "current_price_per_credit": 0.0,
-        "next_contract_price_per_credit": 0.0,
-    },
+    "contracts": [],
     "forecast": {
         "mode": "auto",
         "normalize_weights": True,
@@ -69,27 +72,184 @@ class AppConfig:
         return self.contract_path.exists()
 
     def is_contract_configured(self) -> bool:
-        """True only when the contract has real dates + purchased credits set."""
+        """True when at least one configured contract has real dates + credits."""
         try:
-            c = self.load_contract().get("contract", {})
-            available = float(c.get("purchased_credits") or 0)
-            if available <= 0:
-                available = credit_entries_total(normalize_credit_entries(c))
-            return bool(c.get("contract_start_date")) and bool(c.get("contract_end_date")) \
-                and available > 0
+            for c in self.load_contracts():
+                available = _to_float(c.get("purchased_credits"))
+                if available <= 0:
+                    available = credit_entries_total(normalize_credit_entries(c))
+                if c.get("contract_start_date") and c.get("contract_end_date") and available > 0:
+                    return True
+            return False
         except Exception:
             return False
 
-    def load_contract(self) -> dict:
+    @staticmethod
+    def _migrate_legacy_document(raw: dict) -> dict:
+        """Legacy single-contract shape (`contract:`/`pricing:`) -> the
+        multi-contract shape (`contracts:` list). A no-op once a file has
+        already been migrated (i.e. already has a `contracts` key)."""
+        if "contracts" in raw:
+            return raw
+        legacy_contract = raw.get("contract")
+        forecast_cfg = raw.get("forecast", {})
+        if not isinstance(legacy_contract, dict):
+            return {"contracts": [], "forecast": forecast_cfg}
+        pricing = raw.get("pricing") or {}
+        migrated = dict(legacy_contract)
+        migrated.setdefault("id", uuid4().hex[:8])
+        migrated.setdefault("label", "Contract 1")
+        migrated["price_per_credit"] = _to_float(pricing.get("current_price_per_credit"))
+        return {"contracts": [migrated], "forecast": forecast_cfg}
+
+    def load_document(self) -> dict:
+        """The whole config document in its current (multi-contract) shape.
+        Silently migrates and re-persists a legacy on-disk file the first
+        time it's loaded post-upgrade."""
         if not self.contract_path.exists():
             return copy.deepcopy(DEFAULT_CONTRACT_CONFIG)
         with open(self.contract_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or copy.deepcopy(DEFAULT_CONTRACT_CONFIG)
+            raw = yaml.safe_load(f) or {}
+        doc = self._migrate_legacy_document(raw)
+        if "contract" in raw or "pricing" in raw:
+            self.save_document(doc)
+        return doc
+
+    def save_document(self, doc: dict) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"contracts": doc.get("contracts", []), "forecast": doc.get("forecast", {})}
+        with open(self.contract_path, "w", encoding="utf-8") as f:
+            yaml.dump(payload, f, default_flow_style=False, allow_unicode=True)
+
+    def load_contracts(self) -> list[dict]:
+        return self.load_document().get("contracts", [])
+
+    def save_contracts(self, contracts: list[dict]) -> None:
+        doc = self.load_document()
+        doc["contracts"] = contracts
+        self.save_document(doc)
+
+    def add_contract(self, fields: dict) -> str:
+        contracts = self.load_contracts()
+        new_id = uuid4().hex[:8]
+        start = str(fields.get("contract_start_date") or "")
+        contract = {
+            "id": new_id,
+            "label": str(fields.get("label") or f"Contract {len(contracts) + 1}"),
+            "contract_start_date": start,
+            "contract_end_date": str(fields.get("contract_end_date") or ""),
+            "price_per_credit": _to_float(fields.get("price_per_credit")),
+            "rollover_allowed": bool(fields.get("rollover_allowed")),
+            "purchased_credits": 0,
+            "purchased_credits_date": str(fields.get("purchased_credits_date") or start),
+            "credit_entries": [],
+        }
+        initial_credits = _to_float(fields.get("purchased_credits"))
+        if initial_credits > 0:
+            contract["credit_entries"] = [build_credit_entry(
+                date=contract["purchased_credits_date"] or start,
+                credits=initial_credits,
+                kind="purchased",
+                notes="Initial allocation",
+            )]
+        sync_credit_ledger(contract)
+        contracts.append(contract)
+        self.save_contracts(contracts)
+        return new_id
+
+    def update_contract_fields(self, contract_id: str, fields: dict) -> None:
+        contracts = self.load_contracts()
+        for c in contracts:
+            if c.get("id") != contract_id:
+                continue
+            if "label" in fields:
+                c["label"] = str(fields["label"] or c.get("label") or "")
+            if "contract_start_date" in fields:
+                c["contract_start_date"] = str(fields["contract_start_date"] or "")
+            if "contract_end_date" in fields:
+                c["contract_end_date"] = str(fields["contract_end_date"] or "")
+            if "price_per_credit" in fields:
+                c["price_per_credit"] = _to_float(fields["price_per_credit"])
+            if "rollover_allowed" in fields:
+                c["rollover_allowed"] = bool(fields["rollover_allowed"])
+            sync_credit_ledger(c)
+            self.save_contracts(contracts)
+            return
+        raise ValueError(f"No contract with id {contract_id!r}")
+
+    def remove_contract(self, contract_id: str) -> None:
+        self.save_contracts([c for c in self.load_contracts() if c.get("id") != contract_id])
+
+    def add_credit_entry(self, contract_id: str, *, date: str, credits: float, kind: str, notes: str = "") -> None:
+        contracts = self.load_contracts()
+        for c in contracts:
+            if c.get("id") != contract_id:
+                continue
+            entries = normalize_credit_entries(c)
+            entries.append(build_credit_entry(date=date, credits=credits, kind=kind, notes=notes))
+            c["credit_entries"] = entries
+            sync_credit_ledger(c)
+            self.save_contracts(contracts)
+            return
+        raise ValueError(f"No contract with id {contract_id!r}")
+
+    def remove_credit_entry(self, contract_id: str, entry_id: str) -> None:
+        contracts = self.load_contracts()
+        for c in contracts:
+            if c.get("id") != contract_id:
+                continue
+            entries = normalize_credit_entries(c)
+            kept = [e for e in entries if str(e.get("id", "")) != entry_id]
+            c["credit_entries"] = kept
+            if not kept:
+                c["purchased_credits"] = 0
+            sync_credit_ledger(c)
+            self.save_contracts(contracts)
+            return
+        raise ValueError(f"No contract with id {contract_id!r}")
+
+    def load_contract(self, as_of=None) -> dict:
+        """Legacy-shaped single-contract view, resolved against whichever
+        configured contract governs `as_of` (default: today). See
+        app/shared/contracts.py for the resolution/rollover rules."""
+        from .contracts import resolve_contract_config
+
+        return resolve_contract_config(self, pipeline=None, as_of=as_of)
 
     def save_contract(self, data: dict) -> None:
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.contract_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        """Compatibility save-back for callers that only ever touch "the"
+        (legacy-shaped) contract — writes `data["contract"]` into its slot
+        in the full contracts list (matched by id, falling back to today's
+        active contract), and `data["forecast"]` as the global forecast
+        config."""
+        from .contracts import resolve_active_contract
+
+        doc = self.load_document()
+        contracts = doc.get("contracts", [])
+        edited = dict(data.get("contract") or {})
+        pricing = data.get("pricing") or {}
+        if "current_price_per_credit" in pricing:
+            edited["price_per_credit"] = _to_float(pricing["current_price_per_credit"])
+
+        target_idx = next((i for i, c in enumerate(contracts) if c.get("id") == edited.get("id")), None)
+        if target_idx is None:
+            active = resolve_active_contract(contracts, None)
+            if active is not None:
+                target_idx = next((i for i, c in enumerate(contracts) if c.get("id") == active.get("id")), None)
+                if target_idx is not None:
+                    edited["id"] = contracts[target_idx]["id"]
+
+        sync_credit_ledger(edited)
+        if target_idx is not None:
+            contracts[target_idx] = edited
+        elif edited.get("contract_start_date") or edited.get("credit_entries"):
+            edited.setdefault("id", uuid4().hex[:8])
+            contracts.append(edited)
+
+        doc["contracts"] = contracts
+        if "forecast" in data:
+            doc["forecast"] = data["forecast"]
+        self.save_document(doc)
 
     # Tier config is round-tripped with ruamel.yaml so the hand-written
     # annotations (e.g. "# monthly; ~400/week") survive every Settings save.

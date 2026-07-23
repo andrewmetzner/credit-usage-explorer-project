@@ -769,6 +769,150 @@ class ForecastingService:
         raise ValueError(f"No auto weight rule matched {op_count} operational weeks.")
 
 
+def build_chained_projection(
+    contracts: list[dict],
+    active_contract_id: str | None,
+    latest_usage_date,
+    credits_remaining: float,
+    weekly_burn: float,
+) -> dict:
+    """Deterministic burndown projected across every contract configured to
+    start after the active one — instead of assuming the active contract's
+    pool continues forever past its own end (what the single-contract
+    deterministic model does).
+
+    The line forecasts smoothly (declines like a single contract), and at
+    each future contract's *start* date its position becomes that contract's
+    pool: added on top of the carried balance when the previous contract
+    rolls over, or a fresh reset to just this contract's own credits when it
+    doesn't (the previous leftover lapses). It is NOT drawn as a cliff to
+    zero at a contract's end — expiry is recorded for the overview instead, so
+    the projection stays clean and the two segments need not connect.
+
+    Returns ``{"points", "boundaries", "expirations"}``:
+      * ``points``   — [{date, value}] burndown (one value per date).
+      * ``boundaries`` — [{date, label, delta}] injection markers, on each
+        future contract's start date.
+      * ``expirations`` — [{date, label, amount}] credits that lapse unspent
+        at a non-rolling contract's end date (for the overview, not the line).
+    All three are empty when there's no next contract configured (or no burn
+    to project) — callers fall back to the single-contract projection then.
+    """
+    from datetime import timedelta
+
+    from app.shared.contracts import sort_contracts
+    from app.shared.credit_ledger import credit_entries_total, normalize_credit_entries
+
+    ordered = sort_contracts(contracts or [])
+    idx = next((i for i, c in enumerate(ordered) if c.get("id") == active_contract_id), None)
+    active = ordered[idx] if idx is not None else None
+    future = ordered[idx + 1:] if idx is not None else []
+
+    if weekly_burn <= 0 or active is None or not future:
+        return {"points": [], "boundaries": [], "expirations": []}
+
+    start = pd.Timestamp(latest_usage_date)
+
+    # Timeline of events after the projection anchor. `end` events fire on a
+    # contract's end date (expire unless it rolls over); `start` events fire
+    # on a future contract's start date (inject that contract's credits).
+    events: list[dict] = []
+
+    def _add_end(contract):
+        d = pd.to_datetime(contract.get("contract_end_date"), errors="coerce")
+        if not pd.isna(d):
+            events.append({
+                "date": d, "kind": "end",
+                "rollover": bool(contract.get("rollover_allowed")),
+                "label": str(contract.get("label") or "Contract"),
+            })
+
+    def _add_start(contract):
+        d = pd.to_datetime(contract.get("contract_start_date"), errors="coerce")
+        if not pd.isna(d):
+            events.append({
+                "date": d, "kind": "start",
+                "credits": credit_entries_total(normalize_credit_entries(contract)),
+                "label": str(contract.get("label") or "Next contract"),
+                "end_date": str(contract.get("contract_end_date") or ""),
+                "id": contract.get("id"),
+            })
+
+    _add_end(active)
+    for c in future:
+        _add_start(c)
+        _add_end(c)
+    # Only events strictly after the anchor matter; on a shared date, apply an
+    # expiration before the next contract's injection (old credits lapse, then
+    # the new pool lands).
+    events = [e for e in events if e["date"] > start]
+    events.sort(key=lambda e: (e["date"], 0 if e["kind"] == "end" else 1))
+
+    if not events:
+        return {"points": [], "boundaries": [], "expirations": []}
+
+    points = [{"date": str(start.date()), "value": round(max(float(credits_remaining), 0.0), 1)}]
+    boundaries: list[dict] = []
+    expirations: list[dict] = []
+    remaining = float(credits_remaining)
+    daily_burn = weekly_burn / 7.0
+    cur = start
+    ev_i = 0
+    # Whether the current contract's balance carries into the next one. Set at
+    # each contract-end event from that contract's rollover flag; a False here
+    # means the next contract's start RESETS the line to its own credits (the
+    # leftover simply lapses) rather than adding on top.
+    carry = False
+    for _week in range(260):  # ~5yr cap, matches DeterministicModel._project
+        week_end = cur + timedelta(weeks=1)
+        cursor = cur
+        while ev_i < len(events) and cursor < events[ev_i]["date"] <= week_end:
+            e = events[ev_i]
+            remaining = max(remaining - daily_burn * (e["date"] - cursor).days, 0.0)
+            edate = str(e["date"].date())
+            if e["kind"] == "end":
+                # Just the smoothly-declining value at contract end — the line
+                # keeps forecasting like a single contract (no forced cliff to
+                # zero). Any leftover that lapses is recorded for the
+                # expiration overview, not drawn as a jagged drop.
+                points.append({"date": edate, "value": round(remaining, 1)})
+                if not e["rollover"] and remaining > 0:
+                    expirations.append({"date": edate, "label": e["label"], "amount": round(remaining, 1)})
+                carry = bool(e["rollover"])
+            else:  # start: the line's position becomes this contract's pool
+                added = float(e.get("credits") or 0)
+                # Rolled over -> add onto the carried balance; otherwise the
+                # previous leftover lapsed, so start fresh at this contract's
+                # own credits (lines needn't connect across the boundary).
+                remaining = (remaining + added) if carry else added
+                # Always recorded (even a 0-credit contract) so the client can
+                # rebuild the line as its own fresh weekly/daily-grid segment,
+                # bounded by this contract's own [start, end] the same way the
+                # active contract's segment is bounded by [anchor, its end].
+                boundaries.append({
+                    "date": edate, "end": e.get("end_date") or "",
+                    "label": e["label"], "delta": round(added, 1),
+                    "id": e.get("id"),
+                    # carry=True -> add onto the running balance (previous
+                    # contract rolled over); False -> reset to just these
+                    # credits (previous leftover lapsed).
+                    "carry": bool(carry),
+                })
+                points.append({"date": edate, "value": round(remaining, 1)})
+                carry = True  # within a contract the balance always carries to its own end
+            cursor = e["date"]
+            ev_i += 1
+        remaining = max(remaining - daily_burn * (week_end - cursor).days, 0.0)
+        cur = week_end
+        # Skip a redundant grid point when an event landed exactly on week end.
+        if cursor < week_end:
+            points.append({"date": str(cur.date()), "value": round(remaining, 1)})
+        if remaining <= 0 and ev_i >= len(events):
+            break
+
+    return {"points": points, "boundaries": boundaries, "expirations": expirations}
+
+
 class ChartDataBuilder:
     """Centralises all chart-data preparation. 
     Instantiate with a ForecastingService."""

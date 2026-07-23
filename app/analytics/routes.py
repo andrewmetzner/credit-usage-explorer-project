@@ -705,7 +705,7 @@ def create_analytics_blueprint(services) -> Blueprint:
 
             return build_contract_timeline(
                 d.df,
-                contract_config.get("contract", {}),
+                config_svc.load_contracts(),
                 gov.tier_config(),
                 all_snapshots,
                 live_forecast=live_forecast,

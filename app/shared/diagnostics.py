@@ -83,17 +83,21 @@ class ConfigCheck(Check):
         cfg = ctx.config_svc
         exists = cfg.contract_exists()
         configured = cfg.is_contract_configured()
-        contract = {}
+        contracts = []
+        active = {}
         try:
-            contract = cfg.load_contract().get("contract", {})
+            contracts = cfg.load_contracts()
+            active = cfg.load_contract().get("contract", {})
         except Exception:
             pass
         details = {
             "config_dir": str(getattr(cfg, "config_dir", "")),
             "contract_file_exists": exists,
-            "contract_start": contract.get("contract_start_date") or "—",
-            "contract_end": contract.get("contract_end_date") or "—",
-            "purchased_credits": contract.get("purchased_credits") or 0,
+            "contracts_configured": len(contracts),
+            "active_contract": active.get("label") or "—",
+            "active_contract_start": active.get("contract_start_date") or "—",
+            "active_contract_end": active.get("contract_end_date") or "—",
+            "purchased_credits": active.get("purchased_credits") or 0,
             "alert_rules": len(cfg.load_alert_rules()),
         }
         if not exists:

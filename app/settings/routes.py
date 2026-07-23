@@ -4,15 +4,15 @@ import os
 import stat
 from pathlib import Path
 
+import pandas as pd
 from flask import Blueprint, flash, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
+from app.shared.contracts import resolve_active_contract, sort_contracts
 from app.shared.credit_ledger import (
-    build_credit_entry,
     credit_entries_total,
     credit_kind_label,
     normalize_credit_entries,
-    sync_credit_ledger,
 )
 from app.optimization.service import DEFAULT_WEEKS_PER_MONTH, raw_tier_cap
 from app.shared.ingestion import _infer_week_from_filename
@@ -51,20 +51,44 @@ def create_settings_blueprint(services) -> Blueprint:
 
     @bp.route("", methods=["GET"])
     def settings_page() -> str:
-        saved_contract = config_svc.load_contract()
-        credit_entries = normalize_credit_entries(saved_contract.get("contract", {}))
-        credit_total = credit_entries_total(credit_entries)
-        saved_contract.setdefault("contract", {})
-        saved_contract["contract"]["credit_entries"] = credit_entries
-        saved_contract["contract"]["purchased_credits"] = credit_total
+        contracts = sort_contracts(config_svc.load_contracts())
+        active = resolve_active_contract(contracts, None)
+        active_id = active.get("id") if active else None
+        today = pd.Timestamp.today().normalize()
 
-        credit_status = None
-        try:
-            svc = services.build_forecasting_service(saved_contract, anchor=False)
-            if svc.has_data():
-                credit_status = svc.get_contract_status()
-        except Exception:
-            credit_status = None
+        contract_views = []
+        for c in contracts:
+            entries = normalize_credit_entries(c)
+            total = credit_entries_total(entries)
+            status = None
+            try:
+                wrapped = {
+                    "contract": {**c, "credit_entries": entries, "purchased_credits": total},
+                    "pricing": {"current_price_per_credit": float(c.get("price_per_credit") or 0)},
+                }
+                svc = services.build_forecasting_service(wrapped, anchor=False)
+                if svc.has_data():
+                    status = svc.get_contract_status()
+            except Exception:
+                status = None
+
+            start = pd.to_datetime(c.get("contract_start_date"), errors="coerce")
+            if c.get("id") == active_id:
+                state = "active"
+            elif not pd.isna(start) and start > today:
+                state = "upcoming"
+            else:
+                state = "ended"
+
+            contract_views.append({
+                "contract": c,
+                "credit_entries": entries,
+                "credit_total": total,
+                "status": status,
+                "state": state,
+            })
+
+        forecast_cfg = config_svc.load_document().get("forecast", {})
 
         tiers = config_svc.load_tiers()
         user_tiers = config_svc.load_user_tiers()
@@ -95,10 +119,9 @@ def create_settings_blueprint(services) -> Blueprint:
         upload_history = pipeline.get_upload_history()
         return render_template(
             "settings.html",
-            saved_contract=saved_contract,
-            credit_entries=credit_entries,
-            credit_total=credit_total,
-            credit_status=credit_status,
+            contracts=contract_views,
+            active_contract_id=active_id,
+            forecast=forecast_cfg,
             credit_kind_label=credit_kind_label,
             tiers=tiers,
             tier_editing_locked=config_svc.is_tier_editing_locked(),
@@ -112,81 +135,73 @@ def create_settings_blueprint(services) -> Blueprint:
             upload_history=upload_history,
         )
 
-    @bp.route("/contract", methods=["POST"])
-    def update_contract() -> object:
+    @bp.route("/contracts/add", methods=["POST"])
+    def add_contract() -> object:
         try:
-            ws_min = request.form.getlist("ws_min[]")
-            ws_max = request.form.getlist("ws_max[]")
-            ws_hist = request.form.getlist("ws_hist[]")
-            ws_recent = request.form.getlist("ws_recent[]")
-            ws_latest = request.form.getlist("ws_latest[]")
+            config_svc.add_contract({
+                "label": request.form.get("label", "").strip(),
+                "contract_start_date": request.form.get("contract_start_date", "").strip(),
+                "contract_end_date": request.form.get("contract_end_date", "").strip(),
+                "price_per_credit": request.form.get("price_per_credit", 0),
+                "rollover_allowed": "rollover_allowed" in request.form,
+                "purchased_credits": request.form.get("purchased_credits", 0),
+                "purchased_credits_date": request.form.get("purchased_credits_date", "").strip(),
+            })
+            flash("Contract added.", "success")
+        except Exception as exc:
+            flash(f"Error adding contract: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
 
-            auto_weight_schedule = []
-            for i in range(len(ws_min)):
-                row: dict = {"min_operational_weeks": int(ws_min[i]) if ws_min[i] else 0}
-                if i < len(ws_max) and ws_max[i].strip():
-                    row["max_operational_weeks"] = int(ws_max[i])
-                else:
-                    row["max_operational_weeks"] = None
-                row["historical_weight"] = float(ws_hist[i]) if i < len(ws_hist) and ws_hist[i].strip() else None
-                row["recent_average_weight"] = float(ws_recent[i]) if i < len(ws_recent) and ws_recent[i].strip() else None
-                row["latest_week_weight"] = float(ws_latest[i]) if i < len(ws_latest) and ws_latest[i].strip() else None
-                auto_weight_schedule.append(row)
-
-            data = config_svc.load_contract()
-            data.setdefault("contract", {})
-            data["contract"].update({
-                "contract_start_date": request.form.get("contract_start_date", ""),
-                "contract_end_date": request.form.get("contract_end_date", ""),
-                "purchased_credits_date": request.form.get("purchased_credits_date", "").strip()
-                    or request.form.get("contract_start_date", "").strip(),
+    @bp.route("/contracts/<contract_id>/update", methods=["POST"])
+    def update_contract_fields(contract_id: str) -> object:
+        try:
+            config_svc.update_contract_fields(contract_id, {
+                "label": request.form.get("label", "").strip(),
+                "contract_start_date": request.form.get("contract_start_date", "").strip(),
+                "contract_end_date": request.form.get("contract_end_date", "").strip(),
+                "price_per_credit": request.form.get("price_per_credit", 0),
                 "rollover_allowed": "rollover_allowed" in request.form,
             })
-            data["pricing"] = {
-                "current_price_per_credit": float(request.form.get("pricing_current", 0)),
-                "next_contract_price_per_credit": float(request.form.get("pricing_next", 0)),
-            }
-            data["forecast"] = {
-                **data.get("forecast", {}),
-                "mode": request.form.get("forecast_mode", "auto"),
-                "normalize_weights": "forecast_normalize_weights" in request.form,
-                "recent_average_window_weeks": int(request.form.get("forecast_recent_window", 4)),
-                "minimum_weeks_for_recent_average": int(request.form.get("forecast_min_weeks", 4)),
-                "monte_carlo_runs": int(request.form.get("monte_carlo_runs", 10000)),
-                "auto_weight_schedule": auto_weight_schedule,
-            }
-            sync_credit_ledger(data["contract"])
-            config_svc.save_contract(data)
-            flash("Contract configuration saved.", "success")
+            flash("Contract updated.", "success")
         except Exception as exc:
-            flash(f"Error saving contract config: {exc}", "danger")
+            flash(f"Error updating contract: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/contracts/<contract_id>/remove", methods=["POST"])
+    def remove_contract(contract_id: str) -> object:
+        try:
+            config_svc.remove_contract(contract_id)
+            flash("Contract removed.", "success")
+        except Exception as exc:
+            flash(f"Error removing contract: {exc}", "danger")
         return redirect(url_for("settings.settings_page"))
 
     @bp.route("/credits/add", methods=["POST"])
     def add_credit_entry() -> object:
         try:
+            contract_id = request.form.get("contract_id", "").strip()
             amount = float(request.form.get("credits", 0) or 0)
+            if not contract_id:
+                flash("No contract selected for this credit entry.", "warning")
+                return redirect(url_for("settings.settings_page"))
             if amount <= 0:
                 flash("Enter a credit amount greater than zero.", "warning")
                 return redirect(url_for("settings.settings_page"))
 
-            data = config_svc.load_contract()
-            contract = data.setdefault("contract", {})
-            entries = normalize_credit_entries(contract)
-            entries.append(
-                build_credit_entry(
-                    date=request.form.get("credits_date", "").strip()
-                    or request.form.get("purchased_credits_date", "").strip()
-                    or request.form.get("contract_start_date", "").strip()
-                    or contract.get("contract_start_date", ""),
-                    credits=amount,
-                    kind=request.form.get("credit_kind", "purchased"),
-                    notes=request.form.get("credits_notes", "").strip(),
+            credits_date = request.form.get("credits_date", "").strip()
+            if not credits_date:
+                contract = next(
+                    (c for c in config_svc.load_contracts() if c.get("id") == contract_id), None
                 )
+                credits_date = str((contract or {}).get("contract_start_date") or "")
+
+            config_svc.add_credit_entry(
+                contract_id,
+                date=credits_date,
+                credits=amount,
+                kind=request.form.get("credit_kind", "purchased"),
+                notes=request.form.get("credits_notes", "").strip(),
             )
-            contract["credit_entries"] = entries
-            sync_credit_ledger(contract)
-            config_svc.save_contract(data)
             flash("Credit entry added.", "success")
         except Exception as exc:
             flash(f"Error adding credit entry: {exc}", "danger")
@@ -195,24 +210,13 @@ def create_settings_blueprint(services) -> Blueprint:
     @bp.route("/credits/remove", methods=["POST"])
     def remove_credit_entry() -> object:
         try:
+            contract_id = request.form.get("contract_id", "").strip()
             entry_id = request.form.get("entry_id", "").strip()
-            if not entry_id:
+            if not contract_id or not entry_id:
                 flash("No credit entry selected for removal.", "warning")
                 return redirect(url_for("settings.settings_page"))
 
-            data = config_svc.load_contract()
-            contract = data.setdefault("contract", {})
-            entries = normalize_credit_entries(contract)
-            kept = [e for e in entries if str(e.get("id", "")) != entry_id]
-            if len(kept) == len(entries):
-                flash("Could not find that credit entry.", "warning")
-                return redirect(url_for("settings.settings_page"))
-
-            contract["credit_entries"] = kept
-            if not kept:
-                contract["purchased_credits"] = 0
-            sync_credit_ledger(contract)
-            config_svc.save_contract(data)
+            config_svc.remove_credit_entry(contract_id, entry_id)
             flash("Credit entry removed.", "success")
         except Exception as exc:
             flash(f"Error removing credit entry: {exc}", "danger")

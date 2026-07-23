@@ -68,7 +68,9 @@ class Services:
         from app.forecast.service import ForecastingService
 
         if config is None:
-            config = self.config_svc.load_contract()
+            from .contracts import resolve_contract_config
+
+            config = resolve_contract_config(self.config_svc, pipeline=self.pipeline)
         hist_df = self.pipeline.get_historical_weekly_summary()
         op_df = self.pipeline.get_operational_weekly_summary()
         daily_df = self.store.data.df if daily_fallback else None

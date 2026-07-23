@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from flask import flash, redirect, render_template, request, session, url_for
 
-from app.shared.credit_ledger import build_credit_entry, sync_credit_ledger
+from app.shared.credit_ledger import normalize_credit_entries
 
 
 def register_setup_routes(bp, services) -> None:
@@ -27,31 +27,42 @@ def register_setup_routes(bp, services) -> None:
 
     @bp.route("/setup/config", methods=["POST"])
     def setup_save_config() -> object:
-        data_ = config_svc.load_contract()
-        data_.setdefault("contract", {})
-        data_.setdefault("pricing", {})
+        """Creates (or, if the wizard is revisited, updates) the first
+        contract. Later contracts are added from Settings' Contracts manager."""
         try:
             contract_start_date = request.form.get("contract_start_date", "").strip()
-            purchased_credits = int(float(request.form.get("purchased_credits", 0) or 0))
-            data_["contract"]["contract_start_date"] = contract_start_date
-            data_["contract"]["contract_end_date"] = request.form.get("contract_end_date", "").strip()
-            data_["contract"]["purchased_credits_date"] = (
-                request.form.get("purchased_credits_date", "").strip() or contract_start_date
-            )
-            data_["contract"]["rollover_allowed"] = "rollover_allowed" in request.form
-            data_["contract"]["credit_entries"] = []
-            if purchased_credits > 0:
-                data_["contract"]["credit_entries"].append(
-                    build_credit_entry(
+            contract_end_date = request.form.get("contract_end_date", "").strip()
+            purchased_credits = float(request.form.get("purchased_credits", 0) or 0)
+            price_per_credit = float(request.form.get("current_price_per_credit", 0) or 0)
+            rollover_allowed = "rollover_allowed" in request.form
+
+            contracts = config_svc.load_contracts()
+            if contracts:
+                first = contracts[0]
+                config_svc.update_contract_fields(first["id"], {
+                    "contract_start_date": contract_start_date,
+                    "contract_end_date": contract_end_date,
+                    "price_per_credit": price_per_credit,
+                    "rollover_allowed": rollover_allowed,
+                })
+                if not normalize_credit_entries(first) and purchased_credits > 0:
+                    config_svc.add_credit_entry(
+                        first["id"],
                         date=contract_start_date,
                         credits=purchased_credits,
                         kind="purchased",
                         notes="Initial allocation",
                     )
-                )
-            sync_credit_ledger(data_["contract"])
-            data_["pricing"]["current_price_per_credit"] = float(request.form.get("current_price_per_credit", 0) or 0)
-            config_svc.save_contract(data_)
+            else:
+                config_svc.add_contract({
+                    "label": "Contract 1",
+                    "contract_start_date": contract_start_date,
+                    "contract_end_date": contract_end_date,
+                    "price_per_credit": price_per_credit,
+                    "rollover_allowed": rollover_allowed,
+                    "purchased_credits": purchased_credits,
+                    "purchased_credits_date": contract_start_date,
+                })
             flash("Contract configuration saved.", "success")
         except (ValueError, TypeError) as exc:
             flash(f"Could not save configuration: {exc}", "danger")

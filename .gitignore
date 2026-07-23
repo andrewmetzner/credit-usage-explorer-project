@@ -2,7 +2,8 @@ data/*
 config/*
 deliverables/*
 .vscode/*
-
+aauth/*
+ 
 #py
 __pycache__/
 *.py[cod]

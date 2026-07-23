@@ -191,7 +191,9 @@ def create_dashboard_blueprint(services) -> Blueprint:
         forecast_snapshot = None
         ps = pipeline.status()
         try:
-            config = config_svc.load_contract()
+            from app.shared.contracts import resolve_contract_config
+
+            config = resolve_contract_config(config_svc, pipeline=pipeline)
             svc = services.build_forecasting_service(config)
             if svc.has_data():
                 cs = svc.get_contract_status()

@@ -540,25 +540,29 @@ TIMELINE_STEP = 100_000  # balance milestones are reported every 100k burned
 
 def build_contract_timeline(
     df: pd.DataFrame,
-    contract: dict,
+    contracts: list[dict] | dict,
     tier_config: dict,
     snapshots: list | None = None,
     step: float = TIMELINE_STEP,
     live_forecast: dict | None = None,
 ) -> list[dict]:
-    """Chronological, dated events across the contract.
+    """Chronological, dated events across every configured contract.
 
-    Covers: contract start/end, credit-ledger entries (purchased/gifted/
-    adjustment), the weekly->monthly cap-era switch, each `step` (100k) the
-    remaining balance falls through, the forecast snapshots taken — the
-    first and last flagged as the research bookends — and, if supplied, the
-    current live forecast's own projected exhaustion.
+    Covers: each contract's start/end, credit-ledger entries (purchased/
+    gifted/adjustment), the weekly->monthly cap-era switch, each `step`
+    (100k) the remaining balance falls through, the forecast snapshots
+    taken — the first and last flagged as the research bookends — and, if
+    supplied, the current live forecast's own projected exhaustion.
+
+    `contracts` accepts either the list of configured contracts, or (for
+    backward compatibility) a single contract dict.
 
     Each event: {date, kind, title, detail, tone, icon}.
     """
     from app.shared.credit_ledger import credit_kind_label, normalize_credit_entries
 
-    contract = contract or {}
+    contract_list = [contracts] if isinstance(contracts, dict) else list(contracts or [])
+    contract_list = [c for c in contract_list if c]
     events: list[dict] = []
 
     def add(date, kind, title, detail="", tone="info", icon="•"):
@@ -570,23 +574,42 @@ def build_contract_timeline(
             "detail": detail, "tone": tone, "icon": icon,
         })
 
-    start = pd.to_datetime(contract.get("contract_start_date"), errors="coerce")
-    end = pd.to_datetime(contract.get("contract_end_date"), errors="coerce")
+    starts = [pd.to_datetime(c.get("contract_start_date"), errors="coerce") for c in contract_list]
+    starts = [s for s in starts if not pd.isna(s)]
+    earliest_start = min(starts) if starts else pd.NaT
 
-    # 1. Contract bookends
-    add(start, "contract", "Contract starts", "Credit usage begins counting toward the contract.", "notable", "📄")
-    add(end, "contract", "Contract ends", "End of the current credit agreement.", "notable", "🏁")
+    all_entries: list[dict] = []
+    for c in contract_list:
+        label = str(c.get("label") or "").strip()
+        suffix = f" ({label})" if label and len(contract_list) > 1 else ""
+        c_start = pd.to_datetime(c.get("contract_start_date"), errors="coerce")
+        c_end = pd.to_datetime(c.get("contract_end_date"), errors="coerce")
 
-    # 2. Credit ledger — every purchase / gift / adjustment, on its own date
-    entries = normalize_credit_entries(contract)
-    for e in entries:
-        ed = pd.to_datetime(e.get("date"), errors="coerce")
-        if pd.isna(ed) or (not pd.isna(start) and ed < start):
-            ed = start
-        credits = float(e.get("credits") or 0)
-        notes = str(e.get("notes") or "").strip()
-        add(ed, "credits", f"+{credits:,.0f} {credit_kind_label(e.get('kind'))}",
-            notes or "Added to the credit pool.", "notable", "💳")
+        # 1. Contract bookends
+        add(c_start, "contract", f"Contract starts{suffix}",
+            "Credit usage begins counting toward the contract.", "notable", "📄")
+        add(c_end, "contract", f"Contract ends{suffix}",
+            "End of this credit agreement.", "notable", "🏁")
+
+        # 2. Credit ledger — every purchase / gift / adjustment, on its own date
+        entries = normalize_credit_entries(c)
+        all_entries.extend(entries)
+        for e in entries:
+            ed = pd.to_datetime(e.get("date"), errors="coerce")
+            if pd.isna(ed) or (not pd.isna(c_start) and ed < c_start):
+                ed = c_start
+            credits = float(e.get("credits") or 0)
+            notes = str(e.get("notes") or "").strip()
+            add(ed, "credits", f"+{credits:,.0f} {credit_kind_label(e.get('kind'))}{suffix}",
+                notes or "Added to the credit pool.", "notable", "💳")
+
+    # The remaining sections (balance milestones) treat the timeline as one
+    # continuous ledger from the earliest contract's start — an
+    # approximation that doesn't model expiry at a contract boundary (that
+    # lives in the forecast engine's chained projection instead), but is
+    # accurate for "what did the pool actually hold on day X" narration.
+    start = earliest_start
+    entries = all_entries
 
     # 3. Governance era change (weekly -> monthly caps)
     change = cap_change_date(tier_config)
@@ -603,7 +626,7 @@ def build_contract_timeline(
     # crammed onto the contract's first day. Tracking the peak as it's
     # reached keeps every milestone tied to a real decline that happened by
     # that date.
-    daily = _daily_remaining(df, contract, entries, start)
+    daily = _daily_remaining(df, {}, entries, start)
     if not daily.empty:
         seen: set[float] = set()
         peak_so_far = 0.0

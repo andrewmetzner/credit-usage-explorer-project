@@ -574,6 +574,12 @@
         {{ summary_metric("Used", "{:,.0f}".format(cs.total_credits_used)) }}
         {{ summary_metric("End balance", "{:+,.0f}".format(fc.forecast_contract_end_balance), 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success') }}
       </div>
+      {% if chained_final %}
+      <div class="summary-sub mt-1">
+        Chained through next contract(s): <strong class="{{ 'text-danger' if chained_final.value <= 0 else 'text-success' }}">{{ "{:+,.0f}".format(chained_final.value) }}</strong>
+        at {{ chained_final.date }}
+      </div>
+      {% endif %}
     </div>
 
     <div class="forecast-summary-card">
@@ -655,6 +661,69 @@
     </details>
   </div>
 
+  {# Credit Expiration overview — only when future contracts are configured.
+     Surfaces which contracts let leftover credits lapse (rollover off) vs.
+     carry forward, and how much the chained forecast projects will be lost. #}
+  {% if expiration_overview and expiration_overview.has_future %}
+  <div class="section-label">Credit Expiration</div>
+  <div class="chart-card mb-3">
+    <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+      <div>
+        <div class="chart-card-title">Credit expiration across contracts</div>
+        <div class="chart-card-sub">
+          Credits that aren't spent by a contract's end date expire unless that contract rolls over.
+        </div>
+      </div>
+      <div class="text-end">
+        <div style="font-size:1.4rem; font-weight:700;" class="{{ 'text-danger' if expiration_overview.total_projected_expired > 0 else 'text-success' }}">
+          {{ "{:,.0f}".format(expiration_overview.total_projected_expired) }}
+        </div>
+        <div class="text-muted" style="font-size:.72rem;">projected credits lost to expiry</div>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0" style="font-size:.82rem;">
+        <thead>
+          <tr>
+            <th>Contract</th>
+            <th>Window</th>
+            <th class="text-end">Credits</th>
+            <th>At end of term</th>
+            <th class="text-end">Projected expired</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in expiration_overview.contracts %}
+          <tr>
+            <td>
+              <strong>{{ row.label }}</strong>
+              {% if row.is_active %}<span class="badge bg-success ms-1" style="font-size:.6rem;">Active</span>{% endif %}
+            </td>
+            <td class="text-muted">{{ row.start or '—' }} → {{ row.end or '—' }}</td>
+            <td class="text-end">{{ "{:,.0f}".format(row.credits) }}</td>
+            <td>
+              {% if row.rollover %}
+                <span class="badge bg-info text-dark" style="font-size:.62rem;">Rolls over</span>
+              {% else %}
+                <span class="badge bg-warning text-dark" style="font-size:.62rem;">Expires</span>
+              {% endif %}
+            </td>
+            <td class="text-end {{ 'text-danger' if row.projected_expired else '' }}">
+              {% if row.projected_expired %}{{ "{:,.0f}".format(row.projected_expired) }}{% elif row.rollover %}—{% else %}0{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="text-muted mt-2" style="font-size:.72rem;">
+      Projected figures come from the chained burndown at the current forecast burn rate. Turn on
+      "Rolls over" for a contract in <a href="{{ url_for('settings.settings_page') }}">Settings → Contracts</a>
+      to carry its unused balance into the next contract instead.
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Burndown Chart -->
   <div class="section-label" id="burndown-chart-section">Charts</div>
 
@@ -663,8 +732,15 @@
       <div>
         <div class="chart-card-title">Credit Burndown</div>
         <div class="chart-card-sub">Actual &amp; projected remaining &nbsp;·&nbsp; Ctrl+scroll to zoom &nbsp;·&nbsp; drag to pan</div>
+        <div id="fc-other-contract-note" class="text-muted" style="font-size:.72rem; display:none;"></div>
       </div>
       <div class="chart-toolbar forecast-toolbar">
+        <select id="chart-mode-select" class="form-select form-select-sm me-1" style="width:auto; font-size:.78rem;"
+                title="What the burndown chart shows" onchange="setBurndownChartMode(this.value)">
+          <option value="current">Current contract</option>
+          <option value="chained">Chain into next contract</option>
+          <optgroup label="View other contracts" id="chart-mode-other-group"></optgroup>
+        </select>
         <div class="btn-group btn-group-sm me-1" role="group" title="Projection granularity">
           <button id="gran-weekly" class="btn btn-outline-secondary py-0 px-2 {% if granularity == 'weekly' %}active{% endif %}" onclick="setBurndownGranularity('weekly')">Weekly</button>
           <button id="gran-daily"  class="btn btn-outline-secondary py-0 px-2 {% if granularity == 'daily' %}active{% endif %}" onclick="setBurndownGranularity('daily')">Daily</button>
@@ -1179,6 +1255,13 @@
     "currentRemaining": {{ live_contract_status.credits_remaining if not no_data else 0 }},
     "contractEndDate": "{{ live_contract_status.contract_end_date if not no_data else '' }}",
     "csWeeksLeft": {{ live_contract_status.weeks_remaining if not no_data else 0 }},
+    {# Deterministic projection chained across any future contract(s) —
+       empty when there's nothing configured to chain into. #}
+    "chainedBurndown": {{ chained_burndown_data | default('[]') | safe }},
+    "contractBoundaries": {{ contract_boundaries_data | default('[]') | safe }},
+    "contractExpirations": {{ contract_expirations_data | default('[]') | safe }},
+    "allContracts": {{ all_contracts_data | default('[]') | safe }},
+    "activeContractId": "{{ saved_contract.contract.id or '' }}",
     "viewFrom": "{{ view_from or '' }}",
     "viewTo": "{{ view_to or '' }}",
     "snapshotTs": "{{ snapshot_ts or '' }}",
@@ -1203,6 +1286,22 @@
     (function () {
       function _fd() {
         return JSON.parse(document.getElementById('forecast-data').textContent);
+      }
+
+      // What-if always computes against the ACTIVE contract's raw numbers
+      // (see _fd above) — meaningless, and visually wrong, while "view other
+      // contracts" mode has the chart showing a different contract entirely.
+      // Hide it there rather than let it draw a hypothetical line for the
+      // wrong contract onto whatever's currently plotted.
+      const otherContractMode = window._fcChartMode
+        && window._fcChartMode !== 'current' && window._fcChartMode !== 'chained';
+      if (otherContractMode) {
+        const wrap = document.getElementById('whatif-wrap');
+        if (wrap) wrap.style.display = 'none';
+        window.toggleWhatIf = function () {};
+        window.applyWhatIfExtra = function () {};
+        window.syncWhatIfSlider = function () {};
+        return;
       }
 
       function _setWhatIfMax() {

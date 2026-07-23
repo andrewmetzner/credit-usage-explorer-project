@@ -110,6 +110,9 @@ function refreshBurndownLegend() {
   // ── Forecast models (load / remove on click) ──
   // In snapshot mode the page's live models are hidden — the forecast comes
   // from the snapshot's own frozen Base/MC/ML in the Snapshots section below.
+  // Monte Carlo / Linear Trend work in "view other contracts" mode too —
+  // /forecast/model-data accepts a contract_id and runs the forecast engine
+  // against that contract's own dates/ledger (see window._fcOtherContract).
   if (!D.snapshotTs) {
     menu.appendChild(_menuHeader('Forecasts'));
     [
@@ -1012,18 +1015,23 @@ if (typeof Chart !== 'undefined') {
         if (idx < 0) return;
         const x = chart.scales.x.getPixelForValue(idx);
         if (!Number.isFinite(x)) return;
+        // Green for credit additions (default); a per-event color lets
+        // expiration markers render red so "credits expired here" reads
+        // distinctly from "credits added here".
+        const color = ev.color || '#198754';
+        const stroke = ev.strokeStyle || 'rgba(25,135,84,.85)';
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(x, top);
         ctx.lineTo(x, bottom);
         ctx.lineWidth = 1.5;
-        ctx.strokeStyle = 'rgba(25,135,84,.85)';
+        ctx.strokeStyle = stroke;
         ctx.setLineDash([2, 3]);
         ctx.stroke();
         ctx.setLineDash([]);
         // Shared pill label from charts.js — flips left of the line near the
         // chart's right edge; stacked one row per event.
-        bnlDrawMarkerLabel(ctx, ev.label || 'credits added', x, top + 4 + i * 15, right, '#198754');
+        bnlDrawMarkerLabel(ctx, ev.label || 'credits added', x, top + 4 + i * 15, right, color);
         ctx.restore();
       });
     },
@@ -1040,6 +1048,35 @@ if (typeof Chart !== 'undefined') {
   const weeksLeft  = D.weeksLeft;
   const latestDate = D.latestDate;
   const contractStartDate = D.contractStartDate;
+
+  // Contract transitions chained beyond the active contract — empty when
+  // there's nothing configured to chain into, in which case the chart
+  // behaves exactly as it always has (single-contract "Projected remaining").
+  // Each entry: {date, end, label, delta, carry}. The line is rebuilt
+  // client-side (see buildProjPts) as one fresh weekly/daily-grid segment per
+  // contract, anchored at its own start, so each segment forecasts exactly
+  // like a normal single-contract projection instead of inheriting an
+  // off-grid date from the previous contract's cadence.
+  const contractBoundaries = (D.contractBoundaries || [])
+    .filter(b => b && b.date)
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  // Chart mode: 'current' (this contract only, same forecast as before
+  // chaining existed — the default), 'chained' (steps into the next
+  // configured contract), or a specific contract id ("view other contracts").
+  // Persisted per browser like the other chart view prefs.
+  let currentChartMode = localStorage.getItem('fc-chart-mode') || 'current';
+  if (currentChartMode !== 'current' && currentChartMode !== 'chained'
+      && !(D.allContracts || []).some(c => c.id === currentChartMode)) {
+    currentChartMode = 'current'; // stale/deleted contract id -> fall back
+  }
+  // Exposed for the separate Monte Carlo/ML overlay IIFE below (its own
+  // closure, no access to this one's locals) — those models are computed
+  // server-side for the ACTIVE contract only and must not be offered while
+  // viewing an arbitrary other contract (see refreshBurndownLegend/
+  // toggleForecastModel's guards in that section).
+  window._fcChartMode = currentChartMode;
 
   // Credits available as of a date = sum of ledger entries effective by then,
   // so a mid-contract grant steps the line up on its date instead of
@@ -1157,31 +1194,30 @@ if (typeof Chart !== 'undefined') {
   // otherwise leaves the band floating with a visible gap.
   window.burndownProjAnchor = { date: projAnchorDate, remaining: projAnchorRemaining };
 
-  function buildProjPts(granularity) {
-    // Anchored at the end of the known-facts bridge (today, when data lags)
-    // so the grant steps stay on the actual line and the decline starts from
-    // what is actually known now.
-    const pts = [[projAnchorDate, projAnchorRemaining]];
-    const base = new Date(projAnchorDate);
+  // Builds one contract's worth of projection: a plain weekly/daily grid
+  // anchored at (anchorDate, anchorRemaining), declining at weeklyBurn for
+  // `weeksHorizon` weeks, with the zero-crossing floored exactly like the
+  // stated exhaustion date. `endSpliceStr`, when given, is inserted as an
+  // exact off-grid label for DAILY granularity only (weekly stays on its own
+  // Monday-from-anchor cadence — splicing a non-Monday date would put one
+  // off-grid weekday column on an otherwise all-Monday axis).
+  function buildSegmentPts(anchorDate, anchorRemaining, weeksHorizon, granularity, endSpliceStr) {
+    const pts = [[anchorDate, anchorRemaining]];
+    const base = new Date(anchorDate);
     const dateAfterDays = days => {
       const d = new Date(base);
       d.setDate(d.getDate() + days);
       return d.toISOString().slice(0, 10);
     };
     const dailyBurn = weeklyBurn / 7;
-    // Calendar day the projection crosses zero — same floor convention as the
-    // stated exhaustion date (anchor + remaining/burn, truncated to a date).
-    // Every point from that day on reads 0, so hovering the exhaustion date
-    // says 0 rather than the few-hundred-credit remainder of the last whole
-    // step before the crossing.
-    const crossDateStr = (dailyBurn > 0 && projAnchorRemaining > 0)
-      ? dateAfterDays(Math.floor(projAnchorRemaining / dailyBurn))
+    const crossDateStr = (dailyBurn > 0 && anchorRemaining > 0)
+      ? dateAfterDays(Math.floor(anchorRemaining / dailyBurn))
       : null;
     let crossInserted = false;
     const stepDays = granularity === 'daily' ? 1 : 7;
     const steps = granularity === 'daily'
-      ? Math.min(Math.ceil(weeksLeft * 7) + 1, 420)
-      : Math.min(Math.ceil(weeksLeft) + 1, 60);
+      ? Math.min(Math.ceil(weeksHorizon * 7) + 1, 420)
+      : Math.min(Math.ceil(weeksHorizon) + 1, 60);
     for (let i = 1; i <= steps; i++) {
       const days = i * stepDays;
       const dstr = dateAfterDays(days);
@@ -1191,33 +1227,111 @@ if (typeof Chart !== 'undefined') {
       }
       const rem = (crossDateStr && dstr >= crossDateStr)
         ? 0
-        : Math.max(projAnchorRemaining - dailyBurn * days, 0);
+        : Math.max(anchorRemaining - dailyBurn * days, 0);
       pts.push([dstr, rem]);
     }
-    // Contract end is added as an exact chart label only for DAILY granularity
-    // (see buildAllLabels) — weekly stays strictly Monday-anchored, since
-    // contract_end_date is rarely a Monday itself. Splicing it in here would
-    // otherwise put one off-grid weekday column on an otherwise all-Monday
-    // weekly axis. MC/ML still reach contract end fine for weekly: they
-    // interpolate onto whatever labels exist, landing on the nearest Monday.
-    if (granularity === 'daily') {
-      const endStr = D.contractEndDate || '';
-      if (endStr) {
-        for (let j = 1; j < pts.length; j++) {
-          if (pts[j - 1][0] < endStr && endStr < pts[j][0]) {
-            const t = (new Date(endStr) - new Date(pts[j - 1][0]))
-                    / (new Date(pts[j][0]) - new Date(pts[j - 1][0]));
-            pts.splice(j, 0, [endStr, pts[j - 1][1] + t * (pts[j][1] - pts[j - 1][1])]);
-            break;
-          }
+    if (granularity === 'daily' && endSpliceStr) {
+      for (let j = 1; j < pts.length; j++) {
+        if (pts[j - 1][0] < endSpliceStr && endSpliceStr < pts[j][0]) {
+          const t = (new Date(endSpliceStr) - new Date(pts[j - 1][0]))
+                  / (new Date(pts[j][0]) - new Date(pts[j - 1][0]));
+          pts.splice(j, 0, [endSpliceStr, pts[j - 1][1] + t * (pts[j][1] - pts[j - 1][1])]);
+          break;
         }
       }
     }
     return pts;
   }
 
+  // Interpolate an exact point at `exactDateStr` into a segment's grid (the
+  // same technique buildSegmentPts already uses for a daily-mode contract-
+  // end splice).
+  function spliceExactDate(segPts, exactDateStr) {
+    if (!exactDateStr || segPts.some(p => p[0] === exactDateStr)) return segPts;
+    for (let j = 1; j < segPts.length; j++) {
+      if (segPts[j - 1][0] < exactDateStr && exactDateStr < segPts[j][0]) {
+        const t = (new Date(exactDateStr) - new Date(segPts[j - 1][0]))
+                / (new Date(segPts[j][0]) - new Date(segPts[j - 1][0]));
+        const val = segPts[j - 1][1] + t * (segPts[j][1] - segPts[j - 1][1]);
+        const out = segPts.slice();
+        out.splice(j, 0, [exactDateStr, val]);
+        return out;
+      }
+    }
+    return segPts; // exactDateStr outside this segment's plotted range
+  }
+
+  // A plain declining segment that RIDES INTO `targetDate` — its last point
+  // lands exactly there (spliced in, interpolated) instead of stopping at
+  // its own natural horizon or an approximate grid point. Used so a
+  // contract's line visibly reaches the boundary marker for whatever comes
+  // next before it ends, rather than trailing off early.
+  function buildSegmentRidingInto(anchorDate, anchorRemaining, targetDate, granularity) {
+    if (!targetDate || targetDate <= anchorDate) return [[anchorDate, anchorRemaining]];
+    const weeksHorizon = Math.max((new Date(targetDate) - new Date(anchorDate)) / (7 * 86400000), 0);
+    const full = buildSegmentPts(anchorDate, anchorRemaining, weeksHorizon, granularity, targetDate);
+    return spliceExactDate(full, targetDate).filter(p => p[0] <= targetDate);
+  }
+
+  function buildProjPts(granularity) {
+    // Segment 0: the active contract, anchored at the end of the known-facts
+    // bridge (today, when data lags) so the grant steps stay on the actual
+    // line and the decline starts from what is actually known now. Exactly
+    // the same forecast as before chaining existed — including its normal
+    // ~1-week overshoot past contract end (steps = ceil(weeksHorizon)+1).
+    const seg0Full = buildSegmentPts(projAnchorDate, projAnchorRemaining, weeksLeft, granularity, D.contractEndDate);
+    if (currentChartMode !== 'chained' || !contractBoundaries.length) return seg0Full;
+    // Chained: this dataset covers ONLY the active contract, ridden into the
+    // marker for the next contract's own credits (contractBoundaries[0]) and
+    // ending exactly there — see buildFutureContractSegments for what draws
+    // beyond it, as its OWN separate line(s) starting at that same date.
+    return buildSegmentRidingInto(projAnchorDate, projAnchorRemaining, contractBoundaries[0].date, granularity);
+  }
+
+  // One segment per configured future contract, each its own separate line:
+  // starts at that contract's own start date/credits (added onto whatever
+  // carried over, if its predecessor rolled over) and rides into the NEXT
+  // boundary the same way the active contract rides into the first one —
+  // ending exactly there so a 3+ contract chain reads as a clean relay, not
+  // one line jumping between unrelated values. The last contract in the
+  // chain just runs its own natural horizon to its own end. Kept as
+  // SEPARATE Chart.js datasets (not merged into one array) specifically so
+  // each can end AT the same label its successor starts from, at a
+  // different height — a single dataset can only hold one value per label.
+  function buildFutureContractSegments(granularity) {
+    if (currentChartMode !== 'chained' || !contractBoundaries.length) return [];
+    const dailyBurn = weeklyBurn / 7;
+    const segments = [];
+    let curAnchorDate = projAnchorDate;
+    let curAnchorRemaining = projAnchorRemaining;
+    contractBoundaries.forEach((b, i) => {
+      const days = Math.round((new Date(b.date) - new Date(curAnchorDate)) / 86400000);
+      const declined = Math.max(curAnchorRemaining - dailyBurn * days, 0);
+      const startValue = Math.max((Number(b.delta) || 0) + (b.carry ? declined : 0), 0);
+      const nextBoundary = contractBoundaries[i + 1];
+      let data;
+      if (nextBoundary) {
+        data = buildSegmentRidingInto(b.date, startValue, nextBoundary.date, granularity);
+      } else {
+        const weeksHorizon = b.end
+          ? Math.max((new Date(b.end) - new Date(b.date)) / (7 * 86400000), 0)
+          : 12;
+        data = buildSegmentPts(b.date, startValue, weeksHorizon, granularity, b.end);
+      }
+      segments.push({ label: b.label || 'Next contract', data });
+      curAnchorDate = b.date;
+      curAnchorRemaining = startValue;
+    });
+    return segments;
+  }
+
   let currentGranularity = D.granularity || 'weekly';
   let projPts = buildProjPts(currentGranularity);
+  let futureSegments = buildFutureContractSegments(currentGranularity);
+  // Exposed for the separate Monte Carlo/ML overlay IIFE below (its own
+  // closure, no access to this one's locals) — see chainedFetchTargets there.
+  window._fcContractBoundaries = contractBoundaries;
+  window._fcFutureSegments = futureSegments;
 
   const lookup = (pts, lbl) => { const p = pts.find(x => x[0] === lbl); return p != null ? p[1] : null; };
   const visiblePointRadius = () => 0;
@@ -1225,13 +1339,14 @@ if (typeof Chart !== 'undefined') {
   const pointHitRadius = () => currentGranularity === 'daily' ? 8 : 4;
   const activeActualPts = () => currentGranularity === 'daily' && dailyActualPts.length ? dailyActualPts : actualPts;
   const isProjectionDataset = ds => ds && (
-    ds.label === 'Projected remaining' || ds._mcOverlay || ds._lrOverlay
+    ds.label === 'Projected remaining' || ds._futureSegment || ds._mcOverlay || ds._lrOverlay
   );
   const isLatestActualProjectionHover = item =>
     projAnchorDate && item.label === projAnchorDate && isProjectionDataset(item.dataset);
 
   function buildAllLabels(ppts) {
     const labels = new Set([...activeActualPts(), ...ppts].map(p => p[0]));
+    futureSegments.forEach(s => s.data.forEach(p => labels.add(p[0])));
     // Contract end is added as its own category only for daily granularity —
     // for weekly, every label here is already Monday-anchored (actual points
     // land on week_end+1 = Monday; projected points step +7 days from there),
@@ -1292,20 +1407,41 @@ if (typeof Chart !== 'undefined') {
     const startAnchor = (currentGranularity !== 'daily' && D.viewFrom)
       || D.contractStartDate || allLabels[0];
     const min = getNearestLabel(startAnchor, 'start') || allLabels[0];
-    // The window's right edge used to stop dead at contract end, cutting off
-    // the Basic projection's own tail whenever it runs out AFTER the
-    // contract does (a high-burn or underfunded contract). Extend to
-    // whichever is later: contract end, or a few weeks past where the Basic
-    // line first reaches (or would go below) zero — MC/ML tails run further
-    // still and stay reachable by panning, but the common "did we run out,
-    // and when" question shouldn't require manual zooming to answer.
-    const zeroPt = projPts.find(p => p[1] <= 0);
+    const contractEnd = getNearestLabel(D.contractEndDate, 'end');
+
+    // "Current contract" mode is a clean, bounded view of just this contract
+    // — the x-axis stops exactly at its own end date regardless of whether
+    // the projection crosses zero before or after it. (The projection data
+    // itself may still carry a point or two past contract end — see
+    // buildSegmentPts — this only clips the default VIEW; panning/zooming
+    // out still reaches them.)
+    if (currentChartMode === 'current') {
+      return { min, max: contractEnd || allLabels[allLabels.length - 1] };
+    }
+
+    // Chained mode: the window's right edge used to stop dead at contract
+    // end, cutting off the projection's own tail whenever it runs out AFTER
+    // the contract does (a high-burn or underfunded contract). Extend to
+    // whichever is later: contract end, or a few weeks past where the line
+    // first reaches (or would go below) zero — MC/ML tails run further still
+    // and stay reachable by panning, but the common "did we run out, and
+    // when" question shouldn't require manual zooming to answer. The zero
+    // crossing can now land in ANY segment of the chain (buildProjPts only
+    // covers the active contract; futureSegments covers the rest).
+    const allChainedPts = projPts.concat(futureSegments.flatMap(s => s.data));
+    const zeroPt = allChainedPts.find(p => p[1] != null && p[1] <= 0);
     // 'start' direction rounds UP to the next available label — needed here
     // so the window actually reaches past the target date instead of
     // rounding back down to whatever label sits just before it.
     const pastZero = zeroPt ? getNearestLabel(shiftDayStr(zeroPt[0], 21), 'start') : null;
-    const contractEnd = getNearestLabel(D.contractEndDate, 'end');
-    const candidates = [contractEnd, pastZero].filter(Boolean);
+    // When it never crosses zero, fall back to the chain's own last point
+    // (the last future segment's, if any) so the last contract is still
+    // visible by default without manual panning.
+    const lastSeg = futureSegments.length ? futureSegments[futureSegments.length - 1] : null;
+    const chainedEnd = lastSeg && lastSeg.data.length
+      ? getNearestLabel(lastSeg.data[lastSeg.data.length - 1][0], 'end')
+      : null;
+    const candidates = [contractEnd, pastZero, chainedEnd].filter(Boolean);
     const max = (candidates.length ? candidates.sort().pop() : null) || allLabels[allLabels.length - 1];
     return { min, max };
   }
@@ -1451,25 +1587,43 @@ if (typeof Chart !== 'undefined') {
   window.burndownLabels = allLabels;
   window.burndownMaxY   = purchased;
 
+  // One projection line for the active contract (built by buildProjPts) —
+  // in "chained" mode it rides into the first future contract's own marker
+  // and ends exactly there. Plus one MORE line per future contract in the
+  // chain (futureSegments) — each its own dataset so it can start at that
+  // same label, at its own (usually different) value, rather than one line
+  // trying to hold two values at once. Colors cycle so a 3+ contract chain
+  // stays visually distinguishable; each still uses the "proj" dash style.
+  const FUTURE_SEGMENT_COLORS = ['#fd7e14', '#6f42c1', '#20c997', '#d63384'];
+  const burndownDatasets = [
+    {
+      label: 'Actual remaining',
+      data: allLabels.map(l => lookup(activeActualPts(), l)),
+      borderColor: getChartColor('actual'), backgroundColor: hexToRgba(getChartColor('actual'), 0.07),
+      fill: true, tension: 0.1, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
+    },
+    {
+      label: 'Projected remaining',
+      data: extendBelowZero(allLabels.map(l => lookup(projPts, l))),
+      borderColor: getChartColor('proj'), borderDash: [5, 4], backgroundColor: 'transparent',
+      tension: 0.05, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
+      _baseOverlay: true,
+    },
+    ...futureSegments.map((seg, i) => ({
+      label: `Projected — ${seg.label}`,
+      data: extendBelowZero(allLabels.map(l => lookup(seg.data, l))),
+      borderColor: FUTURE_SEGMENT_COLORS[i % FUTURE_SEGMENT_COLORS.length],
+      borderDash: [5, 4], backgroundColor: 'transparent',
+      tension: 0.05, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
+      _baseOverlay: true, _futureSegment: true,
+    })),
+  ];
+
   window.burndownChart = new BNLChart('burndownChart', {
     type: 'line',
     data: {
       labels: allLabels,
-      datasets: [
-        {
-          label: 'Actual remaining',
-          data: allLabels.map(l => lookup(activeActualPts(), l)),
-          borderColor: getChartColor('actual'), backgroundColor: hexToRgba(getChartColor('actual'), 0.07),
-          fill: true, tension: 0.1, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
-        },
-        {
-          label: 'Projected remaining',
-          data: extendBelowZero(allLabels.map(l => lookup(projPts, l))),
-          borderColor: getChartColor('proj'), borderDash: [5, 4], backgroundColor: 'transparent',
-          tension: 0.05, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
-          _baseOverlay: true,
-        },
-      ],
+      datasets: burndownDatasets,
     },
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -1574,18 +1728,169 @@ if (typeof Chart !== 'undefined') {
   window._fcCreditEvents = creditEvents.filter(
     e => contractStartDate && e.effective_date > contractStartDate
   );
+  // Contract-transition markers — green for the next contract's own credits
+  // landing on its start date, red for credits that expired at a
+  // non-rolling contract's end. Kept SEPARATE from the plain ledger markers
+  // above and only shown in "chain into next contract" mode (see
+  // activeMarkerEvents): "current contract" mode is a clean view of just
+  // this contract and must not imply a next contract's credits at all.
+  window._fcChainMarkers = [];
+  (D.contractBoundaries || []).forEach(b => {
+    if (b && b.date && b.delta > 0) {
+      window._fcChainMarkers.push({
+        effective_date: b.date,
+        credits: b.delta,
+        label: `+${Math.round(b.delta).toLocaleString()} ${b.label || 'next contract'}`,
+      });
+    }
+  });
+  (D.contractExpirations || []).forEach(e => {
+    if (e && e.date && e.amount > 0) {
+      window._fcChainMarkers.push({
+        effective_date: e.date,
+        credits: -e.amount,
+        color: '#dc3545',
+        strokeStyle: 'rgba(220,53,69,.85)',
+        label: `−${Math.round(e.amount).toLocaleString()} expired (${e.label || 'contract end'})`,
+      });
+    }
+  });
+  function activeMarkerEvents() {
+    const base = window._fcCreditEvents || [];
+    return currentChartMode === 'chained' ? base.concat(window._fcChainMarkers || []) : base;
+  }
   const creditMarkersOn = localStorage.getItem('fc-credit-markers') !== '0';
-  window.burndownChart.chart.$creditEvents = creditMarkersOn ? window._fcCreditEvents : [];
+  window.burndownChart.chart.$creditEvents = creditMarkersOn ? activeMarkerEvents() : [];
   window.toggleCreditMarkers = function (on) {
     localStorage.setItem('fc-credit-markers', on ? '1' : '0');
     const bc = window.burndownChart;
     if (!bc) return;
-    bc.chart.$creditEvents = on ? (window._fcCreditEvents || []) : [];
+    bc.chart.$creditEvents = on ? activeMarkerEvents() : [];
     bc.chart.update('none');
   };
   (function () {
     const cb = document.getElementById('credit-markers-on');
     if (cb) cb.checked = creditMarkersOn;
+  })();
+
+  /* ── Chart mode: current contract / chained / view another contract ──
+   * The "view other contracts" mode is a fully independent reconstruction
+   * (its own actual+projected line, own ledger, own Y-scale/window) — it
+   * does NOT touch the active-contract bridge/MC/ML machinery above, which
+   * only makes sense for whichever contract is actually live right now. */
+
+  function buildOtherContractSeries(contract, granularity) {
+    const events = (contract.creditEvents || []).filter(e => e && e.effective_date && e.credits > 0);
+    const addedByOwn = dateStr => events.length
+      ? events.reduce((s, e) => s + (e.effective_date <= dateStr ? e.credits : 0), 0)
+      : contract.purchased;
+    const weeks = rawData
+      .filter(w => w.week_start >= contract.start && (!contract.end || w.week_start <= contract.end))
+      .sort((a, b) => (a.week_start < b.week_start ? -1 : 1));
+    let cum = 0;
+    const actual = [];
+    if (contract.start) actual.push([contract.start, addedByOwn(contract.start)]);
+    weeks.forEach(w => {
+      cum += w.total_credits_used;
+      const d = new Date((w.week_end || w.week_start) + 'T12:00:00');
+      d.setDate(d.getDate() + 1);
+      const pointDate = d.toISOString().slice(0, 10);
+      const pt = [pointDate, Math.max(addedByOwn(pointDate) - cum, 0)];
+      if (actual.length && actual[actual.length - 1][0] === pt[0]) actual[actual.length - 1] = pt;
+      else actual.push(pt);
+    });
+    // Anchor the projection at the last real point in THIS contract's own
+    // range, or its own start (full credits) when it has none yet (a future
+    // contract that hasn't started, or one with no usage recorded).
+    const anchor = actual.length ? actual[actual.length - 1] : [contract.start, contract.purchased];
+    const weeksHorizon = contract.end
+      ? Math.max((new Date(contract.end) - new Date(anchor[0])) / (7 * 86400000), 0)
+      : 12;
+    const proj = buildSegmentPts(anchor[0], anchor[1], weeksHorizon, granularity, contract.end);
+    const markers = events
+      .filter(e => e.effective_date > contract.start)
+      .map(e => ({ effective_date: e.effective_date, credits: e.credits, label: e.label }));
+    return { actual, proj, markers, anchor };
+  }
+
+  function setOtherContractNote(text) {
+    const note = document.getElementById('fc-other-contract-note');
+    if (!note) return;
+    note.textContent = text || '';
+    note.style.display = text ? '' : 'none';
+  }
+
+  // Like getNearestLabel, but against an arbitrary label array instead of
+  // the active-contract's allLabels closure — needed here since "view other
+  // contracts" mode plots a different contract's own label set.
+  function nearestLabelIn(labelsArr, value, direction) {
+    if (!value || !labelsArr.length) return null;
+    if (direction === 'start') return labelsArr.find(l => l >= value) || labelsArr[labelsArr.length - 1];
+    return [...labelsArr].reverse().find(l => l <= value) || labelsArr[0];
+  }
+
+  function applyOtherContractView(contractId) {
+    const bc = window.burndownChart;
+    const contract = (D.allContracts || []).find(c => c.id === contractId);
+    if (!bc || !contract) return;
+    const { actual, proj, markers, anchor } = buildOtherContractSeries(contract, currentGranularity);
+    const labels = [...new Set([...actual, ...proj].map(p => p[0]))].sort();
+    bc.chart.data.labels = labels;
+    bc.chart.data.datasets[0].data = labels.map(l => lookup(actual, l));
+    bc.chart.data.datasets[1].data = extendBelowZero(labels.map(l => lookup(proj, l)));
+    bc.chart.$creditEvents = creditMarkersOn ? markers : [];
+    bc.chart.options.scales.y.suggestedMax = contract.purchased;
+    window.burndownLabels = labels;
+    window.burndownMaxY = contract.purchased;
+    // Exposed for the MC/ML overlay IIFE (separate closure): the anchor its
+    // bands should snap onto, and the contract id + own [start, end] window
+    // to fetch and burn-scope server-side stats for THIS contract instead of
+    // the active one (see /forecast/model-data's contract_id param).
+    window._fcOtherContractAnchor = { date: anchor[0], remaining: anchor[1] };
+    window._fcOtherContract = { id: contract.id, start: contract.start, end: contract.end };
+    if (labels.length) {
+      // Stops exactly at this contract's own end date — same bounded-view
+      // principle as "current contract" mode — rather than the tail end of
+      // its projection data, which can overshoot by a step (buildSegmentPts).
+      bc.chart.options.scales.x.min = labels[0];
+      bc.chart.options.scales.x.max = nearestLabelIn(labels, contract.end, 'end') || labels[labels.length - 1];
+    }
+    setOtherContractNote(`Viewing ${contract.label} on its own — starts ${contract.start || '—'}.`);
+    bc.chart.update();
+  }
+
+  // Switching mode reloads the page rather than patching the chart in place
+  // — same reasoning (and same pattern) as setBurndownGranularity/
+  // applyActualCutoffs below: an in-place update left stale state behind
+  // (old Monte Carlo/ML overlay datasets sized for the previous labels, zoom/
+  // pan, credit markers) whenever the shape of the data actually changed.
+  // Reloading with the new mode already resolved (see currentChartMode at
+  // the top of this file) guarantees every plugin/overlay rebuilds clean —
+  // "current"/"chained" are correct from the very first chart construction
+  // above; only "view other contracts" needs the one-time patch below,
+  // applied once after the page's own default view-range init has run.
+  window.setBurndownChartMode = function (mode) {
+    if (mode === currentChartMode) return;
+    localStorage.setItem('fc-chart-mode', mode);
+    sessionStorage.setItem('forecast-scroll', window.scrollY);
+    if (typeof selectedSnaps !== 'undefined' && selectedSnaps.size > 0) {
+      sessionStorage.setItem('forecast-snap-keys', JSON.stringify([...selectedSnaps.keys()]));
+    }
+    window.location.reload();
+  };
+
+  // Populate "View other contracts" + restore the persisted selection value.
+  (function populateChartModeSelect() {
+    const sel = document.getElementById('chart-mode-select');
+    const group = document.getElementById('chart-mode-other-group');
+    if (!sel || !group) return;
+    (D.allContracts || []).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.label;
+      group.appendChild(opt);
+    });
+    sel.value = currentChartMode;
   })();
 
   // Whether Basic/MC/ML keep declining past zero (extendBelowZero) instead
@@ -1751,6 +2056,14 @@ if (typeof Chart !== 'undefined') {
   applyBurndownXAxisStyle(window.burndownChart, currentGranularity);
   initBurndownViewRange();
   initBurndownYRange();
+  // "current"/"chained" are already correctly built from scratch (see
+  // buildProjPts, defaultViewRange, activeMarkerEvents — all resolve
+  // currentChartMode before this point). Only "view other contracts" needs a
+  // one-time patch, applied now that the default view-range init above has
+  // already run (it would otherwise overwrite this).
+  if (currentChartMode !== 'current' && currentChartMode !== 'chained') {
+    applyOtherContractView(currentChartMode);
+  }
   restorePendingSnapshotSelections();
 
   // Confirmed bug: after some container resizes, Chart.js recomputes the x
@@ -1793,12 +2106,16 @@ if (typeof Chart !== 'undefined') {
   // with a visible x/y gap whenever the actual line had no plotted value at
   // MC/ML's own "today" label (routine once data lags by more than a few
   // days). Instead, date-shift + value-shift the RAW series so its very
-  // first point lands exactly on window.burndownProjAnchor — the same
-  // anchor the red "Projected remaining" line starts from — before it's
-  // interpolated onto the chart's labels, guaranteeing the band starts
-  // exactly where the actual line stops.
-  function anchorShiftFor(series, dateKey, valKey) {
-    const anchor = window.burndownProjAnchor;
+  // first point lands exactly on the chart's own anchor — the same one the
+  // "Projected remaining" line starts from — before it's interpolated onto
+  // the chart's labels, guaranteeing the band starts exactly where the
+  // actual line stops. In "view other contracts" mode that anchor is a
+  // DIFFERENT contract's own (see applyOtherContractView), not the active
+  // contract's window.burndownProjAnchor. `anchorOverride`, when given,
+  // wins over both — used to snap a CHAINED mode's next-contract band onto
+  // that contract's own start instead of the active contract's anchor.
+  function anchorShiftFor(series, dateKey, valKey, anchorOverride) {
+    const anchor = anchorOverride || (window._fcOtherContract ? window._fcOtherContractAnchor : window.burndownProjAnchor);
     if (!anchor || !series || !series.length) return null;
     const first = series[0];
     const deltaDays = Math.round(
@@ -1815,6 +2132,48 @@ if (typeof Chart !== 'undefined') {
       return { ...p, [dateKey]: d.toISOString().slice(0, 10), [valKey]: Math.max(p[valKey] + shift.deltaVal, 0) };
     });
   }
+  // Null out any values on/after cutoffDate — applied to the ACTIVE
+  // contract's own MC/ML band in "chained" mode so it stops exactly at the
+  // boundary into the next contract, the same way the deterministic "Base"
+  // line rides into that marker and ends there (see buildProjPts) instead
+  // of running its normal fuller horizon (toward exhaustion) through where
+  // a different contract's own band has already taken over.
+  function trimAtCutoff(values, labels, cutoffDate) {
+    if (!cutoffDate || !values) return values;
+    return values.map((v, i) => (labels[i] > cutoffDate ? null : v));
+  }
+  // One fetch target per segment of the burndown line: the active contract
+  // (default resolution, no contract_id), plus — in "chained" mode — one per
+  // future contract in the chain, each asking the server for THAT
+  // contract's own Monte Carlo / ML stats (via contract_id + its own
+  // [start, end] burn window) and carrying the anchor its band should snap
+  // onto (its carry-aware starting balance — the same value the
+  // deterministic "Projected — <contract>" line starts from, computed once
+  // in buildFutureContractSegments so both stay consistent).
+  function chainedFetchTargets() {
+    const targets = [{ extra: {}, anchor: window.burndownProjAnchor, label: '' }];
+    if (window._fcChartMode === 'chained') {
+      const boundaries = window._fcContractBoundaries || [];
+      const segs = window._fcFutureSegments || [];
+      boundaries.forEach((b, i) => {
+        if (!b.id) return; // no contract id on this boundary -> can't ask the server for it
+        const seg = segs[i];
+        const startValue = seg && seg.data.length ? seg.data[0][1] : (Number(b.delta) || 0);
+        targets.push({
+          extra: {
+            contract_id: b.id,
+            data_from: b.date,
+            data_to: b.end || '',
+            credits_override: String(startValue),
+          },
+          anchor: { date: b.date, remaining: startValue },
+          label: b.label || '',
+        });
+      });
+    }
+    return targets;
+  }
+
   const MC_RUNS = D.mcRuns;
   let mcCache  = null;
   let mcLoading = null;
@@ -1842,56 +2201,94 @@ if (typeof Chart !== 'undefined') {
 
   // Shared by getLrData/getMcData: current-URL params plus the model-specific
   // ones, fetched from the /forecast/model-data endpoint they both hit.
+  // In "view other contracts" mode, target THAT contract instead of the
+  // active one: contract_id tells the server which contract's own
+  // dates/ledger to run the forecast engine against, and data_from/data_to
+  // (the existing "Advanced burn window" params) scope the burn-rate
+  // statistics to that contract's own operational weeks — otherwise the
+  // server would blend in whatever other contracts' weeks are also in the
+  // pipeline's operational data.
   function fetchModelData(extraParams) {
     const params = new URLSearchParams(window.location.search);
     Object.entries(extraParams).forEach(([k, v]) => params.set(k, v));
+    const other = window._fcOtherContract;
+    if (other && other.id) {
+      params.set('contract_id', other.id);
+      if (other.start) params.set('data_from', other.start);
+      if (other.end) params.set('data_to', other.end);
+    }
     return fetch('/forecast/model-data?' + params.toString())
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   }
 
   // ── Linear Trend (ML) overlay ──
+  // lrCache is an ARRAY, one entry per chainedFetchTargets() target: [0] is
+  // always the active contract; [1+] (chained mode only) are the future
+  // contracts in the chain, each fetched with its own contract_id/anchor so
+  // its band picks up right where the previous segment's line does.
   function getLrData() {
     if (lrCache) return Promise.resolve(lrCache);
     if (!lrLoading) {
-      lrLoading = fetchModelData({ model: 'linear_regression' })
-        .then(data => { lrCache = data; lrLoading = null; return data; })
-        .catch(e => { lrLoading = null; throw e; });
+      const targets = chainedFetchTargets();
+      lrLoading = Promise.allSettled(
+        targets.map(t => fetchModelData({ model: 'linear_regression', ...t.extra })
+          .then(data => ({ data, anchor: t.anchor, label: t.label })))
+      ).then(results => {
+        const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+        lrCache = ok;
+        lrLoading = null;
+        if (!ok.length) throw new Error('No segments loaded');
+        return ok;
+      }).catch(e => { lrLoading = null; throw e; });
     }
     return lrLoading;
   }
 
-  function applyLrToChart(data) {
+  function applyLrToChart(entries) {
     const bc = window.burndownChart;
     if (!bc) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._lrOverlay);
     const allLabels = bc.data.labels;
     const C = '#198754';
-    const shift = anchorShiftFor(data.burndown, 'date', 'value');
-    let p50 = interpDateSeries(applyShift(data.burndown, shift, 'date', 'value'), allLabels);
-    const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
-    let p90 = hasBand ? interpDateSeries(applyShift(data.p90, shift, 'date', 'value'), allLabels) : null;
-    let p10 = hasBand ? interpDateSeries(applyShift(data.p10, shift, 'date', 'value'), allLabels) : null;
-    p50 = extendBelowZero(p50);
-    if (hasBand) { p90 = extendBelowZero(p90); p10 = extendBelowZero(p10); }
-    if (hasBand) {
+    // Active contract's band (entry 0) stops at the first boundary in
+    // chained mode — see trimAtCutoff.
+    const chainCutoff = window._fcChartMode === 'chained' && window._fcContractBoundaries
+      && window._fcContractBoundaries[0] ? window._fcContractBoundaries[0].date : null;
+    entries.forEach(({ data, anchor, label }, idx) => {
+      if (!data || data.error) return;
+      const suffix = label ? ` — ${label}` : '';
+      const cutoff = idx === 0 ? chainCutoff : null;
+      const shift = anchorShiftFor(data.burndown, 'date', 'value', anchor);
+      let p50 = interpDateSeries(applyShift(data.burndown, shift, 'date', 'value'), allLabels);
+      const hasBand = data.p10 && data.p90 && data.p10.length && data.p90.length;
+      let p90 = hasBand ? interpDateSeries(applyShift(data.p90, shift, 'date', 'value'), allLabels) : null;
+      let p10 = hasBand ? interpDateSeries(applyShift(data.p10, shift, 'date', 'value'), allLabels) : null;
+      p50 = trimAtCutoff(extendBelowZero(p50), allLabels, cutoff);
+      if (hasBand) {
+        p90 = trimAtCutoff(extendBelowZero(p90), allLabels, cutoff);
+        p10 = trimAtCutoff(extendBelowZero(p10), allLabels, cutoff);
+      }
+      if (hasBand) {
+        bc.data.datasets.push({
+          label: `LR P90${suffix}`, data: p90,
+          borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
+          backgroundColor: hexToRgba(C, 0.10), fill: '+1', tension: 0.1, pointRadius: 0,
+          spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
+        });
+        bc.data.datasets.push({
+          label: `LR P10${suffix}`, data: p10,
+          borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
+          backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0,
+          spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
+        });
+      }
       bc.data.datasets.push({
-        label: 'LR P90', data: p90,
-        borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
-        backgroundColor: hexToRgba(C, 0.10), fill: '+1', tension: 0.1, pointRadius: 0,
-        spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
+        label: `Linear Trend (ML)${suffix}`, data: p50,
+        borderColor: C, borderWidth: 2, borderDash: [6, 3],
+        backgroundColor: 'transparent', fill: false, tension: 0.1,
+        pointRadius: 0, pointHoverRadius: 5, pointHitRadius: D.granularity === 'daily' ? 8 : 4, spanGaps: false,
+        _lrOverlay: true, _noLegend: !!suffix,
       });
-      bc.data.datasets.push({
-        label: 'LR P10', data: p10,
-        borderColor: hexToRgba(C, 0.4), borderWidth: 1, borderDash: [2, 3],
-        backgroundColor: 'transparent', fill: false, tension: 0.1, pointRadius: 0,
-        spanGaps: false, _lrOverlay: true, _noTooltip: true, _noLegend: true,
-      });
-    }
-    bc.data.datasets.push({
-      label: 'Linear Trend (ML)', data: p50,
-      borderColor: C, borderWidth: 2, borderDash: [6, 3],
-      backgroundColor: 'transparent', fill: false, tension: 0.1,
-      pointRadius: 0, pointHoverRadius: 5, pointHitRadius: D.granularity === 'daily' ? 8 : 4, spanGaps: false, _lrOverlay: true,
     });
     bc.update();
     refreshBurndownLegend();
@@ -1901,10 +2298,10 @@ if (typeof Chart !== 'undefined') {
     const status = document.getElementById('lr-status');
     if (status && !lrCache) status.textContent = 'loading…';
     try {
-      const data = await getLrData();
-      applyLrToChart(data);
+      const entries = await getLrData();
+      applyLrToChart(entries);
       if (status) {
-        const m = data.metadata || {};
+        const m = (entries[0] && entries[0].data && entries[0].data.metadata) || {};
         status.textContent = (m.slope_credits_per_week != null)
           ? `slope ${Math.round(m.slope_credits_per_week).toLocaleString()}/wk · R² ${m.r_squared}`
           : '';
@@ -1927,12 +2324,22 @@ if (typeof Chart !== 'undefined') {
   }
   window.refreshLrOverlay = function () { if (lrCache) applyLrToChart(lrCache); };
 
+  // mcCache is an ARRAY, same convention as lrCache above: [0] the active
+  // contract, [1+] (chained mode only) one per future contract in the chain.
   function getMcData() {
     if (mcCache) return Promise.resolve(mcCache);
     if (!mcLoading) {
-      mcLoading = fetchModelData({ model: 'monte_carlo', runs: MC_RUNS })
-        .then(data => { mcCache = data; mcLoading = null; return data; })
-        .catch(e => { mcLoading = null; throw e; });
+      const targets = chainedFetchTargets();
+      mcLoading = Promise.allSettled(
+        targets.map(t => fetchModelData({ model: 'monte_carlo', runs: MC_RUNS, ...t.extra })
+          .then(data => ({ data, anchor: t.anchor, label: t.label })))
+      ).then(results => {
+        const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+        mcCache = ok;
+        mcLoading = null;
+        if (!ok.length) throw new Error('No segments loaded');
+        return ok;
+      }).catch(e => { mcLoading = null; throw e; });
     }
     return mcLoading;
   }
@@ -1943,14 +2350,15 @@ if (typeof Chart !== 'undefined') {
     const status = document.getElementById('mc-status');
     if (status && !mcCache) { status.textContent = 'loading…'; status.style.display = ''; }
     try {
-      const data = await getMcData();
-      applyMcToChart(data);
+      const entries = await getMcData();
+      applyMcToChart(entries);
       const ctrl = document.getElementById('mc-band-controls');
       if (ctrl) ctrl.style.display = '';
       if (status) {
-        const ep = data.metadata && data.metadata.exhaustion_probability != null
-          ? Math.round(data.metadata.exhaustion_probability * 100) + '% exhaustion risk  ·  '
-            + (data.metadata.runs || 0).toLocaleString() + ' runs'
+        const md = (entries[0] && entries[0].data && entries[0].data.metadata) || {};
+        const ep = md.exhaustion_probability != null
+          ? Math.round(md.exhaustion_probability * 100) + '% exhaustion risk  ·  '
+            + (md.runs || 0).toLocaleString() + ' runs'
           : '';
         status.textContent = ep;
         status.style.display = ep ? '' : 'none';
@@ -2042,63 +2450,70 @@ if (typeof Chart !== 'undefined') {
     }
   }
 
-  function applyMcToChart(_data) {
+  function applyMcToChart(_entries) {
     applyMcBands('show');
   }
 
   function applyMcBands(mode) {
     const bc = window.burndownChart;
-    if (!bc || !mcCache) return;
+    if (!bc || !mcCache || !mcCache.length) return;
     bc.data.datasets = bc.data.datasets.filter(d => !d._mcOverlay);
 
-    const data      = mcCache;
     const allLabels = bc.data.labels;
-
-    const shift = anchorShiftFor(data.burndown, 'date', 'value');
-    let p90data = interpDateSeries(applyShift(data.p90, shift, 'date', 'value'), allLabels);
-    let p50data = interpDateSeries(applyShift(data.burndown, shift, 'date', 'value'), allLabels);
-    let p10data = interpDateSeries(applyShift(data.p10, shift, 'date', 'value'), allLabels);
-    p90data = extendBelowZero(p90data);
-    p50data = extendBelowZero(p50data);
-    p10data = extendBelowZero(p10data);
-
     const showP90 = localStorage.getItem('forecast-mc-p90') !== '0';
     const showP10 = localStorage.getItem('forecast-mc-p10') !== '0';
     const showP50 = localStorage.getItem('forecast-mc-p50') !== '0';
-
     const p90Fill = !showP10 ? false : showP50 ? '+2' : '+1';
+    // Active contract's band (entry 0) stops at the first boundary in
+    // chained mode — same "ride into the marker, end there" cutoff the
+    // deterministic Base line uses (see buildProjPts).
+    const chainCutoff = window._fcChartMode === 'chained' && window._fcContractBoundaries
+      && window._fcContractBoundaries[0] ? window._fcContractBoundaries[0].date : null;
 
-    if (showP90) {
-      bc.data.datasets.push({
-        label: 'MC P90 (optimistic)',
-        data: p90data,
-        borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
-        backgroundColor: showP10 ? 'rgba(253,126,20,0.18)' : 'transparent',
-        fill: p90Fill,
-        pointRadius: 0, tension: 0.1, spanGaps: false,
-        _mcOverlay: true, _mcBand: 'p90', _noLegend: true,
-      });
-    }
-    if (showP50) {
-      bc.data.datasets.push({
-        label: 'MC P50 (median)',
-        data: p50data,
-        borderColor: '#fd7e14', borderWidth: 2.5, borderDash: [6, 3],
-        backgroundColor: 'transparent', fill: false,
-        pointRadius: 0, pointHoverRadius: 5, pointHitRadius: D.granularity === 'daily' ? 8 : 4, tension: 0.1, spanGaps: false,
-        _mcOverlay: true, _mcBand: 'p50',
-      });
-    }
-    if (showP10) {
-      bc.data.datasets.push({
-        label: 'MC P10 (pessimistic)',
-        data: p10data,
-        borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
-        backgroundColor: 'transparent', fill: false,
-        pointRadius: 0, tension: 0.1, spanGaps: false,
-        _mcOverlay: true, _mcBand: 'p10', _noLegend: true,
-      });
-    }
+    mcCache.forEach(({ data, anchor, label }, idx) => {
+      if (!data || data.error) return;
+      const suffix = label ? ` — ${label}` : '';
+      const cutoff = idx === 0 ? chainCutoff : null;
+      const shift = anchorShiftFor(data.burndown, 'date', 'value', anchor);
+      let p90data = interpDateSeries(applyShift(data.p90, shift, 'date', 'value'), allLabels);
+      let p50data = interpDateSeries(applyShift(data.burndown, shift, 'date', 'value'), allLabels);
+      let p10data = interpDateSeries(applyShift(data.p10, shift, 'date', 'value'), allLabels);
+      p90data = trimAtCutoff(extendBelowZero(p90data), allLabels, cutoff);
+      p50data = trimAtCutoff(extendBelowZero(p50data), allLabels, cutoff);
+      p10data = trimAtCutoff(extendBelowZero(p10data), allLabels, cutoff);
+
+      if (showP90) {
+        bc.data.datasets.push({
+          label: `MC P90 (optimistic)${suffix}`,
+          data: p90data,
+          borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
+          backgroundColor: showP10 ? 'rgba(253,126,20,0.18)' : 'transparent',
+          fill: p90Fill,
+          pointRadius: 0, tension: 0.1, spanGaps: false,
+          _mcOverlay: true, _mcBand: 'p90', _noLegend: true,
+        });
+      }
+      if (showP50) {
+        bc.data.datasets.push({
+          label: `MC P50 (median)${suffix}`,
+          data: p50data,
+          borderColor: '#fd7e14', borderWidth: 2.5, borderDash: [6, 3],
+          backgroundColor: 'transparent', fill: false,
+          pointRadius: 0, pointHoverRadius: 5, pointHitRadius: D.granularity === 'daily' ? 8 : 4, tension: 0.1, spanGaps: false,
+          _mcOverlay: true, _mcBand: 'p50', _noLegend: !!suffix,
+        });
+      }
+      if (showP10) {
+        bc.data.datasets.push({
+          label: `MC P10 (pessimistic)${suffix}`,
+          data: p10data,
+          borderColor: 'rgba(253,126,20,0.55)', borderWidth: 1.5, borderDash: [3, 3],
+          backgroundColor: 'transparent', fill: false,
+          pointRadius: 0, tension: 0.1, spanGaps: false,
+          _mcOverlay: true, _mcBand: 'p10', _noLegend: true,
+        });
+      }
+    });
 
     ['p90', 'p50', 'p10'].forEach(band => {
       if (localStorage.getItem('forecast-mc-' + band) === '0') {
@@ -2241,14 +2656,17 @@ if (typeof Chart !== 'undefined') {
   // numbers (same regardless of which snapshot was picked — the actual bug
   // behind "doesn't update to the snapshot selected").
   if (!D.snapshotTs) {
-    getMcData().then(updateMcStats).catch(() => {
+    // The KPI/accordion stats always reflect segment 0 — the active
+    // contract's own numbers — even in chained mode where getMcData()/
+    // getLrData() resolve an array with one entry per chain segment.
+    getMcData().then(entries => updateMcStats(entries[0].data)).catch(() => {
       const probEl = document.getElementById('mc-kpi-prob');
       if (probEl) probEl.textContent = '—';
       const body = document.getElementById('mc-acc-body');
       if (body) body.innerHTML = '<div class="text-muted small">Simulation data unavailable.</div>';
     });
 
-    getLrData().then(updateMlStats).catch(() => {
+    getLrData().then(entries => updateMlStats(entries[0].data)).catch(() => {
       const slopeEl = document.getElementById('ml-kpi-slope');
       if (slopeEl) slopeEl.textContent = '—';
       const subEl = document.getElementById('ml-kpi-sub');

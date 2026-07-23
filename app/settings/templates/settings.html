@@ -248,159 +248,207 @@
       </div>
       </div><!-- /pane-data -->
 
-      {# Contract and Forecast Settings #}
-      {% set c = saved_contract.contract %}
-      {% set p = saved_contract.pricing %}
-      {% set f = saved_contract.forecast %}
+      {# Contracts and Forecast Settings #}
+      {% set f = forecast %}
       <div class="tab-pane fade" id="pane-contract" role="tabpanel">
       <div class="settings-section">
-        <h5>Contract &amp; Forecast Settings</h5>
-        <form id="config-save-form" method="post" action="{{ url_for('forecast.save_forecast_config') }}">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="mb-0">Contracts</h5>
+          <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#add-contract-form">+ Add contract</button>
+        </div>
+        <p class="text-muted small mb-3">
+          Add the next contract ahead of time so forecasting keeps projecting past the
+          current one. Credits bought within a contract's dates expire at that contract's
+          own end date unless its "Rollover to next" box is checked.
+        </p>
 
-          <p class="text-uppercase fw-bold text-muted mb-1" style="font-size:.63rem; letter-spacing:.08em;">Contract</p>
-          <div class="row g-3 mb-3">
-            <div class="col-md-3">
-              <label class="form-label">Contract start</label>
-              <input class="form-control form-control-sm" type="date" name="contract_start_date" value="{{ c.contract_start_date }}" required>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Contract end</label>
-              <input class="form-control form-control-sm" type="date" name="contract_end_date" value="{{ c.contract_end_date }}" required>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Initial allocation date</label>
-              <input class="form-control form-control-sm" type="date" name="purchased_credits_date"
-                     value="{{ c.purchased_credits_date or c.contract_start_date or '' }}"
-                     {% if credit_entries %}readonly{% endif %}>
-              <div class="form-text">
-                {% if credit_entries %}
-                  This date is locked once ledger entries exist.
-                {% else %}
-                  Used for the original ledger entry. Later top-ups live in the log below.
-                {% endif %}
+        <div class="collapse mb-4" id="add-contract-form">
+          <div class="border rounded-3 p-3 bg-light">
+            <h6 class="mb-3">New contract</h6>
+            <form method="post" action="{{ url_for('settings.add_contract') }}">
+              <div class="row g-3">
+                <div class="col-md-3">
+                  <label class="form-label">Label</label>
+                  <input class="form-control form-control-sm" type="text" name="label" placeholder="e.g. FY27">
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">Start</label>
+                  <input class="form-control form-control-sm" type="date" name="contract_start_date" required>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">End</label>
+                  <input class="form-control form-control-sm" type="date" name="contract_end_date" required>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">Price per credit ($)</label>
+                  <input class="form-control form-control-sm" type="number" step="0.0001" min="0" name="price_per_credit" value="0">
+                </div>
               </div>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Credits available</label>
-              <input class="form-control form-control-sm" type="text" value="{{ '{:,.0f}'.format(credit_total) }}" readonly>
-              <div class="form-text">This is the sum of every entry in the credit ledger.</div>
-            </div>
-            <div class="col-md-3 d-flex align-items-end pb-1">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="rollover_allowed" id="rollover_allowed" {% if c.rollover_allowed %}checked{% endif %}>
-                <label class="form-check-label" for="rollover_allowed">Rollover allowed</label>
+              <div class="row g-3 mt-1">
+                <div class="col-md-3">
+                  <label class="form-label">Initial credits</label>
+                  <input class="form-control form-control-sm" type="number" min="0" step="0.01" name="purchased_credits" placeholder="0">
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">Allocation date</label>
+                  <input class="form-control form-control-sm" type="date" name="purchased_credits_date">
+                  <div class="form-text">Defaults to the contract start date.</div>
+                </div>
+                <div class="col-md-4 d-flex align-items-end pb-1">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="rollover_allowed" id="new_rollover_allowed">
+                    <label class="form-check-label" for="new_rollover_allowed">Rollover unused credits into the next contract</label>
+                  </div>
+                </div>
+                <div class="col-md-2 d-grid">
+                  <button class="btn btn-primary btn-sm" type="submit">Add contract</button>
+                </div>
               </div>
+            </form>
+          </div>
+        </div>
+
+        {% for cv in contracts %}
+        {% set c = cv.contract %}
+        <div class="border rounded-3 p-3 mb-3{% if cv.state == 'active' %} border-primary{% endif %}">
+          <div class="d-flex justify-content-between align-items-start mb-2">
+            <div class="d-flex align-items-center gap-2">
+              <strong>{{ c.label or 'Contract' }}</strong>
+              {% if cv.state == 'active' %}<span class="badge bg-success">Active now</span>
+              {% elif cv.state == 'upcoming' %}<span class="badge bg-info text-dark">Upcoming</span>
+              {% else %}<span class="badge bg-secondary">Ended</span>{% endif %}
             </div>
+            <form method="post" action="{{ url_for('settings.remove_contract', contract_id=c.id) }}"
+                  onsubmit="return confirm('Remove contract {{ c.label }}? This also removes its credit ledger. This cannot be undone.');">
+              <button class="btn btn-outline-danger btn-sm py-0 px-2" type="submit">Remove</button>
+            </form>
           </div>
 
-          <div class="alert alert-light border py-2 px-3 mb-3">
+          <form method="post" action="{{ url_for('settings.update_contract_fields', contract_id=c.id) }}">
+            <div class="row g-3 mb-2">
+              <div class="col-md-2">
+                <label class="form-label">Label</label>
+                <input class="form-control form-control-sm" type="text" name="label" value="{{ c.label or '' }}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Start</label>
+                <input class="form-control form-control-sm" type="date" name="contract_start_date" value="{{ c.contract_start_date }}" required>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">End</label>
+                <input class="form-control form-control-sm" type="date" name="contract_end_date" value="{{ c.contract_end_date }}" required>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Price/credit ($)</label>
+                <input class="form-control form-control-sm" type="number" step="0.0001" min="0" name="price_per_credit" value="{{ c.price_per_credit }}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Credits available</label>
+                <input class="form-control form-control-sm" type="text" value="{{ '{:,.0f}'.format(cv.credit_total) }}" readonly>
+              </div>
+              <div class="col-md-2 d-flex align-items-end pb-1">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" name="rollover_allowed" id="rollover_{{ c.id }}" {% if c.rollover_allowed %}checked{% endif %}>
+                  <label class="form-check-label" for="rollover_{{ c.id }}">Rollover to next</label>
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-outline-primary btn-sm" type="submit">Save contract</button>
+          </form>
+
+          {% if cv.status is not none %}
+          <div class="alert alert-light border py-2 px-3 my-2">
             <div class="row g-2 small">
-              <div class="col-md-4">
-                <strong>Credits available:</strong> +{{ '{:,.0f}'.format(credit_total) }}
-              </div>
-              <div class="col-md-4">
-                <strong>Credits used:</strong>
-                {% if credit_status is not none %}{{ '{:,.0f}'.format(credit_status.total_credits_used) }}{% else %}—{% endif %}
-              </div>
-              <div class="col-md-4">
-                <strong>Remaining:</strong>
-                {% if credit_status is not none %}{{ '{:,.0f}'.format(credit_status.credits_remaining) }}{% else %}—{% endif %}
-              </div>
+              <div class="col-md-4"><strong>Credits available:</strong> +{{ '{:,.0f}'.format(cv.credit_total) }}</div>
+              <div class="col-md-4"><strong>Credits used:</strong> {{ '{:,.0f}'.format(cv.status.total_credits_used) }}</div>
+              <div class="col-md-4"><strong>Remaining:</strong> {{ '{:,.0f}'.format(cv.status.credits_remaining) }}</div>
             </div>
           </div>
+          {% endif %}
 
-          <p class="text-uppercase fw-bold text-muted mb-2 mt-3" style="font-size:.63rem; letter-spacing:.08em;">Credit ledger</p>
-          <div class="border rounded-3 p-3 bg-light mb-3">
-            <div class="row g-3 align-items-end">
-              <div class="col-md-2">
-                <label class="form-label">Date</label>
-                <input class="form-control form-control-sm" type="date" name="credits_date" required>
-              </div>
-              <div class="col-md-2">
-                <label class="form-label">Credits +</label>
-                <input class="form-control form-control-sm" type="number" name="credits" min="0" step="0.01" placeholder="100" required>
-              </div>
-              <div class="col-md-3">
-                <label class="form-label">Type</label>
-                <select class="form-select form-select-sm" name="credit_kind">
-                  <option value="purchased">Purchased</option>
-                  <option value="gifted">Gifted / grace</option>
-                  <option value="adjustment">Adjustment</option>
-                </select>
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Notes</label>
-                <input class="form-control form-control-sm" type="text" name="credits_notes" placeholder="e.g. gifted credits from vendor">
-              </div>
-              <div class="col-md-1 d-grid">
-                <button class="btn btn-outline-primary btn-sm" type="submit"
-                        formaction="{{ url_for('settings.add_credit_entry') }}"
-                        formmethod="post"
-                        formnovalidate>Add</button>
-              </div>
+          <details class="mt-2">
+            <summary class="text-muted small" style="cursor:pointer;">Credit ledger ({{ cv.credit_entries|length }} entr{{ 'y' if cv.credit_entries|length == 1 else 'ies' }})</summary>
+
+            <div class="border rounded-3 p-3 bg-light my-2">
+              <form method="post" action="{{ url_for('settings.add_credit_entry') }}" class="row g-3 align-items-end">
+                <input type="hidden" name="contract_id" value="{{ c.id }}">
+                <div class="col-md-2">
+                  <label class="form-label">Date</label>
+                  <input class="form-control form-control-sm" type="date" name="credits_date">
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label">Credits +</label>
+                  <input class="form-control form-control-sm" type="number" name="credits" min="0" step="0.01" placeholder="100" required>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">Type</label>
+                  <select class="form-select form-select-sm" name="credit_kind">
+                    <option value="purchased">Purchased</option>
+                    <option value="gifted">Gifted / grace</option>
+                    <option value="adjustment">Adjustment</option>
+                  </select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Notes</label>
+                  <input class="form-control form-control-sm" type="text" name="credits_notes" placeholder="e.g. gifted credits from vendor">
+                </div>
+                <div class="col-md-1 d-grid">
+                  <button class="btn btn-outline-primary btn-sm" type="submit">Add</button>
+                </div>
+              </form>
             </div>
-          </div>
 
-          <div class="table-responsive mb-2">
-            <table class="settings-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Type</th>
-                  <th class="text-end">Credits</th>
-                  <th>Notes</th>
-                  <th class="text-end">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% if credit_entries %}
-                  {% set credit_badges = {'purchased': 'bg-success', 'gifted': 'bg-info text-dark', 'adjustment': 'bg-secondary'} %}
-                  {% for entry in credit_entries %}
+            <div class="table-responsive mb-2">
+              <table class="settings-table">
+                <thead>
                   <tr>
-                    <td>{{ entry.date or '—' }}</td>
-                    <td>
-                      <span class="badge {{ credit_badges.get(entry.kind, 'bg-secondary') }}" style="font-size:.68rem;">{{ credit_kind_label(entry.kind) }}</span>
-                    </td>
-                    <td class="text-end text-success fw-semibold">+{{ '{:,.0f}'.format(entry.credits) }}</td>
-                    <td style="max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ entry.notes or '' }}">
-                      {{ entry.notes or '—' }}
-                    </td>
-                    <td class="text-end">
-                      <button class="btn btn-outline-danger btn-sm py-0 px-2"
-                              type="submit"
-                              name="entry_id"
-                              value="{{ entry.id }}"
-                              formaction="{{ url_for('settings.remove_credit_entry') }}"
-                              formmethod="post"
-                              formnovalidate
-                              onclick="return confirm('Remove this credit entry? This only changes the credit ledger, not your uploaded usage data.');">
-                        Remove
-                      </button>
-                    </td>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th class="text-end">Credits</th>
+                    <th>Notes</th>
+                    <th class="text-end">Actions</th>
                   </tr>
-                  {% endfor %}
-                {% else %}
-                  <tr>
-                    <td colspan="5" class="text-muted small">No credit entries yet.</td>
-                  </tr>
-                {% endif %}
-              </tbody>
-            </table>
-          </div>
-
-          <p class="text-uppercase fw-bold text-muted mb-1 mt-1" style="font-size:.63rem; letter-spacing:.08em;">Pricing</p>
-          <div class="row g-3 mb-3">
-            <div class="col-md-4">
-              <label class="form-label">Current price per credit ($)</label>
-              <input class="form-control form-control-sm" type="number" step="0.0001" name="current_price_per_credit" value="{{ p.current_price_per_credit }}" min="0">
+                </thead>
+                <tbody>
+                  {% if cv.credit_entries %}
+                    {% set credit_badges = {'purchased': 'bg-success', 'gifted': 'bg-info text-dark', 'adjustment': 'bg-secondary'} %}
+                    {% for entry in cv.credit_entries %}
+                    <tr>
+                      <td>{{ entry.date or '—' }}</td>
+                      <td>
+                        <span class="badge {{ credit_badges.get(entry.kind, 'bg-secondary') }}" style="font-size:.68rem;">{{ credit_kind_label(entry.kind) }}</span>
+                      </td>
+                      <td class="text-end text-success fw-semibold">+{{ '{:,.0f}'.format(entry.credits) }}</td>
+                      <td style="max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ entry.notes or '' }}">
+                        {{ entry.notes or '—' }}
+                      </td>
+                      <td class="text-end">
+                        <form method="post" action="{{ url_for('settings.remove_credit_entry') }}"
+                              onsubmit="return confirm('Remove this credit entry? This only changes the credit ledger, not your uploaded usage data.');">
+                          <input type="hidden" name="contract_id" value="{{ c.id }}">
+                          <button class="btn btn-outline-danger btn-sm py-0 px-2" type="submit" name="entry_id" value="{{ entry.id }}">
+                            Remove
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  {% else %}
+                    <tr>
+                      <td colspan="5" class="text-muted small">No credit entries yet.</td>
+                    </tr>
+                  {% endif %}
+                </tbody>
+              </table>
             </div>
-            <div class="col-md-4">
-              <label class="form-label">Next contract price per credit ($)</label>
-              <input class="form-control form-control-sm" type="number" step="0.0001" name="next_contract_price_per_credit" value="{{ p.next_contract_price_per_credit }}" min="0">
-            </div>
-          </div>
+          </details>
+        </div>
+        {% else %}
+        <div class="alert alert-info">No contracts configured yet. Add one above to get started.</div>
+        {% endfor %}
 
-          <hr class="my-3">
+        <hr class="my-3">
+        <form id="config-save-form" method="post" action="{{ url_for('forecast.save_forecast_config') }}">
           <p class="text-uppercase fw-bold text-muted mb-2" style="font-size:.63rem; letter-spacing:.08em;">Forecast</p>
 
           <div class="row g-3 mb-3">

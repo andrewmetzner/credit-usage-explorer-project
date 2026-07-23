@@ -18,6 +18,9 @@ import pandas as pd
 # Default weekly per-user burn that counts as a "heavy user" alert.
 DEFAULT_OUTLIER_THRESHOLD = 1000.0
 STALE_DATA_DAYS = 10
+# How close to the active contract's end date, with no next contract
+# configured yet, before the "contract ending soon" alert fires.
+CONTRACT_ENDING_SOON_DAYS = 30
 
 
 def _count_detail(count: int, unit: str, threshold: float, scope: str, window_str: str) -> str:
@@ -277,6 +280,30 @@ def _compute_alerts_uncached(services) -> list[dict]:
                     "link_endpoint": "forecast.forecast_page",
                     "link_args": {},
                 })
+
+            # 3b. Active contract ending soon with no next contract configured.
+            end = pd.to_datetime(cs.get("contract_end_date"), errors="coerce")
+            if not pd.isna(end):
+                days_left = (end.normalize() - pd.Timestamp.today().normalize()).days
+                if 0 <= days_left <= CONTRACT_ENDING_SOON_DAYS:
+                    contracts = config_svc.load_contracts()
+                    has_next = any(
+                        not pd.isna(s) and s > end
+                        for s in (pd.to_datetime(c.get("contract_start_date"), errors="coerce") for c in contracts)
+                    )
+                    if not has_next:
+                        alerts.append({
+                            "id": "contract-ending-no-next",
+                            "level": "warning",
+                            "title": "Contract ending soon",
+                            "detail": (
+                                f"The active contract ends in {days_left} day"
+                                f"{'s' if days_left != 1 else ''} ({end.date()}) and no next "
+                                "contract is configured yet — add one in Settings."
+                            ),
+                            "link_endpoint": "settings.settings_page",
+                            "link_args": {},
+                        })
     except Exception:
         pass
 
