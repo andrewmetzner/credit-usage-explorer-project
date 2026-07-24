@@ -205,6 +205,15 @@ function shiftDayStr(dstr, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// Chart-mode values that mean "the burndown line/labels/markers are built
+// from the active contract's own data" (current, chained, or overall) —
+// as opposed to a specific OTHER contract's id ("view other contracts"),
+// which is a fully independent reconstruction. Shared by both the main
+// chart IIFE and the separate MC/ML overlay IIFE (via window._fcChartMode).
+function isMainChartMode(mode) {
+  return mode === 'current' || mode === 'chained' || mode === 'overall';
+}
+
 // "Cut" toggle on a snapshot row: set the actual line's hide-after cutoff to
 // the day before that snapshot's forecast starts (click again to clear) — the
 // chart then shows what was known as of that week, the forecast owning its
@@ -1064,11 +1073,11 @@ if (typeof Chart !== 'undefined') {
 
   // Chart mode: 'current' (this contract only, same forecast as before
   // chaining existed — the default), 'chained' (steps into the next
-  // configured contract), or a specific contract id ("view other contracts").
-  // Persisted per browser like the other chart view prefs.
+  // configured contract), 'overall' (chained + every PAST contract's own
+  // actual history stitched in too), or a specific contract id ("view
+  // other contracts"). Persisted per browser like the other chart view prefs.
   let currentChartMode = localStorage.getItem('fc-chart-mode') || 'current';
-  if (currentChartMode !== 'current' && currentChartMode !== 'chained'
-      && !(D.allContracts || []).some(c => c.id === currentChartMode)) {
+  if (!isMainChartMode(currentChartMode) && !(D.allContracts || []).some(c => c.id === currentChartMode)) {
     currentChartMode = 'current'; // stale/deleted contract id -> fall back
   }
   // Exposed for the separate Monte Carlo/ML overlay IIFE below (its own
@@ -1273,19 +1282,45 @@ if (typeof Chart !== 'undefined') {
     return spliceExactDate(full, targetDate).filter(p => p[0] <= targetDate);
   }
 
+  // Advanced settings' X-axis date pickers can be set to any future date,
+  // but a category-axis chart can only ever show labels that actually
+  // exist as data points — so when the (Basic model's own) exhaustion week
+  // falls AFTER contract end, extend the projection horizon out to cover
+  // it, so there's real data for the picker to reach/snap to. When
+  // exhaustion falls BEFORE contract end instead (credits run out early),
+  // it's already within the normal contract-end-bounded horizon, so this
+  // must NOT shrink anything — Math.max below handles that automatically.
+  function extendedWeeksLeft() {
+    if (!D.exhaustionWeek) return weeksLeft;
+    const exhDate = new Date(D.exhaustionWeek + 'T12:00:00');
+    if (Number.isNaN(exhDate.getTime())) return weeksLeft;
+    const exhWeeks = (exhDate - new Date(projAnchorDate + 'T12:00:00')) / (7 * 86400000);
+    return Math.max(weeksLeft, exhWeeks);
+  }
+
   function buildProjPts(granularity) {
     // Segment 0: the active contract, anchored at the end of the known-facts
     // bridge (today, when data lags) so the grant steps stay on the actual
     // line and the decline starts from what is actually known now. Exactly
     // the same forecast as before chaining existed — including its normal
-    // ~1-week overshoot past contract end (steps = ceil(weeksHorizon)+1).
-    const seg0Full = buildSegmentPts(projAnchorDate, projAnchorRemaining, weeksLeft, granularity, D.contractEndDate);
-    if (currentChartMode !== 'chained' || !contractBoundaries.length) return seg0Full;
-    // Chained: this dataset covers ONLY the active contract, ridden into the
-    // marker for the next contract's own credits (contractBoundaries[0]) and
-    // ending exactly there — see buildFutureContractSegments for what draws
-    // beyond it, as its OWN separate line(s) starting at that same date.
-    return buildSegmentRidingInto(projAnchorDate, projAnchorRemaining, contractBoundaries[0].date, granularity);
+    // ~1-week overshoot past contract end (steps = ceil(weeksHorizon)+1) —
+    // extended further when the exhaustion week runs past contract end (see
+    // extendedWeeksLeft).
+    const seg0Full = buildSegmentPts(projAnchorDate, projAnchorRemaining, extendedWeeksLeft(), granularity, D.contractEndDate);
+    const chaining = currentChartMode === 'chained' || currentChartMode === 'overall';
+    if (!chaining || !contractBoundaries.length) return seg0Full;
+    // Chained (or overall, which chains too — it just ALSO shows past
+    // history, see buildPastContractSegments): this dataset covers ONLY the
+    // active contract, ridden into ITS OWN contract end date and ending
+    // exactly there — NOT the next contract's start date
+    // (contractBoundaries[0].date), which is usually a day or more later.
+    // Riding all the way to the next contract's start used to draw the old
+    // contract's decline through days that are outside its own window (only
+    // ever a 1-day gap in Weekly, where it's invisible between 7-day-apart
+    // labels — but a fully visible extra day in Daily). See
+    // buildFutureContractSegments for what draws beyond contract end, as its
+    // OWN separate line(s) starting fresh at the next contract's own date.
+    return buildSegmentRidingInto(projAnchorDate, projAnchorRemaining, D.contractEndDate, granularity);
   }
 
   // One segment per configured future contract, each its own separate line:
@@ -1299,7 +1334,8 @@ if (typeof Chart !== 'undefined') {
   // each can end AT the same label its successor starts from, at a
   // different height — a single dataset can only hold one value per label.
   function buildFutureContractSegments(granularity) {
-    if (currentChartMode !== 'chained' || !contractBoundaries.length) return [];
+    const chaining = currentChartMode === 'chained' || currentChartMode === 'overall';
+    if (!chaining || !contractBoundaries.length) return [];
     const dailyBurn = weeklyBurn / 7;
     const segments = [];
     let curAnchorDate = projAnchorDate;
@@ -1325,9 +1361,27 @@ if (typeof Chart !== 'undefined') {
     return segments;
   }
 
+  // "Overall" mode only: every OTHER contract that's already started (not
+  // the active one, which uses the real known-facts-bridge reconstruction
+  // below instead) gets its own actual-history segment, in chronological
+  // order — so the actual line reads continuously from the very first
+  // configured contract through to where the active contract's own actual
+  // data picks up, instead of starting cold at the active contract's start.
+  function buildPastContractSegments(granularity) {
+    if (currentChartMode !== 'overall') return [];
+    const todayStr = D.today || '';
+    return (D.allContracts || [])
+      .filter(c => c.id !== D.activeContractId && c.start && (!todayStr || c.start <= todayStr))
+      .sort((a, b) => (a.start < b.start ? -1 : 1))
+      .map(c => ({ label: c.label || 'Contract', purchased: c.purchased || 0, contract: c,
+                   data: buildOtherContractSeries(c, granularity).actual }))
+      .filter(seg => seg.data.length);
+  }
+
   let currentGranularity = D.granularity || 'weekly';
   let projPts = buildProjPts(currentGranularity);
   let futureSegments = buildFutureContractSegments(currentGranularity);
+  let pastSegments = buildPastContractSegments(currentGranularity);
   // Exposed for the separate Monte Carlo/ML overlay IIFE below (its own
   // closure, no access to this one's locals) — see chainedFetchTargets there.
   window._fcContractBoundaries = contractBoundaries;
@@ -1347,6 +1401,7 @@ if (typeof Chart !== 'undefined') {
   function buildAllLabels(ppts) {
     const labels = new Set([...activeActualPts(), ...ppts].map(p => p[0]));
     futureSegments.forEach(s => s.data.forEach(p => labels.add(p[0])));
+    pastSegments.forEach(s => s.data.forEach(p => labels.add(p[0])));
     // Contract end is added as its own category only for daily granularity —
     // for weekly, every label here is already Monday-anchored (actual points
     // land on week_end+1 = Monday; projected points step +7 days from there),
@@ -1376,10 +1431,6 @@ if (typeof Chart !== 'undefined') {
     chart.options.scales.x.ticks.autoSkip = true;
   }
 
-  function viewStorageKey(name) {
-    return `forecast-chart-view-${currentGranularity}-${name}`;
-  }
-
   function getNearestLabel(value, direction) {
     if (!value || !allLabels.length) return null;
     if (direction === 'start') return allLabels.find(l => l >= value) || allLabels[allLabels.length - 1];
@@ -1406,7 +1457,14 @@ if (typeof Chart !== 'undefined') {
     // full-contract window (contract start -> end) regardless of any view.
     const startAnchor = (currentGranularity !== 'daily' && D.viewFrom)
       || D.contractStartDate || allLabels[0];
-    const min = getNearestLabel(startAnchor, 'start') || allLabels[0];
+    // Overall mode: pull the window's left edge back to the earliest past
+    // contract's own start (pastSegments is sorted chronologically) so all
+    // of history is visible by default instead of starting at the active
+    // contract like every other mode does.
+    const overallStart = currentChartMode === 'overall' && pastSegments.length
+      ? pastSegments[0].data[0][0]
+      : null;
+    const min = getNearestLabel(overallStart || startAnchor, 'start') || allLabels[0];
     const contractEnd = getNearestLabel(D.contractEndDate, 'end');
 
     // "Current contract" mode is a clean, bounded view of just this contract
@@ -1476,10 +1534,6 @@ if (typeof Chart !== 'undefined') {
       alert('Choose a view start date before the end date.');
       return;
     }
-    if (persist) {
-      if (from) localStorage.setItem(viewStorageKey('from'), from); else localStorage.removeItem(viewStorageKey('from'));
-      if (to) localStorage.setItem(viewStorageKey('to'), to); else localStorage.removeItem(viewStorageKey('to'));
-    }
     applyAxisWindow(min, max);
   };
 
@@ -1512,8 +1566,6 @@ if (typeof Chart !== 'undefined') {
     const bc = window.burndownChart;
     const fromEl = document.getElementById('chart-view-from');
     const toEl = document.getElementById('chart-view-to');
-    localStorage.removeItem(viewStorageKey('from'));
-    localStorage.removeItem(viewStorageKey('to'));
     if (!bc || !fromEl || !toEl || !allLabels.length) return;
     const def = defaultViewRange();
     fromEl.value = def.min;
@@ -1538,7 +1590,7 @@ if (typeof Chart !== 'undefined') {
     const scale = bc.chart.options.scales.y;
     if (yMin != null) scale.min = yMin; else delete scale.min;
     if (yMax != null) { scale.max = yMax; delete scale.suggestedMax; }
-    else { delete scale.max; scale.suggestedMax = purchased; }
+    else { delete scale.max; scale.suggestedMax = window.burndownMaxY || purchased; }
     if (persist) {
       if (yMin != null) localStorage.setItem('fc-view-ymin', String(yMin));
       else localStorage.removeItem('fc-view-ymin');
@@ -1568,24 +1620,31 @@ if (typeof Chart !== 'undefined') {
     window.clearBurndownYRange();
   };
 
+  // Always resets to the sensible default view range — on every mode switch
+  // and every page load, never restoring a previously remembered manual
+  // pan/zoom (deliberate: X-axis view state does not persist across
+  // reloads). defaultViewRange() itself still honors a URL-driven
+  // view_from/view_to (the Advanced burn window), which is a separate,
+  // explicit mechanism, not a remembered pan.
   function initBurndownViewRange() {
     const fromEl = document.getElementById('chart-view-from');
     const toEl = document.getElementById('chart-view-to');
     if (!fromEl || !toEl) return;
     setViewInputBounds();
     const def = defaultViewRange();
-    // A URL-driven date-range view sets the axis window itself, overriding any
-    // stale per-browser x-axis cached from a normal session. Daily is exempt —
-    // it keeps its original cached/full-contract window behavior.
-    const viewActive = !!(D.viewFrom || D.viewTo) && currentGranularity !== 'daily';
-    fromEl.value = (!viewActive && localStorage.getItem(viewStorageKey('from'))) || def.min;
-    toEl.value = (!viewActive && localStorage.getItem(viewStorageKey('to'))) || def.max;
+    fromEl.value = def.min;
+    toEl.value = def.max;
     window.applyBurndownViewRange(false);
   }
 
   let allLabels = buildAllLabels(projPts);
   window.burndownLabels = allLabels;
-  window.burndownMaxY   = purchased;
+  // Overall mode: a past contract can have purchased more credits than the
+  // active one, so the default Y suggestion should cover the tallest of
+  // them all, not just the active contract's own total.
+  window.burndownMaxY = pastSegments.length
+    ? Math.max(purchased, ...pastSegments.map(s => s.purchased || 0))
+    : purchased;
 
   // One projection line for the active contract (built by buildProjPts) —
   // in "chained" mode it rides into the first future contract's own marker
@@ -1595,7 +1654,19 @@ if (typeof Chart !== 'undefined') {
   // trying to hold two values at once. Colors cycle so a 3+ contract chain
   // stays visually distinguishable; each still uses the "proj" dash style.
   const FUTURE_SEGMENT_COLORS = ['#fd7e14', '#6f42c1', '#20c997', '#d63384'];
+  const PAST_SEGMENT_COLORS = ['#6c757d', '#495057', '#adb5bd', '#343a40'];
   const burndownDatasets = [
+    // Overall mode only: one solid "actual" line per prior contract, in
+    // chronological order, so history reads continuously before the active
+    // contract's own "Actual remaining" line picks up below.
+    ...pastSegments.map((seg, i) => ({
+      label: `Actual — ${seg.label}`,
+      data: allLabels.map(l => lookup(seg.data, l)),
+      borderColor: PAST_SEGMENT_COLORS[i % PAST_SEGMENT_COLORS.length],
+      backgroundColor: 'transparent',
+      fill: false, tension: 0.1, pointRadius: visiblePointRadius(), pointHoverRadius: hoverPointRadius(), pointHitRadius: pointHitRadius(), spanGaps: false,
+      _pastSegment: true,
+    })),
     {
       label: 'Actual remaining',
       data: allLabels.map(l => lookup(activeActualPts(), l)),
@@ -1692,7 +1763,7 @@ if (typeof Chart !== 'undefined') {
       },
       scales: {
         y: {
-          beginAtZero: true, suggestedMax: purchased,
+          beginAtZero: true, suggestedMax: window.burndownMaxY,
           ticks: { callback: v => v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'k' : v, font: { size: 10 } },
           grid: { color: 'rgba(0,0,0,.05)' },
         },
@@ -1755,9 +1826,19 @@ if (typeof Chart !== 'undefined') {
       });
     }
   });
+  // Overall mode: each past contract's own mid-contract ledger additions
+  // (same "skip the implicit start-of-contract entry" filter as the active
+  // contract's window._fcCreditEvents above), so history shows the same
+  // marker detail the active contract gets.
+  const pastCreditEvents = pastSegments.flatMap(seg =>
+    (seg.contract.creditEvents || []).filter(e => e && e.effective_date && e.credits > 0 && e.effective_date > seg.contract.start)
+      .map(e => ({ effective_date: e.effective_date, credits: e.credits, label: e.label }))
+  );
   function activeMarkerEvents() {
     const base = window._fcCreditEvents || [];
-    return currentChartMode === 'chained' ? base.concat(window._fcChainMarkers || []) : base;
+    const chaining = currentChartMode === 'chained' || currentChartMode === 'overall';
+    const withChain = chaining ? base.concat(window._fcChainMarkers || []) : base;
+    return currentChartMode === 'overall' ? withChain.concat(pastCreditEvents) : withChain;
   }
   const creditMarkersOn = localStorage.getItem('fc-credit-markers') !== '0';
   window.burndownChart.chart.$creditEvents = creditMarkersOn ? activeMarkerEvents() : [];
@@ -1765,7 +1846,14 @@ if (typeof Chart !== 'undefined') {
     localStorage.setItem('fc-credit-markers', on ? '1' : '0');
     const bc = window.burndownChart;
     if (!bc) return;
-    bc.chart.$creditEvents = on ? activeMarkerEvents() : [];
+    // "View other contracts" mode has its own markers (see
+    // applyOtherContractView) — activeMarkerEvents() is always the ACTIVE
+    // contract's own, so using it here regardless of mode showed the wrong
+    // contract's markers as soon as the toggle was unchecked then re-checked.
+    const markers = isMainChartMode(currentChartMode)
+      ? activeMarkerEvents()
+      : (window._fcOtherContractMarkers || []);
+    bc.chart.$creditEvents = on ? markers : [];
     bc.chart.update('none');
   };
   (function () {
@@ -1788,17 +1876,28 @@ if (typeof Chart !== 'undefined') {
       .filter(w => w.week_start >= contract.start && (!contract.end || w.week_start <= contract.end))
       .sort((a, b) => (a.week_start < b.week_start ? -1 : 1));
     let cum = 0;
-    const actual = [];
-    if (contract.start) actual.push([contract.start, addedByOwn(contract.start)]);
+    const weeklyActual = [];
+    if (contract.start) weeklyActual.push([contract.start, addedByOwn(contract.start)]);
     weeks.forEach(w => {
       cum += w.total_credits_used;
       const d = new Date((w.week_end || w.week_start) + 'T12:00:00');
       d.setDate(d.getDate() + 1);
       const pointDate = d.toISOString().slice(0, 10);
       const pt = [pointDate, Math.max(addedByOwn(pointDate) - cum, 0)];
-      if (actual.length && actual[actual.length - 1][0] === pt[0]) actual[actual.length - 1] = pt;
-      else actual.push(pt);
+      if (weeklyActual.length && weeklyActual[weeklyActual.length - 1][0] === pt[0]) weeklyActual[weeklyActual.length - 1] = pt;
+      else weeklyActual.push(pt);
     });
+    // Daily granularity uses this contract's OWN day-level reconstruction
+    // (D.allContracts[i].dailyActual, server-built the exact same way
+    // D.dailyActualData is for the active contract — see
+    // _daily_actual_for_contract) instead of the weekly rollup above, so
+    // "view other contracts" Daily matches "current contract" Daily
+    // formatting point-for-point rather than looking like a coarser series.
+    const dailyActual = (contract.dailyActual || [])
+      .filter(d => d && d.date)
+      .map(d => [d.date, Number(d.remaining)])
+      .filter(p => Number.isFinite(p[1]));
+    const actual = (granularity === 'daily' && dailyActual.length) ? dailyActual : weeklyActual;
     // Anchor the projection at the last real point in THIS contract's own
     // range, or its own start (full credits) when it has none yet (a future
     // contract that hasn't started, or one with no usage recorded).
@@ -1807,8 +1906,12 @@ if (typeof Chart !== 'undefined') {
       ? Math.max((new Date(contract.end) - new Date(anchor[0])) / (7 * 86400000), 0)
       : 12;
     const proj = buildSegmentPts(anchor[0], anchor[1], weeksHorizon, granularity, contract.end);
+    // Only markers that actually fall within THIS contract's own window —
+    // a ledger entry dated after the contract's own end (bad data entry, or
+    // a stray future-dated grant) would otherwise still render as a marker
+    // even though it's outside the visible/relevant range for this contract.
     const markers = events
-      .filter(e => e.effective_date > contract.start)
+      .filter(e => e.effective_date > contract.start && (!contract.end || e.effective_date <= contract.end))
       .map(e => ({ effective_date: e.effective_date, credits: e.credits, label: e.label }));
     return { actual, proj, markers, anchor };
   }
@@ -1848,6 +1951,11 @@ if (typeof Chart !== 'undefined') {
     // the active one (see /forecast/model-data's contract_id param).
     window._fcOtherContractAnchor = { date: anchor[0], remaining: anchor[1] };
     window._fcOtherContract = { id: contract.id, start: contract.start, end: contract.end };
+    // Exposed so toggleCreditMarkers (unchecking then re-checking "Credit
+    // markers") can re-apply THIS contract's own markers instead of falling
+    // back to the active contract's (activeMarkerEvents()) — it has no other
+    // way to know which contract is currently being viewed.
+    window._fcOtherContractMarkers = markers;
     if (labels.length) {
       // Stops exactly at this contract's own end date — same bounded-view
       // principle as "current contract" mode — rather than the tail end of
@@ -2056,12 +2164,12 @@ if (typeof Chart !== 'undefined') {
   applyBurndownXAxisStyle(window.burndownChart, currentGranularity);
   initBurndownViewRange();
   initBurndownYRange();
-  // "current"/"chained" are already correctly built from scratch (see
-  // buildProjPts, defaultViewRange, activeMarkerEvents — all resolve
+  // "current"/"chained"/"overall" are already correctly built from scratch
+  // (see buildProjPts, defaultViewRange, activeMarkerEvents — all resolve
   // currentChartMode before this point). Only "view other contracts" needs a
   // one-time patch, applied now that the default view-range init above has
   // already run (it would otherwise overwrite this).
-  if (currentChartMode !== 'current' && currentChartMode !== 'chained') {
+  if (!isMainChartMode(currentChartMode)) {
     applyOtherContractView(currentChartMode);
   }
   restorePendingSnapshotSelections();
@@ -2151,8 +2259,17 @@ if (typeof Chart !== 'undefined') {
   // deterministic "Projected — <contract>" line starts from, computed once
   // in buildFutureContractSegments so both stay consistent).
   function chainedFetchTargets() {
-    const targets = [{ extra: {}, anchor: window.burndownProjAnchor, label: '' }];
-    if (window._fcChartMode === 'chained') {
+    // The default (idx-0) target's anchor must be the OTHER contract's own
+    // (window._fcOtherContractAnchor) when in "view other contracts" mode —
+    // it used to always fall back to window.burndownProjAnchor (the ACTIVE
+    // contract's), which shifted the fetched MC/ML series onto the active
+    // contract's dates. Interpolated onto the other contract's own (totally
+    // different) chart labels, every point then fell outside the label
+    // range and nothing rendered — MC/ML looked like it "didn't work" for
+    // any non-current contract.
+    const defaultAnchor = window._fcOtherContract ? window._fcOtherContractAnchor : window.burndownProjAnchor;
+    const targets = [{ extra: {}, anchor: defaultAnchor, label: '' }];
+    if (window._fcChartMode === 'chained' || window._fcChartMode === 'overall') {
       const boundaries = window._fcContractBoundaries || [];
       const segs = window._fcFutureSegments || [];
       boundaries.forEach((b, i) => {
@@ -2252,8 +2369,12 @@ if (typeof Chart !== 'undefined') {
     const C = '#198754';
     // Active contract's band (entry 0) stops at the first boundary in
     // chained mode — see trimAtCutoff.
-    const chainCutoff = window._fcChartMode === 'chained' && window._fcContractBoundaries
-      && window._fcContractBoundaries[0] ? window._fcContractBoundaries[0].date : null;
+    // Cutoff is the active contract's OWN end date, not the next contract's
+    // start (window._fcContractBoundaries[0].date) — see buildProjPts for
+    // why: riding through the gap between them drew an extra, out-of-window
+    // day (invisible in Weekly, visible in Daily).
+    const chainCutoff = (window._fcChartMode === 'chained' || window._fcChartMode === 'overall') && window._fcContractBoundaries
+      && window._fcContractBoundaries[0] ? D.contractEndDate : null;
     entries.forEach(({ data, anchor, label }, idx) => {
       if (!data || data.error) return;
       const suffix = label ? ` — ${label}` : '';
@@ -2467,8 +2588,12 @@ if (typeof Chart !== 'undefined') {
     // Active contract's band (entry 0) stops at the first boundary in
     // chained mode — same "ride into the marker, end there" cutoff the
     // deterministic Base line uses (see buildProjPts).
-    const chainCutoff = window._fcChartMode === 'chained' && window._fcContractBoundaries
-      && window._fcContractBoundaries[0] ? window._fcContractBoundaries[0].date : null;
+    // Cutoff is the active contract's OWN end date, not the next contract's
+    // start (window._fcContractBoundaries[0].date) — see buildProjPts for
+    // why: riding through the gap between them drew an extra, out-of-window
+    // day (invisible in Weekly, visible in Daily).
+    const chainCutoff = (window._fcChartMode === 'chained' || window._fcChartMode === 'overall') && window._fcContractBoundaries
+      && window._fcContractBoundaries[0] ? D.contractEndDate : null;
 
     mcCache.forEach(({ data, anchor, label }, idx) => {
       if (!data || data.error) return;

@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "macros/charts.html" import chart_card %}
 {% block title %}Summary - Credit Usage Explorer{% endblock %}
 
 {% block extra_head %}
@@ -18,12 +17,38 @@
 </select>
 {% endmacro %}
 
-{# Contract-scope dropdown reused by every Summary chart (client-side filter). #}
-{% macro scope_select(id) %}
-<select id="{{ id }}" class="form-select form-select-sm chart-filter-select" title="Contract scope">
-  <option value="all">Include pre-contract</option>
-  <option value="contract">In contract only</option>
-</select>
+{# Contract-scope dropdown reused by every Summary chart (client-side filter) —
+   checkbox list of "Pre-contract" + every configured contract, all checked
+   by default (equivalent to the old "Include pre-contract" / all option).
+   Wired up client-side in summary.js's initScopeDropdown(). #}
+{% macro scope_select(id, contracts) %}
+<div class="dropdown d-inline-block">
+  <button class="btn btn-outline-secondary btn-sm dropdown-toggle chart-filter-select" type="button"
+          id="{{ id }}-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+          aria-expanded="false" title="Contract scope">
+    <span id="{{ id }}-label">All contracts</span>
+  </button>
+  <ul class="dropdown-menu shadow-sm p-2" aria-labelledby="{{ id }}-btn" style="min-width:200px; font-size:.8rem;">
+    <li class="d-flex justify-content-between align-items-center px-1 pb-1 mb-1 border-bottom">
+      <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none" data-scope-all="{{ id }}">All</button>
+      <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-muted" data-scope-none="{{ id }}">Clear</button>
+    </li>
+    <li>
+      <label class="d-flex align-items-center gap-2 px-1 py-1 mb-0" style="cursor:pointer;">
+        <input type="checkbox" class="form-check-input mt-0 scope-cb" data-scope-group="{{ id }}" data-scope-key="__pre__" checked>
+        <span>Pre-contract</span>
+      </label>
+    </li>
+    {% for c in contracts %}
+    <li>
+      <label class="d-flex align-items-center gap-2 px-1 py-1 mb-0" style="cursor:pointer;">
+        <input type="checkbox" class="form-check-input mt-0 scope-cb" data-scope-group="{{ id }}" data-scope-key="{{ c.id }}" checked>
+        <span>{{ c.label }}</span>
+      </label>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
 {% endmacro %}
 
 {% block body %}
@@ -87,7 +112,7 @@
               <button type="button" class="btn btn-outline-secondary py-0 px-2"
                       id="wb-gran-daily" onclick="setSummaryBurnGranularity('daily', this)">Daily</button>
             </div>
-            {{ scope_select('wb-scope-filter') }}
+            {{ scope_select('wb-scope-filter', contracts) }}
             {{ weeks_select('wb-weeks-filter') }}
             <div class="form-check form-check-inline mb-0" title="Show only credits consumed; days with a net refund are shown at their positive usage, with the refunded amount noted in the tooltip.">
               <input class="form-check-input" type="checkbox" id="wb-hide-negatives">
@@ -109,7 +134,7 @@
         <div class="dash-section-header">
           <span class="dash-section-title">Active Users / Week</span>
           <div class="d-flex gap-1 align-items-center">
-            {{ scope_select('au-scope-filter') }}
+            {{ scope_select('au-scope-filter', contracts) }}
             {{ weeks_select('au-weeks-filter') }}
             <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG"  onclick="window.summaryActiveUsersChart && window.summaryActiveUsersChart.exportPNG()">&#8681;</button>
             <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen"  onclick="window.summaryActiveUsersChart && window.summaryActiveUsersChart.openFullscreen()">&#9974;</button>
@@ -123,16 +148,29 @@
       </div>
 
       <!-- Credits by Usage Type per Week -->
-      {% set ut_toolbar %}
-        <select id="ut-type-filter" class="form-select form-select-sm chart-filter-select" title="Usage type">
-          <option value="__all__">All types</option>
-        </select>
-        {{ scope_select('ut-scope-filter') }}
-        {{ weeks_select('ut-weeks-filter') }}
-      {% endset %}
-      {{ chart_card("summaryUsageTypeChart", "Credits by Usage Type / Week", "summaryUsageTypeChart",
-                    subtitle="Weekly credits split by usage type", height=260, bar_toggle=True,
-                    toolbar_extra=ut_toolbar) }}
+      <div class="dash-section">
+        <div class="dash-section-header">
+          <span class="dash-section-title">Credits by Usage Type / Week</span>
+          <div class="d-flex gap-1 align-items-center">
+            <div class="btn-group btn-group-sm" role="group" title="Bar mode">
+              <button type="button" class="btn btn-outline-secondary py-0 px-2 active" onclick="setUsageTypeMode('summaryUsageTypeChart', true, this)">Stacked</button>
+              <button type="button" class="btn btn-outline-secondary py-0 px-2" onclick="setUsageTypeMode('summaryUsageTypeChart', false, this)">Grouped</button>
+            </div>
+            <select id="ut-type-filter" class="form-select form-select-sm chart-filter-select" title="Usage type">
+              <option value="__all__">All types</option>
+            </select>
+            {{ scope_select('ut-scope-filter', contracts) }}
+            {{ weeks_select('ut-weeks-filter') }}
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Export PNG" onclick="window.summaryUsageTypeChart && window.summaryUsageTypeChart.exportPNG()">&#8681;</button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" title="Fullscreen" onclick="window.summaryUsageTypeChart && window.summaryUsageTypeChart.openFullscreen()">&#9974;</button>
+          </div>
+        </div>
+        <div class="dash-section-body">
+          <div style="position:relative; height:260px;">
+            <canvas id="summaryUsageTypeChart" class="cursor-crosshair"></canvas>
+          </div>
+        </div>
+      </div>
 
     </div>
 
@@ -218,7 +256,8 @@
       "usageType":   {{ usage_type_weekly | safe }},
       "weeklyTrend": {{ weekly_trend | safe }},
       "dailyTrend":  {{ daily_trend | safe }},
-      "activeUsers": {{ active_users_data | safe }}
+      "activeUsers": {{ active_users_data | safe }},
+      "contracts":   {{ contracts | tojson }}
     }
   </script>
   <script src="{{ url_for('static', filename='js/summary.js') }}"></script>

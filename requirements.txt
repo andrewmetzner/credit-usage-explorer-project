@@ -6,3 +6,4 @@ ruamel.yaml>=0.18   # comment-preserving round-trip for tier_policy_config.yaml
 openpyxl>=3.1       # pandas engine for .xlsx
 xlrd>=2.0           # pandas engine for .xls (legacy)
 scikit-learn>=1.4   # linear-regression forecast model
+waitress>=3.0       # optional: production WSGI server, `python run.py --server waitress`

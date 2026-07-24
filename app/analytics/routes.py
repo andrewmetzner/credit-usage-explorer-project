@@ -539,6 +539,21 @@ def create_analytics_blueprint(services) -> Blueprint:
             for m in user_ctx.get("user_month_history", [])
         )
 
+        # "Quick" date-filter buttons next to Start/End — one per configured
+        # contract, so jumping the filter to a specific contract's own
+        # [start, end] window doesn't require typing both dates by hand.
+        from app.shared.contracts import sort_contracts
+
+        contracts = [
+            {
+                "id": c.get("id"),
+                "label": str(c.get("label") or "Contract"),
+                "start": str(c.get("contract_start_date") or ""),
+                "end": str(c.get("contract_end_date") or ""),
+            }
+            for c in sort_contracts(config_svc.load_contracts())
+        ]
+
         return render_template(
             "user_summary.html",
             name=name,
@@ -587,6 +602,7 @@ def create_analytics_blueprint(services) -> Blueprint:
             optimization_page_available=optimization_page_available,
             tier_editing_locked=config_svc.is_tier_editing_locked(),
             user_notes=config_svc.load_user_notes().get((email or "").strip().lower(), []),
+            contracts=contracts,
             **user_ctx,
         )
 

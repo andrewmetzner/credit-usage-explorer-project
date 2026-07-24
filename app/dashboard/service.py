@@ -4,6 +4,8 @@ import json
 
 import pandas as pd
 
+from app.shared.contracts import contract_ids_for_dates
+
 # ── Records-page column model ───────────────────────────────────────────────
 # One place that decides how each column is labeled, aligned, clipped, and
 # formatted so the template can render generically (no per-column if/elif) and
@@ -141,7 +143,7 @@ def compute_summary_metrics(df: pd.DataFrame, contract_start: str = "") -> dict:
     }
 
 
-def compute_weekly_trend(df: pd.DataFrame, contract_start: str = "") -> str:
+def compute_weekly_trend(df: pd.DataFrame, contracts: list[dict] | None = None) -> str:
     if "date_partition" not in df.columns or "usage_credits" not in df.columns:
         return "[]"
     wdf = df[["date_partition", "usage_credits", "email"]].copy()
@@ -163,11 +165,11 @@ def compute_weekly_trend(df: pd.DataFrame, contract_start: str = "") -> str:
         )
         .sort_values("week")
     )
-    # Weeks starting before the contract are "pre-contract" (rendered gray and
-    # hidden by the in-contract scope filter). No contract set → treat all as
-    # in-contract so the chart stays normal.
-    cstart = pd.to_datetime(contract_start, errors="coerce")
-    cstart = None if pd.isna(cstart) else cstart
+    # Weeks before the earliest configured contract (or in a gap between two
+    # contracts) get contract_id=None ("pre-contract" in the scope filter,
+    # rendered gray). No contracts configured -> every week counts as its own
+    # (nonexistent) contract-less bucket, same visual/filter behavior as before.
+    contract_ids = contract_ids_for_dates(weekly["week"], contracts)
     return json.dumps([
         {
             "week": str(row["week"].date()),
@@ -175,13 +177,14 @@ def compute_weekly_trend(df: pd.DataFrame, contract_start: str = "") -> str:
             "positive_credits": round(float(row["positive_credits"]), 2),
             "refunded_credits": round(float(-row["neg_credits"]), 2),
             "unique_users": int(row["unique_users"]),
-            "in_contract": bool(cstart is None or row["week"] >= cstart),
+            "contract_id": contract_ids[i],
+            "in_contract": contract_ids[i] is not None,
         }
-        for _, row in weekly.iterrows()
+        for i, (_, row) in enumerate(weekly.iterrows())
     ])
 
 
-def compute_daily_trend(df: pd.DataFrame, contract_start: str = "") -> str:
+def compute_daily_trend(df: pd.DataFrame, contracts: list[dict] | None = None) -> str:
     """Daily credits burned, filled across the full date span."""
     if "date_partition" not in df.columns or "usage_credits" not in df.columns:
         return "[]"
@@ -215,8 +218,7 @@ def compute_daily_trend(df: pd.DataFrame, contract_start: str = "") -> str:
         {"total_credits": 0.0, "unique_users": 0, "positive_credits": 0.0, "neg_credits": 0.0}
     )
 
-    cstart = pd.to_datetime(contract_start, errors="coerce")
-    cstart = None if pd.isna(cstart) else cstart
+    contract_ids = contract_ids_for_dates(daily["day"], contracts)
     return json.dumps([
         {
             "day": str(row["day"].date()),
@@ -224,13 +226,14 @@ def compute_daily_trend(df: pd.DataFrame, contract_start: str = "") -> str:
             "positive_credits": round(float(row["positive_credits"]), 2),
             "refunded_credits": round(float(-row["neg_credits"]), 2),
             "unique_users": int(row["unique_users"]),
-            "in_contract": bool(cstart is None or row["day"] >= cstart),
+            "contract_id": contract_ids[i],
+            "in_contract": contract_ids[i] is not None,
         }
-        for _, row in daily.iterrows()
+        for i, (_, row) in enumerate(daily.iterrows())
     ])
 
 
-def compute_active_users_weekly(df: pd.DataFrame, contract_start: str = "") -> str:
+def compute_active_users_weekly(df: pd.DataFrame, contracts: list[dict] | None = None) -> str:
     """Active users (distinct emails with credits > 0) per Monday-anchored week.
 
     Built straight from the raw frame — same week grouping as the weekly-burn /
@@ -254,13 +257,13 @@ def compute_active_users_weekly(df: pd.DataFrame, contract_start: str = "") -> s
         .agg(active_users=("email", "nunique"))
         .sort_values("week")
     )
-    cstart = pd.to_datetime(contract_start, errors="coerce")
-    cstart = None if pd.isna(cstart) else cstart
+    contract_ids = contract_ids_for_dates(weekly["week"], contracts)
     return json.dumps([
         {
             "week_start": str(row["week"].date()),
             "active_users": int(row["active_users"]),
-            "in_contract": bool(cstart is None or row["week"] >= cstart),
+            "contract_id": contract_ids[i],
+            "in_contract": contract_ids[i] is not None,
         }
-        for _, row in weekly.iterrows()
+        for i, (_, row) in enumerate(weekly.iterrows())
     ])

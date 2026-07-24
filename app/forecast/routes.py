@@ -386,11 +386,59 @@ def create_forecast_blueprint(services) -> Blueprint:
         "view other contracts" chart mode)."""
         return _events_for_contract(config_svc.load_contract().get("contract", {}), as_of=as_of)
 
-    def _all_contracts_view(contracts: list[dict]) -> list[dict]:
-        """Every configured contract's own id/label/dates/credits/ledger, for
-        the burndown chart's "view other contracts" mode — lets the client
-        rebuild any single contract's own actual+projected line without a
-        server round-trip per selection."""
+    def _daily_actual_for_contract(df, contract: dict, as_of=None) -> list[dict]:
+        """Same day-level reconstruction as _daily_actual_burndown_json,
+        generalized to an arbitrary contract dict instead of always the
+        active contract_status — so "view other contracts" mode's Daily
+        granularity matches the exact same per-day formatting the active
+        contract's Daily view uses, rather than falling back to a coarser
+        weekly rollup. Capped at whichever is earlier: `as_of` (the newest
+        date real data actually reaches) or this contract's own end date —
+        a past contract's own days never need data past its own end, and
+        this must never reach into a LATER contract's own days."""
+        if df is None or df.empty or "date_partition" not in df.columns or "usage_credits" not in df.columns:
+            return []
+        contract = contract or {}
+        start = _pd.to_datetime(contract.get("contract_start_date"), errors="coerce")
+        candidates = [
+            d for d in (_pd.to_datetime(as_of, errors="coerce"), _pd.to_datetime(contract.get("contract_end_date"), errors="coerce"))
+            if not _pd.isna(d)
+        ]
+        end = min(candidates) if candidates else _pd.NaT
+
+        from app.shared.credit_ledger import credit_entries_total, normalize_credit_entries
+
+        purchased = credit_entries_total(normalize_credit_entries(contract))
+        if _pd.isna(start) or _pd.isna(end) or purchased <= 0:
+            return []
+
+        ddf = df[["date_partition", "usage_credits"]].copy()
+        ddf["_day"] = _pd.to_datetime(ddf["date_partition"], errors="coerce").dt.normalize()
+        ddf["usage_credits"] = _pd.to_numeric(ddf["usage_credits"], errors="coerce").fillna(0.0)
+        ddf = ddf.dropna(subset=["_day"])
+        ddf = ddf[(ddf["_day"] >= start.normalize()) & (ddf["_day"] <= end.normalize())]
+        if ddf.empty:
+            return []
+
+        daily = ddf.groupby("_day", as_index=False)["usage_credits"].sum()
+        full_days = _pd.DataFrame({"_day": _pd.date_range(start.normalize(), end.normalize(), freq="D")})
+        daily = full_days.merge(daily, on="_day", how="left").fillna({"usage_credits": 0.0})
+        available = _pd.Series(0.0, index=daily.index)
+        for ev in _events_for_contract(contract, as_of=end):
+            ev_day = _pd.to_datetime(ev["effective_date"])
+            available = available + (daily["_day"] >= ev_day) * ev["credits"]
+        daily["remaining"] = (available - daily["usage_credits"].cumsum()).clip(lower=0.0)
+        return [
+            {"date": str(row["_day"].date()), "remaining": round(float(row["remaining"]), 2)}
+            for _, row in daily.iterrows()
+        ]
+
+    def _all_contracts_view(contracts: list[dict], df=None, as_of=None) -> list[dict]:
+        """Every configured contract's own id/label/dates/credits/ledger
+        (plus its own day-level actual data), for the burndown chart's
+        "view other contracts" mode — lets the client rebuild any single
+        contract's own actual+projected line, in either granularity,
+        without a server round-trip per selection."""
         from app.shared.credit_ledger import credit_entries_total, normalize_credit_entries
 
         out = []
@@ -402,6 +450,7 @@ def create_forecast_blueprint(services) -> Blueprint:
                 "end": str(c.get("contract_end_date") or ""),
                 "purchased": credit_entries_total(normalize_credit_entries(c)),
                 "creditEvents": _events_for_contract(c),
+                "dailyActual": _daily_actual_for_contract(df, c, as_of=as_of),
             })
         return out
 
@@ -637,7 +686,9 @@ def create_forecast_blueprint(services) -> Blueprint:
                 chained_burndown_data="[]",
                 contract_boundaries_data="[]",
                 contract_expirations_data="[]",
-                all_contracts_data=json.dumps(_all_contracts_view(config.get("contracts", []))),
+                all_contracts_data=json.dumps(
+                    _all_contracts_view(config.get("contracts", []), daily_fallback_df, effective_as_of)
+                ),
                 chained_final=None,
                 expiration_overview=None,
                 usage_type_weekly=usage_type_weekly,
@@ -696,7 +747,9 @@ def create_forecast_blueprint(services) -> Blueprint:
             forecast_data.get("credits_remaining", 0.0),
             forecast_data.get("forecast_weekly_burn", 0.0),
         )
-        all_contracts_data = json.dumps(_all_contracts_view(config.get("contracts", [])))
+        all_contracts_data = json.dumps(
+            _all_contracts_view(config.get("contracts", []), daily_fallback_df, effective_as_of)
+        )
         chained_burndown_data = json.dumps(chained["points"])
         contract_boundaries_data = json.dumps(chained["boundaries"])
         contract_expirations_data = json.dumps(chained["expirations"])

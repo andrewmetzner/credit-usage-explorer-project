@@ -47,6 +47,51 @@
     return el;
   }
 
+  // Contract-scope dropdown (checkbox list of "Pre-contract" + every
+  // configured contract — see the scope_select macro in summary.html).
+  // Returns { included(contractId) }: whether a given contract_id (null for
+  // pre-contract/gap rows) is currently in scope. Persists the checked set
+  // per browser like every other chart control.
+  function initScopeDropdown(groupId, onChange) {
+    const checkboxes = () => Array.from(
+      document.querySelectorAll(`.scope-cb[data-scope-group="${groupId}"]`)
+    );
+    const boxes = checkboxes();
+    if (!boxes.length) return { included: () => true };
+    const label = document.getElementById(`${groupId}-label`);
+    const allBtn = document.querySelector(`[data-scope-all="${groupId}"]`);
+    const noneBtn = document.querySelector(`[data-scope-none="${groupId}"]`);
+
+    const saved = getPref(groupId);
+    if (saved !== null) {
+      const keys = new Set(saved ? saved.split(',') : []);
+      boxes.forEach(cb => { cb.checked = keys.has(cb.dataset.scopeKey); });
+    }
+
+    function selectedKeys() {
+      return new Set(boxes.filter(cb => cb.checked).map(cb => cb.dataset.scopeKey));
+    }
+    function refreshLabel() {
+      if (!label) return;
+      const checked = boxes.filter(cb => cb.checked);
+      if (checked.length === boxes.length) label.textContent = 'All contracts';
+      else if (checked.length === 0) label.textContent = 'None';
+      else if (checked.length === 1) label.textContent = checked[0].closest('label').querySelector('span:last-child').textContent;
+      else label.textContent = `${checked.length} selected`;
+    }
+    function fire() {
+      setPref(groupId, [...selectedKeys()].join(','));
+      refreshLabel();
+      onChange();
+    }
+    boxes.forEach(cb => cb.addEventListener('change', fire));
+    if (allBtn) allBtn.addEventListener('click', () => { boxes.forEach(cb => { cb.checked = true; }); fire(); });
+    if (noneBtn) noneBtn.addEventListener('click', () => { boxes.forEach(cb => { cb.checked = false; }); fire(); });
+    refreshLabel();
+
+    return { included: contractId => selectedKeys().has(contractId || '__pre__') };
+  }
+
   // ===== Credits by usage type per week (stacked bar) =====
   (function initUsageType() {
     const data = D.usageType;
@@ -60,20 +105,19 @@
 
     const typeSel = document.getElementById('ut-type-filter');
     const weeksSel = document.getElementById('ut-weeks-filter');
-    const scopeSel = document.getElementById('ut-scope-filter');
-    const inC = data.in_contract || data.weeks.map(() => true);
+    const contractIds = data.contract_id || data.weeks.map(() => null);
     if (typeSel) {
       typeSel.insertAdjacentHTML('beforeend',
         data.series.map(s => `<option value="${s.name}">${s.name}</option>`).join(''));
     }
     // Restore saved filter choices now that typeSel's per-type options exist.
-    [typeSel, weeksSel, scopeSel].forEach(s => s && persistControl(s.id));
+    [typeSel, weeksSel].forEach(s => s && persistControl(s.id));
 
     function apply() {
       const type = typeSel ? typeSel.value : '__all__';
-      // Visible week indices: drop pre-contract weeks (if scoped), then last-N.
+      // Visible week indices: drop out-of-scope weeks, then last-N.
       let idx = data.weeks.map((_, i) => i);
-      if (scopeSel && scopeSel.value === 'contract') idx = idx.filter(i => inC[i]);
+      idx = idx.filter(i => scope.included(contractIds[i]));
       const n = weeksOf(weeksSel);
       if (n > 0) idx = idx.slice(-n);
       const series = (type === '__all__') ? data.series : data.series.filter(s => s.name === type);
@@ -88,7 +132,8 @@
       }));
       c.update();
     }
-    [typeSel, weeksSel, scopeSel].forEach(s => s && s.addEventListener('change', apply));
+    const scope = initScopeDropdown('ut-scope-filter', apply);
+    [typeSel, weeksSel].forEach(s => s && s.addEventListener('change', apply));
     apply();  // reflect any restored filter choice immediately
   })();
 
@@ -112,10 +157,9 @@
     const weeklyBtn = document.getElementById('wb-gran-weekly');
     const dailyBtn = document.getElementById('wb-gran-daily');
     const weeksSel = document.getElementById('wb-weeks-filter');
-    const scopeSel = document.getElementById('wb-scope-filter');
     const hideNegSel = document.getElementById('wb-hide-negatives');
     const rangeOptions = Array.from(weeksSel ? weeksSel.options : []);
-    [weeksSel, scopeSel, hideNegSel].forEach(s => s && persistControl(s.id));
+    [weeksSel, hideNegSel].forEach(s => s && persistControl(s.id));
 
     let currentMode = series.weekly.length ? 'weekly' : 'daily';
     const savedMode = getPref('wb-granularity');
@@ -208,8 +252,7 @@
 
     function apply() {
       const cfg = modeConfig(currentMode);
-      let rows = cfg.rows;
-      if (scopeSel && scopeSel.value === 'contract') rows = rows.filter(d => d.in_contract);
+      let rows = cfg.rows.filter(d => scope.included(d.contract_id));
       rows = lastN(rows, weeksOf(weeksSel));
       currentRows = rows;
       curIc = rows.map(d => d.in_contract);
@@ -220,6 +263,7 @@
       c.data.datasets[0].borderColor = bdFor(rows);
       c.update();
     }
+    const scope = initScopeDropdown('wb-scope-filter', apply);
 
     window.setSummaryBurnGranularity = function (mode, btn) {
       if (!series[mode] || mode === currentMode) return;
@@ -234,7 +278,7 @@
       }
     };
 
-    [weeksSel, scopeSel, hideNegSel].forEach(s => s && s.addEventListener('change', apply));
+    [weeksSel, hideNegSel].forEach(s => s && s.addEventListener('change', apply));
     refreshGranularityUI();
     apply();
     if (!series.daily.length && dailyBtn) dailyBtn.disabled = true;
@@ -277,11 +321,9 @@
     }, { exportName: 'Active Users per Week' });
 
     const weeksSel = document.getElementById('au-weeks-filter');
-    const scopeSel = document.getElementById('au-scope-filter');
-    [weeksSel, scopeSel].forEach(s => s && persistControl(s.id));
+    [weeksSel].forEach(s => s && persistControl(s.id));
     function apply() {
-      let rows = auData;
-      if (scopeSel && scopeSel.value === 'contract') rows = rows.filter(d => d.in_contract);
+      let rows = auData.filter(d => scope.included(d.contract_id));
       rows = lastN(rows, weeksOf(weeksSel));
       curIc = rows.map(d => d.in_contract);
       const c = window.summaryActiveUsersChart.chart;
@@ -290,7 +332,8 @@
       c.data.datasets[0].backgroundColor = bgFor(curIc);
       c.update();
     }
-    [weeksSel, scopeSel].forEach(s => s && s.addEventListener('change', apply));
+    const scope = initScopeDropdown('au-scope-filter', apply);
+    [weeksSel].forEach(s => s && s.addEventListener('change', apply));
     apply();  // reflect any restored filter choice immediately
   })();
 })();

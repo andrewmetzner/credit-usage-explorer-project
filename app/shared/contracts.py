@@ -32,6 +32,32 @@ def sort_contracts(contracts: list[dict]) -> list[dict]:
     return sorted(contracts or [], key=key)
 
 
+def contract_ids_for_dates(dates: "pd.Series", contracts: list[dict] | None) -> list[str | None]:
+    """Which configured contract's [start, end] window each date falls
+    into, or None for a date before the earliest contract's start (or in a
+    gap between two contracts). One id per entry, parallel to ``dates`` —
+    used by the Summary charts' per-contract scope filter."""
+    windows = []
+    for c in contracts or []:
+        start = _parse((c or {}).get("contract_start_date"))
+        if pd.isna(start):
+            continue
+        end = _parse((c or {}).get("contract_end_date"))
+        windows.append((start, end, c.get("id")))
+    if not windows:
+        return [None] * len(dates)
+    out = []
+    for d in dates:
+        cid = None
+        if not pd.isna(d):
+            for start, end, wid in windows:
+                if d >= start and (pd.isna(end) or d <= end):
+                    cid = wid
+                    break
+        out.append(cid)
+    return out
+
+
 def resolve_active_contract(contracts: list[dict], as_of: Any = None) -> dict | None:
     """The contract that governs `as_of` (default: today).
 

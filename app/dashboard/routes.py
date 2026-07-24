@@ -169,9 +169,13 @@ def create_dashboard_blueprint(services) -> Blueprint:
         d = data()
         df = d.df
 
-        # Contract start drives the in-contract / pre-contract split shared by
-        # the Summary charts (weekly-burn gray coloring + scope dropdowns) and
-        # the Total Credits Spent metric's "in contract" sub-line.
+        # The ACTIVE contract's own start still drives the Total Credits Spent
+        # metric's "in contract" sub-line (a single-contract figure). The bar
+        # graphs below use the FULL contract list instead, so each week/day
+        # can be scoped to whichever specific contract(s) it falls into.
+        from app.shared.contracts import sort_contracts
+
+        contracts = sort_contracts(config_svc.load_contracts())
         contract_start_str = ""
         try:
             contract_start_str = str(
@@ -182,11 +186,11 @@ def create_dashboard_blueprint(services) -> Blueprint:
 
         metrics = compute_summary_metrics(df, contract_start_str)
 
-        weekly_trend = compute_weekly_trend(df, contract_start_str)
-        daily_trend = compute_daily_trend(df, contract_start_str)
+        weekly_trend = compute_weekly_trend(df, contracts)
+        daily_trend = compute_daily_trend(df, contracts)
         # All three Summary charts share one raw-frame week grouping + contract
         # split, so they always cover the same weeks (no straddling-week gap).
-        active_users_data = compute_active_users_weekly(df, contract_start_str)
+        active_users_data = compute_active_users_weekly(df, contracts)
 
         forecast_snapshot = None
         ps = pipeline.status()
@@ -217,7 +221,7 @@ def create_dashboard_blueprint(services) -> Blueprint:
             metrics=metrics,
             weekly_trend=weekly_trend,
             daily_trend=daily_trend,
-            usage_type_weekly=usage_type_weekly_json(df, contract_start=contract_start_str),
+            usage_type_weekly=usage_type_weekly_json(df, contracts=contracts),
             forecast_snapshot=forecast_snapshot,
             pipeline_status=ps,
             data_source={
@@ -225,6 +229,10 @@ def create_dashboard_blueprint(services) -> Blueprint:
                 "rows": metrics["total_records"],
             },
             active_users_data=active_users_data,
+            contracts=[
+                {"id": c.get("id"), "label": str(c.get("label") or "Contract")}
+                for c in contracts
+            ],
         )
 
     @bp.route("/records", methods=["GET"])

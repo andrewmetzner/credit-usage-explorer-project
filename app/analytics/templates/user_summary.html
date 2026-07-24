@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 {% from "macros/ui.html" import export_csv_chip %}
 {% block title %}User Summary - Credit Usage Explorer{% endblock %}
+
+{# Quick date-filter buttons, one per configured contract — sets the SAME
+   form's Start/End inputs to that contract's own [start, end] window and
+   resubmits, instead of typing both dates by hand. #}
+{% macro contract_quick_buttons(contracts) %}
+{% if contracts %}
+<div class="col-12">
+  <div class="d-flex flex-wrap align-items-center gap-1 mt-1">
+    <span class="text-muted small me-1">Quick:</span>
+    {% for c in contracts %}
+    <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.72rem;"
+            onclick="const f=this.closest('form'); f.start_date.value='{{ c.start }}'; f.end_date.value='{{ c.end }}'; f.submit();"
+            title="{{ c.start }} &rarr; {{ c.end }}">
+      {{ c.label }}
+    </button>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endmacro %}
 {% block extra_head %}
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
@@ -240,6 +260,9 @@
                     Clear
                   </a>
                 </div>
+              </div>
+              <div class="row g-2">
+                {{ contract_quick_buttons(contracts) }}
               </div>
 
               {% if user_models | length > 1 %}
@@ -742,6 +765,9 @@
                     Clear
                   </a>
                 </div>
+              </div>
+              <div class="row g-2">
+                {{ contract_quick_buttons(contracts) }}
               </div>
 
               {% if user_types | length > 1 %}
