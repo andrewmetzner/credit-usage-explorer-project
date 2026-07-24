@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import warnings
 from pathlib import Path
 
@@ -84,6 +85,24 @@ def create_app() -> Flask:
     app.register_blueprint(create_optimization_blueprint(services))
     app.register_blueprint(create_settings_blueprint(services))
     app.jinja_env.filters["fmt_status"] = _fmt_status
+
+    # Optional: the ChatGPT Admin API sync scheduler (see
+    # openai_admin_API/scheduler.py). Off by default (its own
+    # config/admin_api_sync_config.json controls that, toggled from
+    # Settings) — starting the thread here just makes it possible to turn
+    # on without restarting the app. Wrapped so a machine with no
+    # openai_admin_API/aauth setup still starts the app fine.
+    # Flask's debug reloader re-imports this module in its monitor process
+    # too; WERKZEUG_RUN_MAIN is only set in the actual worker process, so
+    # this guard stops the scheduler from double-starting under `flask run`
+    # / `python run.py` (debug=True). Waitress and debug=False aren't
+    # affected (no reloader, no monitor process, no env var either way).
+    if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        try:
+            from openai_admin_API.scheduler import ensure_scheduler_running
+            ensure_scheduler_running(on_synced=lambda: store.reload())
+        except ImportError:
+            pass
 
     @app.context_processor
     def inject_nav_alerts() -> dict:

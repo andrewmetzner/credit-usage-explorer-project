@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -18,6 +19,61 @@ from app.optimization.service import DEFAULT_WEEKS_PER_MONTH, raw_tier_cap
 from app.shared.ingestion import _infer_week_from_filename
 from app.shared.tier_import import read_tier_assignments_csv
 from .service import force_rmtree, try_snapshot
+
+# Optional: the ChatGPT Admin API explorer is a standalone package (not part
+# of the app), but its status check is safe to surface here — it never
+# raises and never mutates anything (see openai_admin_API/status.py).
+# Wrapped so a machine with no aauth/ key configured at all still starts
+# the app fine; the Settings page just shows "Not configured" instead.
+try:
+    from openai_admin_API.status import get_admin_api_status
+    from openai_admin_API.scheduler import load_sync_config, run_sync_now, save_sync_config
+    from openai_admin_API.sync_usage import load_cursor as _load_admin_api_cursor
+    _SYNC_SCHEDULER_AVAILABLE = True
+except ImportError:
+    _SYNC_SCHEDULER_AVAILABLE = False
+
+    def get_admin_api_status(force_refresh: bool = False) -> dict:
+        return {"key_configured": False, "workspace_configured": False, "write_access": None,
+                "detail": "openai_admin_API package not found.", "checked_at": None}
+
+    def load_sync_config() -> dict:
+        return {"enabled": False, "interval_minutes": 60, "last_run_at": None, "last_run_status": "", "last_run_rows": 0}
+
+    def _load_admin_api_cursor() -> str | None:
+        return None
+
+
+def _to_system_local(iso_str: str | None) -> str | None:
+    """Persisted sync timestamps are stored in UTC (datetime.now(timezone.utc)
+    — see openai_admin_API/scheduler.py) so the stored value never depends on
+    wherever this happens to run. Converted to this machine's own local
+    timezone only here, for display — this app runs locally (see run.py),
+    so "system time" is the same clock the person reading the page is
+    looking at."""
+    if not iso_str:
+        return iso_str
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except ValueError:
+        return iso_str
+    return dt.astimezone().strftime("%Y-%m-%d %I:%M %p")
+
+
+def _localize_sync_config(cfg: dict) -> dict:
+    display = dict(cfg)
+    display["last_run_at"] = _to_system_local(cfg.get("last_run_at"))
+    display["next_run_at"] = _to_system_local(cfg.get("next_run_at"))
+    return display
+
+
+def _admin_api_synced_through() -> str | None:
+    """The cursor's last_file_end_time — how far real Costs data actually
+    reaches, as opposed to last_run_at (when a check last *ran*, which may
+    have found nothing new). This is the field that answers "when did we
+    last actually pull data," independent of how many no-op checks ran
+    since (e.g. the scheduler's own startup catch-up check)."""
+    return _to_system_local(_load_admin_api_cursor())
 
 ALLOWED_HISTORICAL = {".xlsx", ".xls", ".csv"}
 ALLOWED_WEEKLY = {".csv"}
@@ -125,6 +181,9 @@ def create_settings_blueprint(services) -> Blueprint:
             credit_kind_label=credit_kind_label,
             tiers=tiers,
             tier_editing_locked=config_svc.is_tier_editing_locked(),
+            admin_api_status=get_admin_api_status(),
+            admin_api_sync_config=_localize_sync_config(load_sync_config()),
+            admin_api_synced_through=_admin_api_synced_through(),
             tier_overrides=tier_overrides,
             user_tier_count=len(user_tiers),
             user_tier_counts=dict(sorted(user_tier_counts.items())),
@@ -275,6 +334,60 @@ def create_settings_blueprint(services) -> Blueprint:
                 flash("Tier editing unlocked. Per-user tier changes are allowed.", "success")
         except Exception as exc:
             flash(f"Error updating tier lock: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/recheck", methods=["POST"])
+    def recheck_admin_api_status() -> object:
+        status = get_admin_api_status(force_refresh=True)
+        flash(status.get("detail") or "Checked.", "info")
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/sync-toggle", methods=["POST"])
+    def toggle_admin_api_sync() -> object:
+        if not _SYNC_SCHEDULER_AVAILABLE:
+            flash("openai_admin_API package not found — can't enable sync.", "danger")
+            return redirect(url_for("settings.settings_page"))
+        enabled = "enabled" in request.form
+        save_sync_config(enabled=enabled)
+        flash(
+            "Automatic Costs sync enabled." if enabled else "Automatic Costs sync disabled.",
+            "success",
+        )
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/sync-interval", methods=["POST"])
+    def set_admin_api_sync_interval() -> object:
+        if not _SYNC_SCHEDULER_AVAILABLE:
+            return redirect(url_for("settings.settings_page"))
+        try:
+            minutes = max(int(request.form.get("interval_minutes", 60)), 1)
+        except (TypeError, ValueError):
+            flash("Interval must be a whole number of minutes.", "danger")
+            return redirect(url_for("settings.settings_page"))
+        save_sync_config(interval_minutes=minutes)
+        flash(f"Sync interval set to {minutes} minute(s).", "success")
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/sync-align", methods=["POST"])
+    def toggle_admin_api_sync_align() -> object:
+        if not _SYNC_SCHEDULER_AVAILABLE:
+            return redirect(url_for("settings.settings_page"))
+        align = "align_to_hour" in request.form
+        save_sync_config(align_to_hour=align)
+        flash(
+            "Sync will run on clock boundaries (e.g. on the hour)." if align
+            else "Sync will run on a rolling interval from whenever it last ran.",
+            "success",
+        )
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/sync-now", methods=["POST"])
+    def sync_admin_api_now() -> object:
+        if not _SYNC_SCHEDULER_AVAILABLE:
+            flash("openai_admin_API package not found.", "danger")
+            return redirect(url_for("settings.settings_page"))
+        result = run_sync_now(on_synced=lambda: store.reload())
+        flash(result.get("last_run_status") or "Sync attempted.", "info")
         return redirect(url_for("settings.settings_page"))
 
     @bp.route("/tiers/reset-import", methods=["POST"])

@@ -49,6 +49,14 @@ def record_key(columns) -> list[str] | None:
     key: list[str] = []
     if DATE_COL in cols:
         key.append(DATE_COL)
+    # Sub-day granularity, if present — currently only ever populated by the
+    # ChatGPT Admin API sync (openai_admin_API/sync_usage.py), which reports
+    # in hourly buckets rather than the daily grain a manual upload has.
+    # Manually-uploaded rows simply have no value here, so they keep
+    # deduping on date_partition alone exactly as before this existed —
+    # NaN safely compares equal to NaN for drop_duplicates()'s purposes.
+    if "hour" in cols:
+        key.append("hour")
     if "account_id" in cols:
         key.append("account_id")
     for user_col in USER_ID_COLS:

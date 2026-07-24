@@ -83,6 +83,75 @@
         </div>
       </div>
 
+      {% if admin_api_status and admin_api_status.key_configured and admin_api_sync_config %}
+      <div class="settings-section">
+        <h5>ChatGPT Admin API Sync</h5>
+        <div class="border rounded-3 px-3 py-2 mb-2 {{ 'bg-light' if admin_api_sync_config.enabled else '' }}">
+          <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+            <form method="post" action="{{ url_for('settings.toggle_admin_api_sync') }}" class="mb-0">
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" name="enabled" id="admin_api_sync_enabled"
+                       onchange="this.form.submit()" {% if admin_api_sync_config.enabled %}checked{% endif %}>
+                <label class="form-check-label" for="admin_api_sync_enabled">
+                  <strong>Automatic Costs sync</strong>
+                  <span class="text-muted small ms-1">Pulls new credit usage from the Admin API and merges it into current_data.csv in the background.</span>
+                </label>
+              </div>
+            </form>
+            <span class="badge {{ 'bg-success' if admin_api_sync_config.enabled else 'bg-secondary' }}">
+              {{ 'On' if admin_api_sync_config.enabled else 'Off' }}
+            </span>
+          </div>
+          <div class="d-flex align-items-end flex-wrap gap-2 mt-2">
+            <form method="post" action="{{ url_for('settings.set_admin_api_sync_interval') }}" class="d-flex align-items-end gap-2 mb-0">
+              <div>
+                <label class="form-label mb-0 small">Every (minutes)</label>
+                <input class="form-control form-control-sm" type="number" min="1" name="interval_minutes"
+                       value="{{ admin_api_sync_config.interval_minutes }}" style="width:100px;">
+              </div>
+              <button type="submit" class="btn btn-outline-secondary btn-sm">Save interval</button>
+            </form>
+            <form method="post" action="{{ url_for('settings.toggle_admin_api_sync_align') }}" class="mb-0">
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" name="align_to_hour" id="admin_api_sync_align"
+                       onchange="this.form.submit()" {% if admin_api_sync_config.align_to_hour %}checked{% endif %}>
+                <label class="form-check-label small" for="admin_api_sync_align" title="Instead of a rolling interval from whenever sync last ran, always land on a clock boundary — e.g. every 60 minutes lands exactly on the hour (:00); every 20 lands on :00/:20/:40.">
+                  Run on the clock (e.g. on the hour)
+                </label>
+              </div>
+            </form>
+            <form method="post" action="{{ url_for('settings.sync_admin_api_now') }}" class="mb-0">
+              <button type="submit" class="btn btn-outline-primary btn-sm"
+                      title="Runs immediately, independent of the schedule above — does not delay or reset the next scheduled sync.">Sync now</button>
+            </form>
+          </div>
+          <div class="text-muted small mt-2">
+            {% if admin_api_sync_config.last_run_at %}
+              Last run: {{ admin_api_sync_config.last_run_at }} &mdash; {{ admin_api_sync_config.last_run_status }}
+              {% if admin_api_sync_config.last_run_rows %}({{ "{:,}".format(admin_api_sync_config.last_run_rows) }} row(s)){% endif %}
+            {% else %}
+              Never run yet.
+            {% endif %}
+          </div>
+          <div class="text-muted small">
+            {% if admin_api_sync_config.enabled and admin_api_sync_config.next_run_at %}
+              Next sync: {{ admin_api_sync_config.next_run_at }}
+            {% elif admin_api_sync_config.enabled %}
+              Next sync: pending (starting up)
+            {% else %}
+              Next sync: &mdash; (sync is off)
+            {% endif %}
+          </div>
+          <div class="text-muted small" title="How far real Costs data actually reaches — distinct from 'Last run', which may have found nothing new.">
+            Data synced through: {{ admin_api_synced_through or '— (no data pulled yet)' }}
+          </div>
+          <div class="text-muted small fst-italic">
+            Runs a catch-up check the moment the app starts, in addition to the schedule above — so time spent off is covered automatically.
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
       {# Ingested Weekly Weeks #}
       {% if ingested_weeks %}
       <div class="settings-section">
@@ -632,6 +701,28 @@
             </span>
           </div>
         </form>
+
+        {% if admin_api_status %}
+        <div class="d-flex align-items-center justify-content-between border rounded-3 px-3 py-2 mb-3
+                    {{ 'bg-light' if admin_api_status.write_access else 'bg-warning-subtle' if admin_api_status.key_configured else 'bg-secondary-subtle' }}">
+          <div>
+            <strong>&#128272; ChatGPT Admin API</strong>
+            <span class="text-muted small ms-1">{{ admin_api_status.detail }}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge {{ 'bg-success' if admin_api_status.write_access else 'bg-warning text-dark' if admin_api_status.key_configured else 'bg-secondary' }}">
+              {% if not admin_api_status.key_configured %}Not configured
+              {% elif admin_api_status.write_access %}Read + write
+              {% elif admin_api_status.write_access is none %}Unknown
+              {% else %}Read-only{% endif %}
+            </span>
+            <form method="post" action="{{ url_for('settings.recheck_admin_api_status') }}" class="mb-0">
+              <button type="submit" class="btn btn-outline-secondary btn-sm py-0 px-2">Recheck</button>
+            </form>
+          </div>
+        </div>
+
+        {% endif %}
 
         <form method="post" action="{{ url_for('settings.import_tier_assignments') }}" enctype="multipart/form-data" class="mb-2">
           <div class="row g-2 align-items-end">

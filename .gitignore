@@ -3,6 +3,8 @@ config/*
 deliverables/*
 .vscode/*
 aauth/*
+openai_admin_API/*
+openai_admin_testscripts/*
  
 #py
 __pycache__/

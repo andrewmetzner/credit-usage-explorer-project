@@ -7,3 +7,4 @@ openpyxl>=3.1       # pandas engine for .xlsx
 xlrd>=2.0           # pandas engine for .xls (legacy)
 scikit-learn>=1.4   # linear-regression forecast model
 waitress>=3.0       # optional: production WSGI server, `python run.py --server waitress`
+requests>=2.31      # openai_admin_API: ChatGPT Enterprise Admin API exploration tool

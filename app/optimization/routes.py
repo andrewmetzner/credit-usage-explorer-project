@@ -14,6 +14,57 @@ from .service import (
     tier_caps,
 )
 
+# Optional: pushes a manual/recommended tier change through to the matching
+# ChatGPT group via the standalone Admin API explorer package. Wrapped so a
+# machine with no aauth/ key configured still works fine — tier changes just
+# stay local, same as before this existed. See openai_admin_API/README.md.
+try:
+    from openai_admin_API import endpoints as _admin_ep
+    from openai_admin_API.client import AdminApiClient, AdminApiError, load_workspace_id
+    _ADMIN_API_AVAILABLE = True
+except ImportError:
+    _ADMIN_API_AVAILABLE = False
+
+
+class _AdminApiTierPusher:
+    """Builds its Admin API client + group-name lookup ONCE per request
+    (not once per user), then pushes each tier change as a best-effort
+    group move. Never raises out of .push() — a failure here must never
+    block or roll back the LOCAL tier change, which has already happened
+    by the time this runs. .push() returns a short status string for an
+    optional flash, or None to stay silent (the common case in bulk apply)."""
+
+    def __init__(self) -> None:
+        self.client = None
+        self.workspace_id = ""
+        self.groups_by_name: dict[str, str] = {}
+        self.error: str | None = None
+        if not _ADMIN_API_AVAILABLE:
+            return
+        self.workspace_id = load_workspace_id()
+        if not self.workspace_id:
+            return
+        try:
+            self.client = AdminApiClient()
+            self.groups_by_name = {g["name"]: g["id"] for g in _admin_ep.list_groups(self.client, self.workspace_id)}
+        except AdminApiError as exc:
+            self.error = str(exc)
+            self.client = None
+
+    def push(self, email: str, tier: str) -> str | None:
+        if not self.client:
+            return None
+        try:
+            user_id = _admin_ep.find_user_id_by_email(self.client, self.workspace_id, email)
+            if not user_id:
+                return f"{email}: not found in the ChatGPT workspace directory — group unchanged there."
+            result = _admin_ep.move_user_to_group_by_name(self.client, self.workspace_id, user_id, tier, self.groups_by_name)
+            if result["added_to"] or result["removed_from"]:
+                return f"{email}: also moved to the '{tier}' ChatGPT group."
+            return None
+        except AdminApiError as exc:
+            return f"{email}: tier updated locally, but couldn't sync to ChatGPT ({exc})."
+
 # Map each sortable table column to the underlying recommendations DataFrame
 # column. Priority sorts by the numeric action rank so the most actionable rows
 # lead, rather than alphabetically by label.
@@ -219,6 +270,12 @@ def create_optimization_blueprint(services) -> Blueprint:
             config_svc.record_tier_change(email, "Baseline", "manual-reset")
             flash(f"Tier reset to Baseline default for {email}.", "success")
         config_svc.save_user_tiers(assignments)
+
+        # Best-effort push to the matching ChatGPT group — never blocks or
+        # reverts the local change above, which has already been saved.
+        push_note = _AdminApiTierPusher().push(email, tier or "Baseline")
+        if push_note:
+            flash(push_note, "info")
         return redirect(next_url)
 
     def _apply_recommendations(only_email: str = "") -> tuple[int, list[str]]:
@@ -241,6 +298,7 @@ def create_optimization_blueprint(services) -> Blueprint:
         assignments = config_svc.load_user_tiers()
         valid_tiers = tier_caps(config_svc.load_tiers())
         applied: list[str] = []
+        pushed_emails: list[str] = []
         for _, row in rows.iterrows():
             email = str(row.get("email", "")).strip().lower()
             target = str(row.get("recommended_tier", "")).strip()
@@ -251,8 +309,16 @@ def create_optimization_blueprint(services) -> Blueprint:
             assignments[email] = target
             config_svc.record_tier_change(email, target, "recommendation")
             applied.append(f"{email} -> {target}")
+            pushed_emails.append((email, target))
         if applied:
             config_svc.save_user_tiers(assignments)
+            # Best-effort push, built once for the whole batch (not once per
+            # user) — see _AdminApiTierPusher. Failures for individual users
+            # are swallowed here (already logged inside the pusher's own
+            # AdminApiClient); this must never undo the local changes above.
+            pusher = _AdminApiTierPusher()
+            for email, target in pushed_emails:
+                pusher.push(email, target)
         return len(applied), applied
 
     @bp.route("/optimization/user-tier/apply-recommendation", methods=["POST"])
