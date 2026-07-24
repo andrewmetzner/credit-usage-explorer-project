@@ -20,7 +20,7 @@ from .service import (
 # stay local, same as before this existed. See openai_admin_API/README.md.
 try:
     from openai_admin_API import endpoints as _admin_ep
-    from openai_admin_API.client import AdminApiClient, AdminApiError, load_workspace_id
+    from openai_admin_API.client import AdminApiClient, AdminApiError, load_write_workspace_id
     _ADMIN_API_AVAILABLE = True
 except ImportError:
     _ADMIN_API_AVAILABLE = False
@@ -41,7 +41,7 @@ class _AdminApiTierPusher:
         self.error: str | None = None
         if not _ADMIN_API_AVAILABLE:
             return
-        self.workspace_id = load_workspace_id()
+        self.workspace_id = load_write_workspace_id()
         if not self.workspace_id:
             return
         try:

@@ -572,7 +572,7 @@
       <div class="summary-sub">remaining of {{ "{:,.0f}".format(cs.purchased_credits) }} credits available</div>
       <div class="summary-metrics">
         {{ summary_metric("Used", "{:,.0f}".format(cs.total_credits_used)) }}
-        {{ summary_metric("End balance", "{:+,.0f}".format(fc.forecast_contract_end_balance), 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success') }}
+        {{ summary_metric("End bal. (contract end " ~ cs.contract_end_date ~ ")", "{:+,.0f}".format(fc.forecast_contract_end_balance), 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success') }}
       </div>
       {% if chained_final %}
       <div class="summary-sub mt-1">
@@ -1107,7 +1107,10 @@
                 <tr><td>Weeks until exhaustion</td><td class="text-end">{{ "{:.1f}".format(fc.weeks_until_exhaustion) if fc.weeks_until_exhaustion is not none else "N/A" }}</td></tr>
                 <tr><td>Week of exhaustion</td><td class="text-end">{{ fc.forecast_exhaustion_week or "N/A" }}</td></tr>
                 <tr><td>Exhaustion date</td><td class="text-end">{{ fc.forecast_exhaustion_date or "N/A" }}</td></tr>
-                <tr><td>End balance</td><td class="text-end {{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">{{ "{:,.0f}".format(fc.forecast_contract_end_balance) }}</td></tr>
+                {% if fc.forecast_exhaustion_week_end_balance is not none %}
+                <tr><td>End balance (week of exhaustion, {{ fc.forecast_exhaustion_week }})</td><td class="text-end {{ 'text-danger' if fc.forecast_exhaustion_week_end_balance < 0 else 'text-success' }}">{{ "{:,.0f}".format(fc.forecast_exhaustion_week_end_balance) }}</td></tr>
+                {% endif %}
+                <tr><td>End balance (contract end, {{ cs.contract_end_date }})</td><td class="text-end {{ 'text-danger' if fc.forecast_contract_end_balance < 0 else 'text-success' }}">{{ "{:,.0f}".format(fc.forecast_contract_end_balance) }}</td></tr>
                 <tr><td>% used by end</td><td class="text-end">{{ "{:.1%}".format(fc.forecast_percent_credits_used_by_contract_end) }}</td></tr>
               </table>
             </div>

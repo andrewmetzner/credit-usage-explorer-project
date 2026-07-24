@@ -36,8 +36,12 @@ def create_forecast_blueprint(services) -> Blueprint:
         hist_df = pipeline.get_historical_weekly_summary()
         op_df = pipeline.get_operational_weekly_summary()
         daily_df = _get_store_df()
-        daily_fallback = daily_df if op_df is None else None
-        svc = ForecastingService(config, hist_df, op_df, daily_fallback)
+        # Passed through unconditionally (not just when op_df is missing) —
+        # ForecastingService itself now also uses it, when weekly summaries
+        # already exist, to extend credits_remaining/latest_usage_date past
+        # the last complete week using real already-known daily rows (see
+        # its own _daily_already_included guard against double-counting).
+        svc = ForecastingService(config, hist_df, op_df, daily_df)
         return svc, hist_df, op_df, daily_df
 
     def _resolve_operational_frames(config: dict, hist_df, op_df):
@@ -623,7 +627,15 @@ def create_forecast_blueprint(services) -> Blueprint:
         granularity = request.args.get("granularity", "weekly")
         if granularity not in {"weekly", "daily"}:
             granularity = "weekly"
-        exclude_partial = granularity == "weekly"
+        # Always exclude the still-accumulating current week from the burn-RATE
+        # average, regardless of which granularity is being charted — this used
+        # to follow `granularity` (daily kept the partial week in), which made
+        # forecast_weekly_burn (and everything derived from it: Projected end
+        # balance, exhaustion date, etc.) silently change value depending on
+        # which toggle happened to be selected. The Daily view still SHOWS the
+        # partial week's real daily actuals (dailyActualPts) — only the RATE
+        # used for projection is now the same regardless of view.
+        exclude_partial = True
         data_as_of = latest_data_date(
             (daily_fallback_df, "date_partition"),
             (op_df, "week_end"),
@@ -1459,7 +1471,10 @@ def create_forecast_blueprint(services) -> Blueprint:
         granularity = request.args.get("granularity", "weekly")
         if granularity not in {"weekly", "daily"}:
             granularity = "weekly"
-        exclude_partial = granularity == "weekly"
+        # See matching comment in the /forecast route: keep the burn-rate
+        # average consistent regardless of which granularity is charted, so
+        # MC/ML results don't silently shift when toggling Daily/Weekly.
+        exclude_partial = True
 
         from app.shared.contracts import resolve_contract_config
 

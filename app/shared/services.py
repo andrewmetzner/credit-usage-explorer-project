@@ -74,11 +74,15 @@ class Services:
         hist_df = self.pipeline.get_historical_weekly_summary()
         op_df = self.pipeline.get_operational_weekly_summary()
         daily_df = self.store.data.df if daily_fallback else None
-        if not anchor:
-            daily = daily_df
-        else:
-            daily = daily_df if (hist_df is None and op_df is None) else None
-        svc = ForecastingService(config, hist_df, op_df, daily)
+        # Passed through unconditionally now (not just when hist/op are both
+        # absent) — ForecastingService's own _daily_already_included guard
+        # prevents double-counting when it's used for derivation instead;
+        # when weekly summaries already exist, this lets it extend
+        # credits_remaining/latest_usage_date past the last complete week
+        # using real already-known daily rows, so this page's numbers agree
+        # with the Forecast page's daily chart instead of lagging a week
+        # behind it.
+        svc = ForecastingService(config, hist_df, op_df, daily_df)
         if anchor:
             from .forecast_window import anchor_live_forecast, latest_data_date
 

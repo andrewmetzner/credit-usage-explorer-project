@@ -57,6 +57,7 @@ class Forecast(DictMixin):
     weeks_until_exhaustion: float
     forecast_exhaustion_date: Any
     forecast_exhaustion_week: Any
+    forecast_exhaustion_week_end_balance: float | None
     contract_end_date: Any
     forecast_future_usage_to_contract_end: float
     forecast_contract_end_balance: float
@@ -92,6 +93,14 @@ class ForecastingService:
         # must stay anchored to their historical as-of date.
         self._today: pd.Timestamp | None = None
 
+        # Whether daily_df was already fully absorbed into historical_df/
+        # operational_df above (derived-from-daily fallback path) — if so,
+        # get_contract_status() must NOT also layer it on again below as a
+        # "partial week" extension, since every day (including the latest,
+        # still-in-progress one) is already counted in the derived weekly
+        # rollup.
+        self._daily_already_included = historical_df is None and operational_df is None and daily_df is not None
+
         if historical_df is None and operational_df is None and daily_df is not None:
             historical_df, operational_df = self._derive_from_daily(daily_df)
         elif operational_df is None and daily_df is not None:
@@ -99,6 +108,12 @@ class ForecastingService:
 
         self.historical_df = historical_df
         self.operational_df = operational_df
+        # Kept (independent of the derive-from-daily fallback above) so
+        # get_contract_status() can extend latest_usage_date/credits_remaining
+        # past the last COMPLETE week using real, already-known usage from an
+        # in-progress week — matching what the Forecast page's daily chart
+        # already shows, so the KPI cards and the chart hover agree.
+        self.daily_df = daily_df
 
     def _derive_from_daily(
         self, df: pd.DataFrame
@@ -203,6 +218,32 @@ class ForecastingService:
         latest_usage_date = max(dates) if dates else contract_start
         if self._as_of is not None:
             latest_usage_date = min(latest_usage_date, self._as_of + pd.Timedelta(days=1))
+
+        # Extend past the last COMPLETE week using any raw daily rows already
+        # known beyond it (an in-progress week's real, already-uploaded days)
+        # — without this, credits_remaining/latest_usage_date always lagged
+        # behind what the Forecast page's own daily chart displayed for that
+        # same in-progress week, so the KPI cards and the chart's hover value
+        # could disagree even though both were "correct" by their own rules.
+        if (
+            not self._daily_already_included
+            and self.daily_df is not None
+            and not self.daily_df.empty
+            and "date_partition" in self.daily_df.columns
+            and "usage_credits" in self.daily_df.columns
+        ):
+            ddf = self.daily_df[["date_partition", "usage_credits"]].copy()
+            ddf["_day"] = pd.to_datetime(ddf["date_partition"], errors="coerce").dt.normalize()
+            ddf = ddf.dropna(subset=["_day"])
+            ddf["usage_credits"] = pd.to_numeric(ddf["usage_credits"], errors="coerce").fillna(0.0)
+            upper = contract_end if self._as_of is None else min(contract_end, self._as_of)
+            extra = ddf[(ddf["_day"] >= latest_usage_date) & (ddf["_day"] <= upper)]
+            if not extra.empty:
+                extra_used = float(extra["usage_credits"].sum())
+                operational_credits_used += extra_used
+                total_credits_used += extra_used
+                credits_remaining -= extra_used
+                latest_usage_date = extra["_day"].max() + pd.Timedelta(days=1)
 
         total_contract_days = (contract_end - contract_start).days
         elapsed_days = max((latest_usage_date - contract_start).days, 0)
@@ -318,6 +359,7 @@ class ForecastingService:
         weeks_until_exhaustion: float | None = None
         exhaustion_date = None
         exhaustion_week = None
+        exhaustion_week_end_balance = None
         if forecast_weekly > 0:
             weeks_until_exhaustion = credits_remaining / forecast_weekly
             # Uploads lag the calendar: no burn is recorded after
@@ -335,6 +377,13 @@ class ForecastingService:
             # Monday.
             days_to_next_monday = (7 - exhaustion_date.weekday()) % 7
             exhaustion_week = exhaustion_date + timedelta(days=days_to_next_monday)
+            # Balance projected right at that week's start -- distinct from
+            # forecast_contract_end_balance below, which keeps projecting
+            # (further negative) all the way out to the contract's own end
+            # date. This is "how far in the hole by the week we actually
+            # run out," not "how far in the hole by the end of the contract."
+            weeks_to_exhaustion_week = (pd.Timestamp(exhaustion_week) - anchor).days / 7.0
+            exhaustion_week_end_balance = credits_remaining - forecast_weekly * weeks_to_exhaustion_week
 
         future_usage = forecast_weekly * weeks_remaining
         end_balance = credits_remaining - future_usage
@@ -365,6 +414,7 @@ class ForecastingService:
             weeks_until_exhaustion=weeks_until_exhaustion,
             forecast_exhaustion_date=exhaustion_date,
             forecast_exhaustion_week=exhaustion_week,
+            forecast_exhaustion_week_end_balance=exhaustion_week_end_balance,
             contract_end_date=pd.to_datetime(cs["contract_end_date"]).date(),
             forecast_future_usage_to_contract_end=future_usage,
             forecast_contract_end_balance=end_balance,

@@ -9,6 +9,7 @@ import pandas as pd
 from flask import Blueprint, flash, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
+from app.shared import admin_api_credentials as admin_api_keys
 from app.shared.contracts import resolve_active_contract, sort_contracts
 from app.shared.credit_ledger import (
     credit_entries_total,
@@ -25,6 +26,8 @@ from .service import force_rmtree, try_snapshot
 # raises and never mutates anything (see openai_admin_API/status.py).
 # Wrapped so a machine with no aauth/ key configured at all still starts
 # the app fine; the Settings page just shows "Not configured" instead.
+# app.shared.admin_api_credentials (the multi-key list itself, imported
+# above) has no such dependency and is always importable.
 try:
     from openai_admin_API.status import get_admin_api_status
     from openai_admin_API.scheduler import load_sync_config, run_sync_now, save_sync_config
@@ -34,7 +37,8 @@ except ImportError:
     _SYNC_SCHEDULER_AVAILABLE = False
 
     def get_admin_api_status(force_refresh: bool = False) -> dict:
-        return {"key_configured": False, "workspace_configured": False, "write_access": None,
+        return {"key_configured": False, "read_key_configured": False, "write_key_configured": False,
+                "workspace_configured": False, "write_access": None,
                 "detail": "openai_admin_API package not found.", "checked_at": None}
 
     def load_sync_config() -> dict:
@@ -74,6 +78,7 @@ def _admin_api_synced_through() -> str | None:
     last actually pull data," independent of how many no-op checks ran
     since (e.g. the scheduler's own startup catch-up check)."""
     return _to_system_local(_load_admin_api_cursor())
+
 
 ALLOWED_HISTORICAL = {".xlsx", ".xls", ".csv"}
 ALLOWED_WEEKLY = {".csv"}
@@ -184,6 +189,8 @@ def create_settings_blueprint(services) -> Blueprint:
             admin_api_status=get_admin_api_status(),
             admin_api_sync_config=_localize_sync_config(load_sync_config()),
             admin_api_synced_through=_admin_api_synced_through(),
+            admin_api_keys=admin_api_keys.load_keys().get("keys", []),
+            admin_api_roles=admin_api_keys.ROLES,
             tier_overrides=tier_overrides,
             user_tier_count=len(user_tiers),
             user_tier_counts=dict(sorted(user_tier_counts.items())),
@@ -334,6 +341,49 @@ def create_settings_blueprint(services) -> Blueprint:
                 flash("Tier editing unlocked. Per-user tier changes are allowed.", "success")
         except Exception as exc:
             flash(f"Error updating tier lock: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
+
+    def _key_fields_from_form() -> dict:
+        return {
+            "label": request.form.get("label", "").strip(),
+            "secret_key": request.form.get("secret_key", "").strip(),
+            "workspace_id": request.form.get("workspace_id", "").strip(),
+            "organization_id": request.form.get("organization_id", "").strip(),
+            "role": request.form.get("role", "read").strip(),
+        }
+
+    @bp.route("/admin-api/keys/add", methods=["POST"])
+    def add_admin_api_key() -> object:
+        try:
+            fields = _key_fields_from_form()
+            if not fields["secret_key"]:
+                flash("Enter a secret key before adding it.", "warning")
+                return redirect(url_for("settings.settings_page"))
+            admin_api_keys.add_key(fields)
+            get_admin_api_status(force_refresh=True)
+            flash(f"Key '{fields['label'] or 'Untitled'}' added.", "success")
+        except Exception as exc:
+            flash(f"Error adding key: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/keys/<key_id>/update", methods=["POST"])
+    def update_admin_api_key(key_id: str) -> object:
+        try:
+            admin_api_keys.update_key(key_id, _key_fields_from_form())
+            get_admin_api_status(force_refresh=True)
+            flash("Key updated.", "success")
+        except Exception as exc:
+            flash(f"Error updating key: {exc}", "danger")
+        return redirect(url_for("settings.settings_page"))
+
+    @bp.route("/admin-api/keys/<key_id>/remove", methods=["POST"])
+    def remove_admin_api_key(key_id: str) -> object:
+        try:
+            admin_api_keys.remove_key(key_id)
+            get_admin_api_status(force_refresh=True)
+            flash("Key removed.", "success")
+        except Exception as exc:
+            flash(f"Error removing key: {exc}", "danger")
         return redirect(url_for("settings.settings_page"))
 
     @bp.route("/admin-api/recheck", methods=["POST"])

@@ -36,6 +36,9 @@
           <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-export" type="button" role="tab">Export</button>
         </li>
         <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-admin" type="button" role="tab">Admin</button>
+        </li>
+        <li class="nav-item" role="presentation">
           <button class="nav-link text-danger" data-bs-toggle="tab" data-bs-target="#pane-danger" type="button" role="tab">Danger Zone</button>
         </li>
       </ul>
@@ -887,6 +890,147 @@
       </div>
       </div><!-- /pane-export -->
 
+      {# Admin: ChatGPT Admin API keys -- multiple, each with a role telling
+         the client which key to use for reads vs writes. #}
+      <div class="tab-pane fade" id="pane-admin" role="tabpanel">
+      <div class="settings-section">
+        <h5>ChatGPT Admin API Keys</h5>
+        <p class="text-muted small mb-2">
+          Read-role keys are used for every GET (pulling Costs/usage data). Write-role keys are used for
+          POST/DELETE (pushing tier changes to ChatGPT). A Read-and-write key steps in as a fallback for
+          whichever role doesn't have its own dedicated key — it isn't required if you already have both.
+          Saved locally to the <code>aauth/</code> folder — never committed to git.
+        </p>
+        {% if admin_api_status %}
+        <div class="border rounded-3 px-3 py-2 mb-3 bg-light">
+          <div class="d-flex flex-wrap gap-3 small">
+            <span>Read key: <strong class="{{ 'text-success' if admin_api_status.read_key_configured else 'text-danger' }}">{{ 'Configured' if admin_api_status.read_key_configured else 'Not configured' }}</strong></span>
+            <span>Write key: <strong class="{{ 'text-success' if admin_api_status.write_key_configured else 'text-danger' }}">{{ 'Configured' if admin_api_status.write_key_configured else 'Not configured' }}</strong></span>
+            {% if admin_api_status.write_key_configured %}
+            <span>Write access: <strong class="{{ 'text-success' if admin_api_status.write_access else 'text-danger' }}">{{ 'Confirmed' if admin_api_status.write_access else 'Not granted' }}</strong></span>
+            {% endif %}
+          </div>
+          <div class="text-muted small mt-1">{{ admin_api_status.detail }}</div>
+          <form method="post" action="{{ url_for('settings.recheck_admin_api_status') }}" class="mt-1 mb-0">
+            <button type="submit" class="btn btn-outline-secondary btn-sm">Re-check now</button>
+          </form>
+        </div>
+        {% endif %}
+
+        {% if admin_api_keys %}
+        <div class="d-flex flex-column gap-3 mb-3">
+          {% for key in admin_api_keys %}
+          <div class="border rounded-3 p-3">
+            <form method="post" action="{{ url_for('settings.update_admin_api_key', key_id=key.id) }}">
+              <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                  <label class="form-label small">Label</label>
+                  <input class="form-control form-control-sm" type="text" name="label" value="{{ key.label }}" placeholder="e.g. Prod read key">
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">Role</label>
+                  <select class="form-select form-select-sm" name="role">
+                    <option value="read" {{ 'selected' if key.role == 'read' }}>Read only</option>
+                    <option value="write" {{ 'selected' if key.role == 'write' }}>Write only</option>
+                    <option value="read_write" {{ 'selected' if key.role == 'read_write' }}>Read and write</option>
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label small">Secret key</label>
+                  <div class="input-group input-group-sm">
+                    <input type="password" class="form-control" name="secret_key" id="key_secret_{{ key.id }}"
+                           value="{{ key.secret_key }}" placeholder="sk-admin-...">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="toggleCredentialReveal('key_secret_{{ key.id }}', this)" title="Show/hide">&#128065;</button>
+                  </div>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">Workspace ID</label>
+                  <div class="input-group input-group-sm">
+                    <input type="password" class="form-control" name="workspace_id" id="key_workspace_{{ key.id }}"
+                           value="{{ key.workspace_id }}" placeholder="optional">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="toggleCredentialReveal('key_workspace_{{ key.id }}', this)" title="Show/hide">&#128065;</button>
+                  </div>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">Organization ID</label>
+                  <div class="input-group input-group-sm">
+                    <input type="password" class="form-control" name="organization_id" id="key_org_{{ key.id }}"
+                           value="{{ key.organization_id }}" placeholder="optional">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="toggleCredentialReveal('key_org_{{ key.id }}', this)" title="Show/hide">&#128065;</button>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex justify-content-between align-items-center mt-2">
+                <div class="text-muted small">Leaving a field blank keeps its current saved value.</div>
+                <div class="d-flex gap-2">
+                  <button type="submit" class="btn btn-outline-primary btn-sm">Save</button>
+                </div>
+              </div>
+            </form>
+            <form method="post" action="{{ url_for('settings.remove_admin_api_key', key_id=key.id) }}"
+                  onsubmit="return confirm('Remove key \'{{ key.label }}\'?');" class="mt-1 mb-0">
+              <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-muted small">No keys added yet.</p>
+        {% endif %}
+
+        <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#add-admin-key-form">+ Add key</button>
+        <div class="collapse mt-3" id="add-admin-key-form">
+          <div class="border rounded-3 p-3 bg-light">
+            <h6 class="mb-3">New key</h6>
+            <form method="post" action="{{ url_for('settings.add_admin_api_key') }}">
+              <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                  <label class="form-label small">Label</label>
+                  <input class="form-control form-control-sm" type="text" name="label" placeholder="e.g. Write key">
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">Role</label>
+                  <select class="form-select form-select-sm" name="role">
+                    <option value="read">Read only</option>
+                    <option value="write">Write only</option>
+                    <option value="read_write">Read and write</option>
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label small">Secret key</label>
+                  <div class="input-group input-group-sm">
+                    <input type="password" class="form-control" name="secret_key" id="new_key_secret" placeholder="sk-admin-...">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="toggleCredentialReveal('new_key_secret', this)" title="Show/hide">&#128065;</button>
+                  </div>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">Workspace ID</label>
+                  <div class="input-group input-group-sm">
+                    <input type="password" class="form-control" name="workspace_id" id="new_key_workspace" placeholder="optional">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="toggleCredentialReveal('new_key_workspace', this)" title="Show/hide">&#128065;</button>
+                  </div>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">Organization ID</label>
+                  <div class="input-group input-group-sm">
+                    <input type="password" class="form-control" name="organization_id" id="new_key_org" placeholder="optional">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="toggleCredentialReveal('new_key_org', this)" title="Show/hide">&#128065;</button>
+                  </div>
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm mt-3">Add key</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      </div><!-- /pane-admin -->
+
       {# Danger Zone -- every bulk delete/reset action on this page lives here #}
       <div class="tab-pane fade" id="pane-danger" role="tabpanel">
       <div class="settings-section" style="border-color:rgba(220,53,69,.4);">
@@ -1049,6 +1193,14 @@
           new bootstrap.Tooltip(el, { trigger: 'hover focus', placement: 'top' });
         });
       })();
+
+      function toggleCredentialReveal(inputId, btn) {
+        const el = document.getElementById(inputId);
+        if (!el) return;
+        const revealed = el.type === 'text';
+        el.type = revealed ? 'password' : 'text';
+        btn.textContent = revealed ? '\u{1F441}' : '\u{1F576}';
+      }
 
       function removeRow(btn) {
         btn.closest('tr').remove();

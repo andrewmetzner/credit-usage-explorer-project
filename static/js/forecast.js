@@ -1125,6 +1125,16 @@ if (typeof Chart !== 'undefined') {
     .filter(d => d && d.date)
     .map(d => [d.date, Number(d.remaining)])
     .filter(p => Number.isFinite(p[1]));
+  if (latestDate && (!dailyActualPts.length || dailyActualPts[dailyActualPts.length - 1][0] !== latestDate)
+      && (!dailyActualPts.length || dailyActualPts[dailyActualPts.length - 1][0] < latestDate)) {
+    // The day-level reconstruction (D.dailyActualData) can lag the weekly/
+    // overall contract status by a day (its own data source catches up
+    // slightly later) — same "reach latestDate" guarantee actualPts (above)
+    // already gets, using the same authoritative D.remaining value, so both
+    // granularities' anchors agree instead of Daily silently sitting a day
+    // (and a burn-day's credits) behind Weekly.
+    dailyActualPts.push([latestDate, remaining]);
+  }
 
   // Known-facts bridge: usage uploads lag the calendar, so past the LAST REAL
   // data point of a series, remaining only steps for ledger entries landing
@@ -1239,7 +1249,14 @@ if (typeof Chart !== 'undefined') {
         : Math.max(anchorRemaining - dailyBurn * days, 0);
       pts.push([dstr, rem]);
     }
-    if (granularity === 'daily' && endSpliceStr) {
+    // Splice the EXACT value at endSpliceStr (contract end) into the grid
+    // regardless of granularity. Weekly steps land on whatever weekday the
+    // anchor falls on, so without this the nearest weekly grid point to
+    // contract end can be several days off — its value then reads as a
+    // different number than the precise date-based "End balance" KPI (and
+    // than daily mode, which always had this splice) even though both are
+    // meant to describe the same contract-end balance.
+    if (endSpliceStr) {
       for (let j = 1; j < pts.length; j++) {
         if (pts[j - 1][0] < endSpliceStr && endSpliceStr < pts[j][0]) {
           const t = (new Date(endSpliceStr) - new Date(pts[j - 1][0]))
