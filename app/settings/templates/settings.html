@@ -44,45 +44,6 @@
 
       {# Data: pipeline status, ingested weeks, upload log, advanced uploads #}
       <div class="tab-pane fade show active" id="pane-data" role="tabpanel">
-      <div class="settings-section">
-        <h5>Pipeline Status</h5>
-
-        {% if not pipeline_status.has_historical and not pipeline_status.has_operational %}
-        <div class="alert alert-info mb-3" role="alert">
-          No data has been uploaded yet. Upload a historical Excel file and/or weekly CSV files below to enable forecasting.
-        </div>
-        {% endif %}
-
-        <div class="row g-3">
-          <div class="col-md-6">
-            <div class="d-flex align-items-center gap-2 mb-1">
-              <span class="status-dot {% if pipeline_status.has_historical %}green{% else %}gray{% endif %}"></span>
-              <strong>Historical data</strong>
-            </div>
-            <div class="text-muted small ps-3">
-              {% if pipeline_status.has_historical %}
-                {{ pipeline_status.historical_weeks }} week{{ 's' if pipeline_status.historical_weeks != 1 else '' }} loaded
-              {% else %}
-                Not uploaded
-              {% endif %}
-            </div>
-          </div>
-          <div class="col-md-6">
-            <div class="d-flex align-items-center gap-2 mb-1">
-              <span class="status-dot {% if pipeline_status.has_operational %}green{% else %}gray{% endif %}"></span>
-              <strong>Operational (weekly) data</strong>
-            </div>
-            <div class="text-muted small ps-3">
-              {% if pipeline_status.has_operational %}
-                {{ pipeline_status.operational_weeks }} week{{ 's' if pipeline_status.operational_weeks != 1 else '' }} loaded
-              {% else %}
-                Not uploaded
-              {% endif %}
-            </div>
-          </div>
-        </div>
-      </div>
-
       {% if admin_api_status and admin_api_status.key_configured and admin_api_sync_config %}
       <div class="settings-section">
         <h5>ChatGPT Admin API Sync</h5>
@@ -151,6 +112,45 @@
         </div>
       </div>
       {% endif %}
+
+      <div class="settings-section">
+        <h5>Pipeline Status</h5>
+
+        {% if not pipeline_status.has_historical and not pipeline_status.has_operational %}
+        <div class="alert alert-info mb-3" role="alert">
+          No data has been uploaded yet. Upload a historical Excel file and/or weekly CSV files below to enable forecasting.
+        </div>
+        {% endif %}
+
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="status-dot {% if pipeline_status.has_historical %}green{% else %}gray{% endif %}"></span>
+              <strong>Historical data</strong>
+            </div>
+            <div class="text-muted small ps-3">
+              {% if pipeline_status.has_historical %}
+                {{ pipeline_status.historical_weeks }} week{{ 's' if pipeline_status.historical_weeks != 1 else '' }} loaded
+              {% else %}
+                Not uploaded
+              {% endif %}
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="status-dot {% if pipeline_status.has_operational %}green{% else %}gray{% endif %}"></span>
+              <strong>Operational (weekly) data</strong>
+            </div>
+            <div class="text-muted small ps-3">
+              {% if pipeline_status.has_operational %}
+                {{ pipeline_status.operational_weeks }} week{{ 's' if pipeline_status.operational_weeks != 1 else '' }} loaded
+              {% else %}
+                Not uploaded
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {# Ingested Weekly Weeks #}
       {% if ingested_weeks %}
