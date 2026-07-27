@@ -102,9 +102,13 @@ class CreditUsageData:
         """A combined date+time column for display: rows pulled by the
         ChatGPT Admin API sync carry their actual pull time in `data_source`
         (e.g. "API GET 2026-07-24T16:04:18Z", stored UTC — converted to
-        local time here); every other row (manual uploads, or an API row
-        whose data_source has no parseable timestamp) gets midnight, since
-        there's no finer-grained time to show for those."""
+        local time here). Every other row (manual uploads, or an API row
+        whose data_source has no parseable timestamp) has no real time to
+        show — `timestamp` still gets midnight so it sorts/filters sanely
+        as a real datetime, but `timestamp_has_time` (not a displayed
+        column itself, just a formatting flag `_format_record_cell` reads
+        off the row) marks that midnight as a placeholder, not a fact, so
+        it renders as "--:--:--" instead of a fake "00:00:00"."""
         if "date_partition" not in self.df.columns:
             return
 
@@ -113,24 +117,26 @@ class CreditUsageData:
         def _row_timestamp(date_val, source_val):
             d = pd.to_datetime(date_val, errors="coerce")
             if pd.isna(d):
-                return pd.NaT
+                return pd.NaT, False
             time_part = time(0, 0)
+            has_time = False
             if isinstance(source_val, str):
                 match = _PULL_TIME_RE.search(source_val)
                 if match:
                     try:
                         dt_utc = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
                         time_part = dt_utc.astimezone().time()
+                        has_time = True
                     except ValueError:
                         pass
-            return datetime.combine(d.date(), time_part)
+            return datetime.combine(d.date(), time_part), has_time
 
         if source_col is not None:
-            self.df["timestamp"] = [
-                _row_timestamp(d, s) for d, s in zip(self.df["date_partition"], source_col)
-            ]
+            results = [_row_timestamp(d, s) for d, s in zip(self.df["date_partition"], source_col)]
         else:
-            self.df["timestamp"] = [_row_timestamp(d, None) for d in self.df["date_partition"]]
+            results = [_row_timestamp(d, None) for d in self.df["date_partition"]]
+        self.df["timestamp"] = [r[0] for r in results]
+        self.df["timestamp_has_time"] = [r[1] for r in results]
         if "timestamp" not in self.columns:
             self.columns.append("timestamp")
 

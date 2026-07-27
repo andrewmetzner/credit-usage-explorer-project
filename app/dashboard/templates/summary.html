@@ -55,15 +55,26 @@
 <div class="container py-4" style="max-width: 1280px;">
 
   <!-- Page Header -->
-  <div class="mb-4">
-    <h1 class="page-title">Summary</h1>
-    <p class="page-subtitle">
-      Dataset: <strong>{{ data_source.filename or 'No file' }}</strong>
-      &nbsp;&middot;&nbsp; {{ '{:,}'.format(data_source.rows) }} records
-      {% if metrics.date_min %}
-        &nbsp;&middot;&nbsp; {{ metrics.date_min }} &rarr; {{ metrics.date_max }}
-      {% endif %}
-    </p>
+  <div class="mb-4 d-flex justify-content-between align-items-start gap-3">
+    <div>
+      <h1 class="page-title">Summary</h1>
+      <p class="page-subtitle">
+        Dataset: <strong>{{ data_source.filename or 'No file' }}</strong>
+        &nbsp;&middot;&nbsp; {{ '{:,}'.format(data_source.rows) }} records
+        {% if metrics.date_min %}
+          &nbsp;&middot;&nbsp; {{ metrics.date_min }} &rarr; {{ metrics.date_max }}
+        {% endif %}
+      </p>
+    </div>
+    {% if admin_api_status and admin_api_status.key_configured %}
+    <form method="post" action="{{ url_for('settings.sync_admin_api_now') }}" class="mb-0 flex-shrink-0">
+      <input type="hidden" name="next" value="{{ url_for('main.summary_page') }}">
+      <button type="submit" class="btn btn-outline-primary btn-sm"
+              title="Pulls new credit usage from the Admin API right now, independent of the scheduled sync.">
+        Sync now
+      </button>
+    </form>
+    {% endif %}
   </div>
 
   <!-- Key Metrics -->

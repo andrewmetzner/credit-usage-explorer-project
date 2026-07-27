@@ -54,10 +54,6 @@ def _write_file(path: Path, value: str) -> None:
     if value:
         path.write_text(value.strip() + "\n", encoding="utf-8")
     elif path.exists():
-        # Clearing a role's materialized file (not just leaving it stale)
-        # matters here: client.py's loaders treat "file missing" as "role
-        # not configured" and raise a clear error, instead of silently
-        # reusing a key from a since-removed/edited profile.
         try:
             path.unlink()
         except OSError:
@@ -86,9 +82,6 @@ def load_keys() -> dict:
         data.setdefault("keys", [])
         return data
 
-    # First run after upgrading from the single-credential (pre-multi-key)
-    # version: whatever's already in aauth/ becomes one migrated key, so
-    # nothing already configured gets silently lost.
     secret_key = _read_file(_LEGACY_KEY_FILE)
     workspace_id = _read_file(_LEGACY_WORKSPACE_FILE)
     organization_id = _read_file(_LEGACY_ORG_FILE)
@@ -170,11 +163,6 @@ def update_key(key_id: str, fields: dict) -> None:
             if field not in fields:
                 continue
             value = str(fields[field] or "")
-            # Blank secret/workspace/org means "leave as-is" (the form is
-            # prefilled with the current value; a truly blank submit is
-            # either an accidental clear or never filled in) -- label and
-            # role ARE saved as submitted, since those aren't secrets that
-            # could be lost by accident.
             if field in ("secret_key", "workspace_id", "organization_id") and not value:
                 continue
             k[field] = value

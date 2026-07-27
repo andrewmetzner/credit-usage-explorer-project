@@ -30,6 +30,16 @@ from .diagnostics_routes import register_diagnostics_routes
 from .alerts_routes import register_alerts_routes
 from .upload_routes import register_upload_routes
 
+# Optional: same "safe to surface, never mutates" status check Settings uses
+# (see openai_admin_API/status.py) — just for the Summary page's own
+# "Sync now" button visibility, wrapped so a machine with no aauth/ key
+# configured (or the package altogether missing) still starts fine.
+try:
+    from openai_admin_API.status import get_admin_api_status
+except ImportError:
+    def get_admin_api_status(force_refresh: bool = False) -> dict:
+        return {"key_configured": False, "read_key_configured": False}
+
 
 def create_dashboard_blueprint(services) -> Blueprint:
     store = services.store
@@ -224,6 +234,7 @@ def create_dashboard_blueprint(services) -> Blueprint:
             usage_type_weekly=usage_type_weekly_json(df, contracts=contracts),
             forecast_snapshot=forecast_snapshot,
             pipeline_status=ps,
+            admin_api_status=get_admin_api_status(),
             data_source={
                 "filename": None if store.path == DEFAULT_DATA_PATH else store.path.name,
                 "rows": metrics["total_records"],

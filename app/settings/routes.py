@@ -198,7 +198,7 @@ def create_settings_blueprint(services) -> Blueprint:
             ingested_weeks=ingested_weeks,
             forecast_history=forecast_history,
             forecast_history_count=forecast_history_count,
-            upload_history=upload_history,
+            upload_history=[{**u, "ts": _to_system_local(u.get("ts"))} for u in upload_history],
         )
 
     @bp.route("/contracts/add", methods=["POST"])
@@ -433,12 +433,18 @@ def create_settings_blueprint(services) -> Blueprint:
 
     @bp.route("/admin-api/sync-now", methods=["POST"])
     def sync_admin_api_now() -> object:
+        # Triggerable from other pages too (e.g. Summary's "Sync now" button)
+        # via a `next` field, so it returns you to where you clicked it from
+        # instead of always jumping to Settings.
+        next_url = request.form.get("next", "") or url_for("settings.settings_page")
+        if not next_url.startswith("/"):
+            next_url = url_for("settings.settings_page")
         if not _SYNC_SCHEDULER_AVAILABLE:
             flash("openai_admin_API package not found.", "danger")
-            return redirect(url_for("settings.settings_page"))
+            return redirect(next_url)
         result = run_sync_now(on_synced=lambda: store.reload())
         flash(result.get("last_run_status") or "Sync attempted.", "info")
-        return redirect(url_for("settings.settings_page"))
+        return redirect(next_url)
 
     @bp.route("/tiers/reset-import", methods=["POST"])
     def reset_tierlist_data() -> object:

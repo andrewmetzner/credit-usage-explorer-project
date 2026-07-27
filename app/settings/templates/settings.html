@@ -213,7 +213,7 @@
             {% set badge = {'data_sheet': 'bg-success', 'historical': 'bg-secondary', 'weekly': 'bg-primary'} %}
             {% set label = {'data_sheet': 'data sheet'} %}
             <tr>
-              <td style="white-space:nowrap; font-size:.78rem; color:var(--muted);">{{ u.ts | replace('T', ' ') | replace('Z', ' UTC') }}</td>
+              <td style="white-space:nowrap; font-size:.78rem; color:var(--muted);">{{ u.ts }}</td>
               <td>
                 <span class="badge {{ badge.get(u.type, 'bg-primary') }}" style="font-size:.68rem;">{{ label.get(u.type, u.type) }}</span>
                 {% if u.stats.mode == 'replace' %}<span class="badge bg-warning text-dark" style="font-size:.62rem;">replace</span>{% endif %}

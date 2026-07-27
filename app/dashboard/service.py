@@ -72,7 +72,11 @@ def _format_record_cell(col: str, row: dict, units_present: bool) -> str:
     value = row.get(col)
     if col == "timestamp":
         dt = pd.to_datetime(value, errors="coerce")
-        return dt.strftime("%m-%d-%y %I:%M %p") if not pd.isna(dt) else "—"
+        if pd.isna(dt):
+            return "—"
+        if row.get("timestamp_has_time"):
+            return dt.strftime("%m-%d-%y %H:%M:%S")
+        return dt.strftime("%m-%d-%y") + " --:--:--"
     if col == "usage_credits":
         return _fmt_number(value, 2)
     if col == "usage_quantity":

@@ -130,6 +130,21 @@ class ForecastingService:
         wdf["_ws"] = wdf["_date"] - pd.to_timedelta(wdf["_date"].dt.dayofweek, unit="D")
         wdf["_we"] = wdf["_ws"] + pd.Timedelta(days=6)
 
+        contract_start = pd.to_datetime(self.config["contract"]["contract_start_date"])
+
+        # A week straddling contract_start (its natural Monday falls before
+        # the contract, but some of its days -- e.g. contract_start itself,
+        # if it isn't a Monday -- are within it) would otherwise satisfy
+        # neither the historical ("_we < contract_start") nor operational
+        # ("_ws >= contract_start") classification below, and get silently
+        # dropped entirely: real, already-uploaded usage vanishing from the
+        # total. Clamp _ws to contract_start for just that week's in-contract
+        # days, splitting it into its own partial-week bucket (grouped with
+        # _we left as-is, so same-week in-contract days still land together)
+        # instead of losing it. Pre-contract days in the same natural week
+        # keep their real _ws and still roll into historical normally.
+        wdf["_ws"] = wdf["_ws"].where(wdf["_date"] < contract_start, wdf["_ws"].clip(lower=contract_start))
+
         agg: dict = {"total_credits_used": ("usage_credits", "sum")}
         if "email" in wdf.columns:
             agg["unique_users"] = ("email", "nunique")
@@ -139,8 +154,6 @@ class ForecastingService:
             .agg(**agg)
             .sort_values("_ws")
         )
-
-        contract_start = pd.to_datetime(self.config["contract"]["contract_start_date"])
 
         hist_rows = weekly[weekly["_we"] < contract_start]
         op_rows = weekly[weekly["_ws"] >= contract_start]
@@ -196,6 +209,40 @@ class ForecastingService:
 
         total_credits_used = historical_credits_used + operational_credits_used
         credits_remaining = purchased_credits - total_credits_used
+
+        # Cover a partial FIRST week too: weekly buckets are Monday-anchored,
+        # so unless a contract happens to start on a Monday, the days between
+        # contract_start and the first bucket's own start belong to a week
+        # whose week_start falls BEFORE contract_start -- excluded entirely
+        # by the ">= contract_start" filters above, silently dropping real,
+        # already-uploaded usage from the total. Mirrors the "extend past the
+        # last complete week" block below, at the other edge.
+        first_covered_dates: list[pd.Timestamp] = []
+        if self.historical_df is not None and not self.historical_df.empty and not hist_contract.empty:
+            first_covered_dates.append(hist_contract["period_start"].min())
+        if self.operational_df is not None and not self.operational_df.empty and not op_contract.empty:
+            first_covered_dates.append(op_contract["week_start"].min())
+        first_covered = min(first_covered_dates) if first_covered_dates else None
+
+        if (
+            first_covered is not None
+            and first_covered > contract_start
+            and not self._daily_already_included
+            and self.daily_df is not None
+            and not self.daily_df.empty
+            and "date_partition" in self.daily_df.columns
+            and "usage_credits" in self.daily_df.columns
+        ):
+            ddf = self.daily_df[["date_partition", "usage_credits"]].copy()
+            ddf["_day"] = pd.to_datetime(ddf["date_partition"], errors="coerce").dt.normalize()
+            ddf = ddf.dropna(subset=["_day"])
+            ddf["usage_credits"] = pd.to_numeric(ddf["usage_credits"], errors="coerce").fillna(0.0)
+            lead_in = ddf[(ddf["_day"] >= contract_start) & (ddf["_day"] < first_covered)]
+            if not lead_in.empty:
+                lead_in_used = float(lead_in["usage_credits"].sum())
+                operational_credits_used += lead_in_used
+                total_credits_used += lead_in_used
+                credits_remaining -= lead_in_used
 
         # latest_usage_date is the first day after the last completed data week.
         # Week-ending dates are stored as the last inclusive day of the week, so
