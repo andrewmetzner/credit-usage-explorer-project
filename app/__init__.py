@@ -86,6 +86,24 @@ def create_app() -> Flask:
     app.register_blueprint(create_settings_blueprint(services))
     app.jinja_env.filters["fmt_status"] = _fmt_status
 
+    @app.before_request
+    def _refresh_store_if_file_changed() -> None:
+        """Re-read current_data.csv whenever it changed on disk, before
+        handling ANY request — so a page render (and the /data-revision
+        poll that drives auto-refresh) always reflects the latest synced
+        data. This is what makes a background sync's new rows show up
+        without an app restart: the process serving the page notices the
+        file is newer and reloads it, regardless of which process actually
+        performed the sync (background scheduler, manual "Sync now", or a
+        stray second instance). Cheap on the common no-change path — just an
+        os.stat; the full rebuild only runs when the file really changed."""
+        try:
+            store.reload_if_changed()
+        except Exception:
+            # Never let a reload hiccup break request handling — the page
+            # just serves the previous data and tries again next request.
+            pass
+
     # Optional: the ChatGPT Admin API sync scheduler (see
     # openai_admin_API/scheduler.py). Off by default (its own
     # config/admin_api_sync_config.json controls that, toggled from

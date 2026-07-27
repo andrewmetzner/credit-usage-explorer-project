@@ -227,6 +227,12 @@
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        // Hover anywhere in a bar's vertical column (not just precisely on
+        // the bar) to show its tooltip — 'index' picks the nearest bar by
+        // x-position and intersect:false drops the "must be over the bar
+        // itself" requirement, so a tiny short bar is still easy to hover
+        // from well above it. (Matches the Active-users chart below.)
+        interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: {

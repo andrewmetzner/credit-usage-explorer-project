@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+import threading
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,13 @@ class DataStore:
         # base.html. Only incremented AFTER the new data is fully built, so a
         # page that reloads on a bump is guaranteed to render the fresh data.
         self._revision = 0
+        # Serialize reloads: the sync scheduler thread, the request threads'
+        # before-request mtime check, and a manual upload can all race to
+        # reload at once.
+        self._reload_lock = threading.Lock()
+        # (mtime_ns, size) of the file as it was last loaded — the basis for
+        # reload_if_changed(). Captured AFTER the initial load above.
+        self._loaded_signature = self._file_signature()
 
     @property
     def data(self) -> CreditUsageData:
@@ -62,11 +70,56 @@ class DataStore:
     def revision(self) -> int:
         return self._revision
 
+    def _file_signature(self) -> tuple[int, int]:
+        """Cheap fingerprint of the data file's current on-disk state — an
+        os.stat only, no read. Changes whenever the file is rewritten (a
+        sync merge, a manual upload), which is exactly when the in-memory
+        copy is stale."""
+        try:
+            st = self._path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (0, 0)
+
     def reload(self, new_path: Path | None = None) -> None:
-        if new_path:
-            self._path = new_path
-        self._data = CreditUsageData(self._path)
-        self._revision += 1
+        with self._reload_lock:
+            if new_path:
+                self._path = new_path
+            self._data = CreditUsageData(self._path)
+            self._loaded_signature = self._file_signature()
+            self._revision += 1
+
+    def reload_if_changed(self) -> bool:
+        """Reload from disk only if the data file changed since it was last
+        loaded. Returns True if a reload happened.
+
+        This is the reliable path for showing freshly-synced data: it makes
+        the process SERVING a page notice the file is newer and reload it,
+        instead of depending on the sync's in-process reload callback —
+        which only helps when the syncing process and the serving process
+        happen to be the same one. With background syncs (and any stray
+        second app instance) they often aren't, which is why a synced row
+        used to require an app restart to appear. Cheap enough to call on
+        every request (an os.stat + tuple compare); the expensive rebuild
+        only runs when the file actually changed."""
+        if self._file_signature() == self._loaded_signature:
+            return False
+        with self._reload_lock:
+            # Re-check inside the lock: another thread may have just reloaded.
+            sig = self._file_signature()
+            if sig == self._loaded_signature:
+                return False
+            try:
+                new_data = CreditUsageData(self._path)
+            except Exception:
+                # A transient read error (e.g. caught mid-write) — keep the
+                # current data and leave the signature stale so the next
+                # call retries, rather than 500-ing the request this runs in.
+                return False
+            self._data = new_data
+            self._loaded_signature = sig
+            self._revision += 1
+            return True
 
 
 class CreditUsageData:
