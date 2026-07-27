@@ -38,8 +38,16 @@ _RECORD_COLUMN_META: dict[str, tuple[str, str, bool]] = {
 
 # Curated, clean default view — parsed/corrected fields over the raw ones, so
 # there's no horizontal scroll on first load (raw + id columns stay opt-in).
+# Uses "date_partition" (the actual day the usage/spend happened), not
+# "timestamp" — that column combines the real date with the API sync's PULL
+# time (see DataStore._add_timestamp in app/shared/data_store.py), which
+# reads as "when this credit was spent" but is really "when we happened to
+# fetch it," misleading for Records / user summary. The pull time itself
+# still lives in data_source for log/audit purposes — just not shown here
+# as if it were the spend time. "timestamp" stays an opt-in column (see
+# _RECORD_COLUMN_META) for anyone who does want to see it.
 DEFAULT_RECORD_COLUMNS = [
-    "timestamp", "name", "email",
+    "date_partition", "name", "email",
     "usage_type_parsed_type", "usage_type_model",
     "usage_quantity", "usage_credits",
 ]
