@@ -1127,13 +1127,19 @@ if (typeof Chart !== 'undefined') {
     .filter(p => Number.isFinite(p[1]));
   if (latestDate && (!dailyActualPts.length || dailyActualPts[dailyActualPts.length - 1][0] !== latestDate)
       && (!dailyActualPts.length || dailyActualPts[dailyActualPts.length - 1][0] < latestDate)) {
-    // The day-level reconstruction (D.dailyActualData) can lag the weekly/
-    // overall contract status by a day (its own data source catches up
-    // slightly later) — same "reach latestDate" guarantee actualPts (above)
-    // already gets, using the same authoritative D.remaining value, so both
-    // granularities' anchors agree instead of Daily silently sitting a day
-    // (and a burn-day's credits) behind Weekly.
-    dailyActualPts.push([latestDate, remaining]);
+    // The day-level reconstruction (D.dailyActualData) can lag latestDate by
+    // a day (e.g. latestDate bridges to "today" while no real data exists
+    // for today yet) -- extend the x-axis to latestDate so both granularities
+    // reach the same point, but carry forward the daily series' OWN last
+    // value rather than importing D.remaining: that total is computed via a
+    // completely different path (weekly historical + operational sums) that
+    // can legitimately disagree with the exact daily reconstruction by a
+    // small reconciliation gap in older weekly-sourced history. Importing it
+    // here made the line jump to a different number with zero new usage
+    // recorded -- a fake day-over-day change. Repeating the last real value
+    // keeps the extension truthful: nothing happened, so nothing moves.
+    const carryValue = dailyActualPts.length ? dailyActualPts[dailyActualPts.length - 1][1] : remaining;
+    dailyActualPts.push([latestDate, carryValue]);
   }
 
   // Known-facts bridge: usage uploads lag the calendar, so past the LAST REAL
