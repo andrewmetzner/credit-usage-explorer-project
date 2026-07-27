@@ -67,11 +67,19 @@
             </span>
           </div>
           <div class="d-flex align-items-end flex-wrap gap-2 mt-2">
-            <form method="post" action="{{ url_for('settings.set_admin_api_sync_interval') }}" class="d-flex align-items-end gap-2 mb-0">
+            <form method="post" action="{{ url_for('settings.set_admin_api_sync_interval') }}" class="d-flex align-items-end gap-1 mb-0">
               <div>
-                <label class="form-label mb-0 small">Every (minutes)</label>
-                <input class="form-control form-control-sm" type="number" min="1" name="interval_minutes"
-                       value="{{ admin_api_sync_config.interval_minutes }}" style="width:100px;">
+                <label class="form-label mb-0 small">Every</label>
+                <input class="form-control form-control-sm" type="number" min="0" step="any" name="interval_value"
+                       value="{{ admin_api_sync_config.interval_minutes }}" style="width:90px;"
+                       title="Current saved value is always shown in minutes; pick a different unit below only if you want to enter a new value in that unit.">
+              </div>
+              <div>
+                <select class="form-select form-select-sm" name="interval_unit" style="width:105px;">
+                  <option value="seconds">Seconds</option>
+                  <option value="minutes" selected>Minutes</option>
+                  <option value="hours">Hours</option>
+                </select>
               </div>
               <button type="submit" class="btn btn-outline-secondary btn-sm">Save interval</button>
             </form>

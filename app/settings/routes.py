@@ -405,17 +405,28 @@ def create_settings_blueprint(services) -> Blueprint:
         )
         return redirect(url_for("settings.settings_page"))
 
+    # Stored value stays interval_minutes (unchanged field name -- scheduler.py
+    # and every existing config file already key off it); the unit dropdown is
+    # purely an input convenience, converted to minutes right here.
+    _INTERVAL_UNIT_TO_MINUTES = {"seconds": 1 / 60, "minutes": 1.0, "hours": 60.0}
+
     @bp.route("/admin-api/sync-interval", methods=["POST"])
     def set_admin_api_sync_interval() -> object:
         if not _SYNC_SCHEDULER_AVAILABLE:
             return redirect(url_for("settings.settings_page"))
+        unit = request.form.get("interval_unit", "minutes").strip().lower()
+        if unit not in _INTERVAL_UNIT_TO_MINUTES:
+            unit = "minutes"
         try:
-            minutes = max(int(request.form.get("interval_minutes", 60)), 1)
+            value = float(request.form.get("interval_value", request.form.get("interval_minutes", 60)))
+            if value <= 0:
+                raise ValueError
         except (TypeError, ValueError):
-            flash("Interval must be a whole number of minutes.", "danger")
+            flash("Interval must be a positive number.", "danger")
             return redirect(url_for("settings.settings_page"))
+        minutes = round(value * _INTERVAL_UNIT_TO_MINUTES[unit], 4)
         save_sync_config(interval_minutes=minutes)
-        flash(f"Sync interval set to {minutes} minute(s).", "success")
+        flash(f"Sync interval set to {value:g} {unit}.", "success")
         return redirect(url_for("settings.settings_page"))
 
     @bp.route("/admin-api/sync-align", methods=["POST"])
