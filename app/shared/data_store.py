@@ -43,6 +43,12 @@ class DataStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._data = CreditUsageData(path)
+        # Bumped on every successful reload so open browser pages can detect
+        # that the in-memory data changed (e.g. after an API sync) and refresh
+        # themselves — see the /data-revision endpoint and the poller in
+        # base.html. Only incremented AFTER the new data is fully built, so a
+        # page that reloads on a bump is guaranteed to render the fresh data.
+        self._revision = 0
 
     @property
     def data(self) -> CreditUsageData:
@@ -52,10 +58,15 @@ class DataStore:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def revision(self) -> int:
+        return self._revision
+
     def reload(self, new_path: Path | None = None) -> None:
         if new_path:
             self._path = new_path
         self._data = CreditUsageData(self._path)
+        self._revision += 1
 
 
 class CreditUsageData:

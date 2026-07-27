@@ -168,6 +168,16 @@ def create_dashboard_blueprint(services) -> Blueprint:
         qs = urlencode(pairs)
         return f"{url_for(endpoint)}?{qs}" if qs else url_for(endpoint)
 
+    @bp.route("/data-revision", methods=["GET"])
+    def data_revision() -> object:
+        """Lightweight polling target for the open-page auto-refresh (see the
+        poller in base.html): returns the in-memory data's revision counter,
+        bumped every time the store reloads (e.g. after an API sync). A page
+        whose captured revision no longer matches reloads itself to show the
+        fresh data — so new synced data appears without a manual refresh or
+        an app restart."""
+        return {"revision": store.revision}
+
     @bp.route("/", methods=["GET"])
     def index() -> str:
         return redirect(url_for("main.summary_page"))

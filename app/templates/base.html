@@ -342,6 +342,56 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/alerts.js') }}"></script>
+
+    <script>
+      // Auto-refresh open pages when new data lands (e.g. an API sync merges
+      // rows and reloads the store). Polls the lightweight /data-revision
+      // endpoint; when the server's data revision differs from what this page
+      // rendered with, the page reloads itself so the new data shows — no
+      // manual refresh, no app restart. Guarded so it never yanks the page
+      // out from under active work: it holds off while a form field is
+      // focused (mid-edit), while any file-upload input has a file staged,
+      // or while a modal is open, retrying on the next poll instead.
+      (function () {
+        var REVISION_URL = "{{ url_for('main.data_revision') }}";
+        var POLL_MS = 20000;
+        var known = null;  // captured on the first successful poll
+
+        function busy() {
+          var el = document.activeElement;
+          if (el) {
+            var tag = (el.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable) {
+              return true;
+            }
+          }
+          // A staged (not-yet-submitted) file upload shouldn't be lost.
+          var files = document.querySelectorAll('input[type="file"]');
+          for (var i = 0; i < files.length; i++) {
+            if (files[i].files && files[i].files.length) return true;
+          }
+          if (document.querySelector('.modal.show')) return true;
+          return false;
+        }
+
+        function poll() {
+          fetch(REVISION_URL, { headers: { 'Accept': 'application/json' }, cache: 'no-store' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) {
+              if (!d || typeof d.revision === 'undefined') return;
+              if (known === null) { known = d.revision; return; }
+              if (d.revision !== known && !busy()) {
+                window.location.reload();
+              }
+            })
+            .catch(function () { /* transient network/hiccup — try again next tick */ });
+        }
+
+        setInterval(poll, POLL_MS);
+        poll();
+      })();
+    </script>
+
     {% block scripts %}{% endblock %}
   </body>
 </html>
