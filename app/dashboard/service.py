@@ -18,6 +18,7 @@ UNIT_LABELS = {"tokens": "tokens", "counts": "messages", "duration_s": "sec"}
 # title-cased label, left-aligned and clipped (safe for long id/text fields).
 _RECORD_COLUMN_META: dict[str, tuple[str, str, bool]] = {
     "date_partition":         ("Date", "left", False),
+    "timestamp":              ("Time", "left", False),
     "name":                   ("User", "left", True),
     "email":                  ("Email", "left", True),
     "usage_type_parsed_type": ("Usage Type", "left", False),
@@ -38,7 +39,7 @@ _RECORD_COLUMN_META: dict[str, tuple[str, str, bool]] = {
 # Curated, clean default view — parsed/corrected fields over the raw ones, so
 # there's no horizontal scroll on first load (raw + id columns stay opt-in).
 DEFAULT_RECORD_COLUMNS = [
-    "date_partition", "name", "email",
+    "timestamp", "name", "email",
     "usage_type_parsed_type", "usage_type_model",
     "usage_quantity", "usage_credits",
 ]
@@ -69,6 +70,9 @@ def _format_record_cell(col: str, row: dict, units_present: bool) -> str:
     """Display string for one cell — numbers get thousands separators, Quantity
     absorbs its unit, and empty/"N/A" values render as an em dash."""
     value = row.get(col)
+    if col == "timestamp":
+        dt = pd.to_datetime(value, errors="coerce")
+        return dt.strftime("%m-%d-%y %I:%M %p") if not pd.isna(dt) else "—"
     if col == "usage_credits":
         return _fmt_number(value, 2)
     if col == "usage_quantity":

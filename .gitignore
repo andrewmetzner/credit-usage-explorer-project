@@ -5,6 +5,7 @@ deliverables/*
 aauth/*
 openai_admin_API/*
 openai_admin_testscripts/*
+watchdog.ps1
  
 #py
 __pycache__/

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import re
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,10 @@ import pandas as pd
 
 from .data_filters import apply_usage_corrections
 from .utils import parse_usage_type
+
+# Matches the pull-time timestamp embedded in the data_source column by
+# openai_admin_API/sync_usage.py, e.g. "API GET 2026-07-24T16:04:18Z".
+_PULL_TIME_RE = re.compile(r"API GET\s+(\S+)")
 
 
 def read_tabular_file(source: "Path | bytes", suffix: str) -> pd.DataFrame:
@@ -58,6 +64,7 @@ class CreditUsageData:
         self.df = self._load_data()
         self.columns = list(self.df.columns)
         self._add_parsed_usage_type()
+        self._add_timestamp()
 
     def _load_data(self) -> pd.DataFrame:
         if not self.data_path.exists():
@@ -90,6 +97,42 @@ class CreditUsageData:
                     "usage_type_medium", "usage_type_io"]:
             if col not in self.columns:
                 self.columns.append(col)
+
+    def _add_timestamp(self) -> None:
+        """A combined date+time column for display: rows pulled by the
+        ChatGPT Admin API sync carry their actual pull time in `data_source`
+        (e.g. "API GET 2026-07-24T16:04:18Z", stored UTC — converted to
+        local time here); every other row (manual uploads, or an API row
+        whose data_source has no parseable timestamp) gets midnight, since
+        there's no finer-grained time to show for those."""
+        if "date_partition" not in self.df.columns:
+            return
+
+        source_col = self.df["data_source"] if "data_source" in self.df.columns else None
+
+        def _row_timestamp(date_val, source_val):
+            d = pd.to_datetime(date_val, errors="coerce")
+            if pd.isna(d):
+                return pd.NaT
+            time_part = time(0, 0)
+            if isinstance(source_val, str):
+                match = _PULL_TIME_RE.search(source_val)
+                if match:
+                    try:
+                        dt_utc = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+                        time_part = dt_utc.astimezone().time()
+                    except ValueError:
+                        pass
+            return datetime.combine(d.date(), time_part)
+
+        if source_col is not None:
+            self.df["timestamp"] = [
+                _row_timestamp(d, s) for d, s in zip(self.df["date_partition"], source_col)
+            ]
+        else:
+            self.df["timestamp"] = [_row_timestamp(d, None) for d in self.df["date_partition"]]
+        if "timestamp" not in self.columns:
+            self.columns.append("timestamp")
 
     def filter_by_date(
         self,
