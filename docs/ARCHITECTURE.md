@@ -254,12 +254,18 @@ rendering an uncapped row set.
 
 ## 13. Where to extend
 
-- **New page:** add a blueprint under `app/<name>/`, a `create_*_blueprint`
+- **Group optimization changes and pull**
+  - Pulls groups effectively from API (confirm and test)
+  - Test change/editing functions for changing tiers for users from the web app
+  - Create more automated and organized panels for mass changes and other edits
+
+- **OOP**
+  - **New page:** add a blueprint under `app/<name>/`, a `create_*_blueprint`
   factory, register it in `create_app()`, add a template + a sidebar link in
   `base.html`.
-- **New data source:** produce rows in the `current_data.csv` schema and go
+  - **New data source:** produce rows in the `current_data.csv` schema and go
   through `merge_usage_data()` so dedupe applies.
-- **New forecast model:** add it in `prediction.py` and wire a toggle in
+  - **New forecast model:** add it in `prediction.py` and wire a toggle in
   `forecast.js` + `/forecast/model-data`.
-- **Config:** absolute paths are centralized in `config.py`
+  - **Config:** absolute paths are centralized in `config.py`
 ```
