@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Credit Usage Explorer — Program Documentation
 
 *Brookhaven National Laboratory, Information Technology Division*
