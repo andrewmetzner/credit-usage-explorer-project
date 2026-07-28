@@ -1,4 +1,4 @@
-# Credit Usage Explorer — Architecture & Developer Handoff
+# Credit Usage Explorer :: Architecture & Developer Handoff
 
 *A code-oriented guide for whoever maintains this program next. For the
 forecasting **math** (contract status, Monte Carlo, ML trend, governance
@@ -42,7 +42,7 @@ run.py                     Entry point (arg parsing + serve)
 config.py                  Absolute paths for data/config dirs (single source of truth)
 app/
   __init__.py              create_app(): wiring, blueprint registration, before-request reload, scheduler start
-  shared/                  Cross-cutting services (no HTTP) — the heart of the app
+  shared/                  Cross-cutting services (no HTTP) :: the heart of the app
     data_store.py          DataStore + CreditUsageData: load/parse the CSV, live reload
     services.py            Services container (store, pipeline, config_svc, governance) passed to every blueprint
     config_service.py      AppConfig: read/write contract_config.yaml (multi-contract, migration, CRUD)
@@ -85,13 +85,13 @@ blueprint factory:
 store   = DataStore(initial_path)
 services = Services(store, pipeline, config_svc)
 app.register_blueprint(create_dashboard_blueprint(services))
-# … analytics, forecast, optimization, settings
+# ... analytics, forecast, optimization, settings
 ```
 
 Each `create_*_blueprint(services)` closes over `services` and defines its
 routes. Inside a blueprint, `store = services.store` and a small
 `data()` helper returns `store.data` (the current in-memory dataset). This is
-why there's no global state — everything hangs off the one `Services`.
+why there's no global state :: everything hangs off the one `Services`.
 
 ---
 
@@ -103,15 +103,13 @@ why there's no global state — everything hangs off the one `Services`.
   blank for manual uploads).
 - **`CreditUsageData`** loads that CSV and derives columns: it parses
   `usage_type` into type/model/medium/io (`_add_parsed_usage_type`) and builds
-  a display `timestamp` (`_add_timestamp`). Both are **vectorized over
-  distinct values** - do not "improve" them into per-row `.apply()`/
-  `pd.to_datetime()` loops; that was the original cause of ~5s reloads.
+  a display `timestamp` (`_add_timestamp`).
 - **`DataStore`** wraps `CreditUsageData` and supports **live reload**:
-  - `reload_if_changed()` — cheap `os.stat` fingerprint (mtime+size); rebuilds
+  - `reload_if_changed()` :: cheap `os.stat` fingerprint (mtime+size); rebuilds
     only when the file actually changed. Called by a **`@app.before_request`**
     hook (`app/__init__.py`) so *any* request re-reads freshly-synced data
     without an app restart, regardless of which process wrote it.
-  - `revision` — a token derived from the file fingerprint (`"<mtime>-<size>"`).
+  - `revision` - a token derived from the file fingerprint (`"<mtime>-<size>"`).
     Open pages poll it (see §8). It's file-derived, **not** a counter, so it
     survives an app restart of the same sheet without a false "new data" alarm.
 
@@ -141,10 +139,10 @@ global `forecast` block. `AppConfig`:
 
 | Blueprint (name) | URL prefix | Key routes | Notes |
 |---|---|---|---|
-| dashboard (`main`) | — | `/summary`, `/records`, `/data-revision`, `/upload` | Records renders capped rows (default 1,000; `?limit=0` = all) with an LRU HTML-fragment cache keyed on `store.revision` |
-| analytics | — | `/leaderboard`, `/user-cards`, `/user-summary`, `/storyboard` | Per-user drill-downs |
-| forecast | — | `/forecast`, `/forecast/model-data` | The burndown chart + MC/ML endpoint |
-| optimization | — | `/optimization`, `/optimization/user-tier` | Tier optimization; optional Admin API tier push |
+| dashboard (`main`) | :: | `/summary`, `/records`, `/data-revision`, `/upload` | Records renders capped rows (default 1,000; `?limit=0` = all) with an LRU HTML-fragment cache keyed on `store.revision` |
+| analytics | :: | `/leaderboard`, `/user-cards`, `/user-summary`, `/storyboard` | Per-user drill-downs |
+| forecast | :: | `/forecast`, `/forecast/model-data` | The burndown chart + MC/ML endpoint |
+| optimization | :: | `/optimization`, `/optimization/user-tier` | Tier optimization; optional Admin API tier push |
 | settings | `/settings` | contracts CRUD, data uploads, Admin API sync + keys | |
 
 The Records HTML-fragment cache (`_rows_html_cache`) is a small LRU; it keys
@@ -180,8 +178,8 @@ A **self-contained package** (importable, wrapped in try/except everywhere so
 the app still runs if it or its credentials are absent). It pulls usage
 ("Costs") records and merges them into `current_data.csv`.
 
-- **`client.py` / `endpoints.py`** — HTTP client + endpoint wrappers.
-- **`sync_usage.py`** — the pull+merge logic:
+- **`client.py` / `endpoints.py`** :: HTTP client + endpoint wrappers.
+- **`sync_usage.py`** :: the pull+merge logic:
   - `fetch_new_usage_rows()` pulls Costs since a **cursor** (the end-time of the
     last processed cost-log file; cost-log files are immutable, so already-seen
     files are never re-downloaded). Cursor lives in
@@ -192,7 +190,7 @@ the app still runs if it or its credentials are absent). It pulls usage
   - `_accumulate_api_deltas()` makes same-day re-syncs additive (a later pull
     for a day is a delta to add, not a total to max-merge).
   - Every synced row is tagged `data_source="API GET <UTC pull time>"`.
-- **`scheduler.py`** — a daemon thread started once per process from
+- **`scheduler.py`** :: a daemon thread started once per process from
   `create_app()`. Reads `config/admin_api_sync_config.json` (enabled flag,
   interval, align-to-hour) each cycle, so Settings changes apply without a
   restart. Guarded by a **cross-process singleton lock**
@@ -211,17 +209,17 @@ write key.
 
 ---
 
-## 10. Forecasting (high level — math in `program_documentation.md`)
+## 10. Forecasting (high level :: math in `program_documentation.md`)
 
 - **`ForecastingService`** (`app/forecast/service.py`) computes contract status
   (elapsed/remaining, pace) and the deterministic burn projection for the
   active contract, and `build_chained_projection()` continues the line across
   future contracts (expiring or rolling over credits at each boundary).
-- **`prediction.py`** — Monte Carlo and Linear-Regression models, served to the
+- **`prediction.py`** :: Monte Carlo and Linear-Regression models, served to the
   chart via `/forecast/model-data` (accepts a `contract_id` + burn window so it
   can forecast an arbitrary contract, not just the active one).
-- **`static/js/forecast.js`** — builds the burndown chart client-side: the
-  actual line (capped at *today* — never a future date), the projection, MC/ML
+- **`static/js/forecast.js`** :: builds the burndown chart client-side: the
+  actual line (capped at *today* -- never a future date), the projection, MC/ML
   bands, and contract-boundary markers. Chart modes: `current`, `chained`,
   `overall`, or a specific contract id.
 
@@ -230,7 +228,7 @@ write key.
 ## 11. Performance notes
 
 - **Data reload is vectorized** (~0.1s for 25k rows).
-- **Records caps rendered rows** (default 1,000) — rendering all ~25k rows was
+- **Records caps rendered rows** (default 1,000) :: rendering all ~25k rows was
   ~2s of Jinja + a heavy DOM. Filters/sort still apply to the full dataset;
   Export CSV is uncapped.
 - **Fragment cache** for the Records tbody, keyed on the data revision.
