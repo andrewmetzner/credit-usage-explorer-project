@@ -118,9 +118,41 @@
             Data synced through: {{ admin_api_synced_through or '— (no data pulled yet)' }}
           </div>
           <div class="text-muted small fst-italic">
-            Runs a catch-up check the moment the app starts, in addition to the schedule above — so time spent off is covered automatically.
+            Auto-sync on app run is given.
           </div>
         </div>
+
+        {# Recent data pulls — reconstructed from the API GET rows actually
+           present in current_data.csv, not a side log. #}
+        {% if admin_api_data_pulls %}
+        <details class="border rounded-3 px-3 py-2 mt-2">
+          <summary class="fw-semibold small" style="cursor:pointer;">
+            Recent data pulls <span class="text-muted fw-normal">(last {{ admin_api_data_pulls | length }})</span>
+          </summary>
+          <div class="table-responsive mt-2">
+            <table class="table table-sm mb-0" style="font-size:.78rem;">
+              <thead>
+                <tr><th>Pulled at</th><th class="text-end">Rows added</th><th class="text-end">Credits</th><th>Usage dates covered</th></tr>
+              </thead>
+              <tbody>
+                {% for p in admin_api_data_pulls %}
+                <tr>
+                  <td style="white-space:nowrap;">{{ p.pulled_at }}</td>
+                  <td class="text-end">{{ '{:,}'.format(p.rows) }}</td>
+                  <td class="text-end">{{ '{:,.0f}'.format(p.credits) }}</td>
+                  <td class="text-muted" style="white-space:nowrap;">
+                    {% if p.date_from and p.date_to %}{{ p.date_from }}{% if p.date_to != p.date_from %} → {{ p.date_to }}{% endif %}{% else %}—{% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="text-muted small mt-1 fst-italic">
+            Built from the <code>API GET</code>-tagged rows in current_data.csv
+          </div>
+        </details>
+        {% endif %}
       </div>
       {% endif %}
 
@@ -249,7 +281,8 @@
       <div class="settings-section">
         <h5>Advanced Forecasting Data <span style="font-weight:400; font-size:.8rem; color:var(--muted); text-transform:none; letter-spacing:0;">(optional)</span></h5>
         <div class="alert alert-info py-2 px-3 mb-3" style="font-size:.82rem;">
-          The <a href=”{{ url_for('main.summary_page') }}”>Summary page</a> upload is all you need &mdash;
+          <b>Older upload format. Ignore, and possibly deprecated in the future.</b>
+          The <a href=”{{ url_for('main.summary_page') }}”>Summary page</a> upload is all you need --
           forecasting runs automatically from your data sheet.
           The uploads below are only needed if you have <strong>OpenAI weekly user-export files</strong>
           (the detailed per-user CSV/Excel reports from the platform), which improve forecast accuracy

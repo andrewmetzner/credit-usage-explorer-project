@@ -85,6 +85,36 @@ ALLOWED_WEEKLY = {".csv"}
 ALLOWED_TIERLIST = {".csv"}
 
 
+def _recent_data_pulls(df, limit: int = 10) -> list[dict]:
+    """Recent API data pulls, read straight from the data itself rather than a
+    side log: every row the sync merges is tagged data_source="API GET <UTC
+    retrieval timestamp>" (see openai_admin_API/sync_usage.py), so grouping by
+    that tag reconstructs exactly what landed in current_data.csv and when —
+    row count, credits, and the span of usage dates covered. Newest pull
+    first; the legacy untimestamped "API GET" batch (if any) sorts last."""
+    if df is None or getattr(df, "empty", True) or "data_source" not in df.columns:
+        return []
+    src = df["data_source"].astype(str)
+    api = df[src.str.startswith("API GET")].copy()
+    if api.empty:
+        return []
+
+    out: list[dict] = []
+    for tag, g in api.groupby("data_source"):
+        pulled_raw = str(tag).replace("API GET", "", 1).strip()
+        dates = pd.to_datetime(g["date_partition"], errors="coerce").dropna() if "date_partition" in g.columns else pd.Series([], dtype="datetime64[ns]")
+        out.append({
+            "pulled_at": _to_system_local(pulled_raw) if pulled_raw else "(earlier import)",
+            "pulled_sort": pulled_raw or "",
+            "rows": int(len(g)),
+            "credits": float(pd.to_numeric(g.get("usage_credits"), errors="coerce").fillna(0).sum()) if "usage_credits" in g.columns else 0.0,
+            "date_from": str(dates.min().date()) if not dates.empty else "",
+            "date_to": str(dates.max().date()) if not dates.empty else "",
+        })
+    out.sort(key=lambda r: r["pulled_sort"], reverse=True)
+    return out[:limit]
+
+
 def create_settings_blueprint(services) -> Blueprint:
     pipeline = services.pipeline
     config_svc = services.config_svc
@@ -189,6 +219,7 @@ def create_settings_blueprint(services) -> Blueprint:
             admin_api_status=get_admin_api_status(),
             admin_api_sync_config=_localize_sync_config(load_sync_config()),
             admin_api_synced_through=_admin_api_synced_through(),
+            admin_api_data_pulls=_recent_data_pulls(store.data.df if store else None, limit=10),
             admin_api_keys=admin_api_keys.load_keys().get("keys", []),
             admin_api_roles=admin_api_keys.ROLES,
             tier_overrides=tier_overrides,

@@ -44,18 +44,13 @@ class DataStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._data = CreditUsageData(path)
-        # Bumped on every successful reload so open browser pages can detect
-        # that the in-memory data changed (e.g. after an API sync) and refresh
-        # themselves — see the /data-revision endpoint and the poller in
-        # base.html. Only incremented AFTER the new data is fully built, so a
-        # page that reloads on a bump is guaranteed to render the fresh data.
-        self._revision = 0
         # Serialize reloads: the sync scheduler thread, the request threads'
         # before-request mtime check, and a manual upload can all race to
         # reload at once.
         self._reload_lock = threading.Lock()
         # (mtime_ns, size) of the file as it was last loaded — the basis for
-        # reload_if_changed(). Captured AFTER the initial load above.
+        # reload_if_changed() AND for `revision` below. Captured AFTER the
+        # initial load above.
         self._loaded_signature = self._file_signature()
 
     @property
@@ -67,8 +62,20 @@ class DataStore:
         return self._path
 
     @property
-    def revision(self) -> int:
-        return self._revision
+    def revision(self) -> str:
+        """A token for the CURRENTLY LOADED data file's on-disk identity
+        (its mtime + size), used by open pages to detect that new data
+        arrived — see the /data-revision endpoint and the base.html poller.
+
+        Deliberately derived from the file itself, NOT an incrementing
+        counter: a counter resets to 0 every time the app (re)starts, so an
+        already-open browser tab would see 0 != its-remembered-number and
+        falsely announce "new data" on a plain restart that merely re-read
+        the same sheet. A file-signature token stays identical across a
+        restart of the same file (no false alarm) and only changes when the
+        file is actually rewritten by a sync or upload (real new data)."""
+        mtime_ns, size = self._loaded_signature
+        return f"{mtime_ns}-{size}"
 
     def _file_signature(self) -> tuple[int, int]:
         """Cheap fingerprint of the data file's current on-disk state — an
@@ -87,7 +94,6 @@ class DataStore:
                 self._path = new_path
             self._data = CreditUsageData(self._path)
             self._loaded_signature = self._file_signature()
-            self._revision += 1
 
     def reload_if_changed(self) -> bool:
         """Reload from disk only if the data file changed since it was last
@@ -118,7 +124,6 @@ class DataStore:
                 return False
             self._data = new_data
             self._loaded_signature = sig
-            self._revision += 1
             return True
 
 

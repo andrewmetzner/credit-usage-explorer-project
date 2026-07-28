@@ -64,13 +64,15 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
               <path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2zM8 1.918l-.797.161A4 4 0 0 0 4 6c0 .628-.134 2.197-.459 3.742-.16.767-.376 1.566-.663 2.258h10.244c-.287-.692-.502-1.49-.663-2.258C12.134 8.197 12 6.628 12 6a4 4 0 0 0-3.203-3.92L8 1.917zM14.22 12c.223.447.481.801.78 1H1c.299-.199.557-.553.78-1C2.68 10.2 3 6.88 3 6c0-2.42 1.72-4.44 4.005-4.901a1 1 0 1 1 1.99 0A5.002 5.002 0 0 1 13 6c0 .88.32 4.2 1.22 6z"/>
             </svg>
-            {% if nav_alerts %}
             {# Badge shows the server-computed UNREAD count (read-state is stored
-               server-side), so the correct number renders immediately — no flash. #}
+               server-side), so the correct number renders immediately — no flash.
+               Always rendered (even at 0, hidden) so the live "new data synced"
+               notification can reveal + bump it client-side without the element
+               having to exist server-side first. #}
             <span id="alert-badge" class="position-absolute badge rounded-pill bg-{{ nav_unread_sev }}"
                   style="top:0; right:0; font-size:.55rem; padding:.2em .4em;"
-                  {% if not nav_unread_count %}hidden{% endif %}>{{ nav_unread_count }}</span>
-            {% endif %}
+                  data-server-count="{{ nav_unread_count or 0 }}"
+                  {% if not nav_unread_count %}hidden{% endif %}>{{ nav_unread_count or 0 }}</span>
           </button>
           <ul id="nav-alert-menu" class="dropdown-menu shadow" style="min-width:320px; max-height:440px; overflow-y:auto;">
             <li class="dropdown-header d-flex justify-content-between align-items-center">
@@ -79,6 +81,23 @@
               <a href="#" class="small text-decoration-none" onclick="markAllAlertsRead(event)">Mark all read</a>
               {% endif %}
             </li>
+            {# Live "new data synced" notification — populated + shown by the
+               data-revision poller at the bottom of this file. Always in the
+               DOM (hidden) so it's a stable, always-present insertion point
+               regardless of whether any server alerts exist. Clicking it
+               reloads the page to show the freshly-synced data. #}
+            <li id="nav-datasync-li" hidden>
+              <a class="dropdown-item d-flex gap-2 py-2" style="white-space:normal; cursor:pointer;"
+                 onclick="window.location.reload()" title="Reload to view the new data">
+                <span class="badge bg-primary mt-1" style="height:.55rem; width:.55rem; padding:0; border-radius:50%; flex-shrink:0;"></span>
+                <span>
+                  <div class="fw-semibold" style="font-size:.82rem;">New data synced</div>
+                  <div id="nav-datasync-detail" class="text-muted" style="font-size:.74rem;">Reload to view.</div>
+                </span>
+                <span class="ms-auto align-self-center small text-primary fw-semibold">Reload</span>
+              </a>
+            </li>
+            <li id="nav-datasync-sep" hidden><hr class="dropdown-divider my-1"></li>
             {% if nav_alerts %}
               {# The bell is an unread "inbox": read items start hidden. #}
               {% for a in nav_alerts[:4] %}
@@ -194,6 +213,18 @@
 
       <!-- Upload action (opens the global upload modal defined below) -->
       <div class="sidenav-footer">
+        <!-- Appears when a background sync loads new data while you're on a
+             page (see the poller at the bottom of this file). Persistent
+             prompt to reload on YOUR terms, instead of the page refreshing
+             from under you. -->
+        <button id="sidenav-reload-btn" type="button" class="sidenav-reload" onclick="window.location.reload()"
+                title="New data was synced — reload to see it" hidden>
+          <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
+            <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
+          </svg>
+          <span id="sidenav-reload-text">Reload for new data</span>
+        </button>
         <button type="button" class="sidenav-upload" data-bs-toggle="modal" data-bs-target="#upload-modal" title="Upload usage data">
           <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16">
             <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
@@ -343,27 +374,53 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/alerts.js') }}"></script>
 
+    <style>
+      @keyframes newDataIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+      /* Sidebar "Reload for new data" prompt (hidden until new data lands). */
+      .sidenav-reload {
+        display: flex; align-items: center; gap: .5rem; width: 100%;
+        margin-bottom: .5rem; padding: .5rem .7rem;
+        background: #2563eb; color: #fff; border: none; border-radius: 8px;
+        font-size: .82rem; font-weight: 600; cursor: pointer;
+        animation: newDataIn .28s ease-out;
+      }
+      .sidenav-reload:hover { background: #1d4ed8; }
+    </style>
+
     <script>
-      // Auto-refresh open pages when new data lands (e.g. an API sync merges
-      // rows and reloads the store). Polls the lightweight /data-revision
-      // endpoint; when the server's data revision differs from what this page
-      // rendered with, the page reloads itself so the new data shows — no
-      // manual refresh, no app restart. Guarded so it never yanks the page
-      // out from under active work: it holds off while a form field is
-      // focused (mid-edit), while any file-upload input has a file staged,
-      // or while a modal is open, retrying on the next poll instead.
+      // Live data refresh for open pages. Polls the lightweight
+      // /data-revision endpoint; when the server's data revision changes (a
+      // background sync merged rows and the store reloaded), the page updates
+      // itself. Two modes, chosen automatically so an always-on dashboard
+      // stays current without ever yanking a page out from under someone:
+      //   • Page IDLE (no clicks/typing/scrolling recently, nothing focused,
+      //     no modal/staged upload) → reload straight away: it "just updates".
+      //   • Page ACTIVE → don't interrupt; surface a "New data synced" item in
+      //     the alerts bell (badge ticks up) + a sidebar "Reload for new data"
+      //     button, and auto-reload on its own once the page goes idle.
+      // (A manual "Sync now" or upload already does a full navigation, so it
+      // shows the data immediately without any of this.)
       (function () {
         var REVISION_URL = "{{ url_for('main.data_revision') }}";
         var POLL_MS = 20000;
-        var known = null;  // captured on the first successful poll
+        var IDLE_MS = 12000;       // "not actively interacting" after this quiet gap
+        var known = null;          // captured on the first successful poll
+        var pending = false;       // new data waiting, page not yet reloaded
+        var pendingInfo = '';
+        var announced = false;     // bell item already shown for this batch
+        var lastActivity = Date.now();
+
+        ['mousemove', 'mousedown', 'keydown', 'scroll', 'wheel', 'touchstart'].forEach(function (ev) {
+          window.addEventListener(ev, function () { lastActivity = Date.now(); }, { passive: true });
+        });
+
+        function idle() { return (Date.now() - lastActivity) > IDLE_MS; }
 
         function busy() {
           var el = document.activeElement;
           if (el) {
             var tag = (el.tagName || '').toLowerCase();
-            if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable) {
-              return true;
-            }
+            if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable) return true;
           }
           // A staged (not-yet-submitted) file upload shouldn't be lost.
           var files = document.querySelectorAll('input[type="file"]');
@@ -374,19 +431,54 @@
           return false;
         }
 
+        // Reveal the "New data synced" item in the alerts bell, bump the bell
+        // badge past its server count, and show the sidebar reload button.
+        function announce(info) {
+          if (announced) return;
+          announced = true;
+          var li = document.getElementById('nav-datasync-li');
+          var sep = document.getElementById('nav-datasync-sep');
+          var detail = document.getElementById('nav-datasync-detail');
+          if (detail) detail.textContent = info ? (info + ' — click to reload.') : 'Click to reload and view.';
+          if (li) li.hidden = false;
+          if (sep) sep.hidden = false;
+          var badge = document.getElementById('alert-badge');
+          if (badge) {
+            var base = parseInt(badge.getAttribute('data-server-count') || '0', 10) || 0;
+            badge.textContent = base + 1;
+            badge.hidden = false;
+          }
+          var btn = document.getElementById('sidenav-reload-btn');
+          if (btn) btn.hidden = false;
+        }
+
+        function settle() {
+          if (!pending) return;
+          if (!busy() && idle()) {
+            window.location.reload();   // just update — page isn't being used right now
+          } else {
+            announce(pendingInfo);      // in use — notify via the bell, wait for idle / manual reload
+          }
+        }
+
         function poll() {
           fetch(REVISION_URL, { headers: { 'Accept': 'application/json' }, cache: 'no-store' })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (d) {
               if (!d || typeof d.revision === 'undefined') return;
               if (known === null) { known = d.revision; return; }
-              if (d.revision !== known && !busy()) {
-                window.location.reload();
+              if (d.revision !== known) {
+                known = d.revision;
+                pending = true;
+                pendingInfo = d.info || '';
+                announced = false;      // a fresh change re-shows the bell item (updated detail)
               }
+              settle();
             })
             .catch(function () { /* transient network/hiccup — try again next tick */ });
         }
 
+        setInterval(settle, 2500);      // reload promptly once the page goes idle
         setInterval(poll, POLL_MS);
         poll();
       })();

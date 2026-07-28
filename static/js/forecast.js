@@ -1095,6 +1095,19 @@ if (typeof Chart !== 'undefined') {
     ? creditEvents.reduce((s, e) => s + (e.effective_date <= dateStr ? e.credits : 0), 0)
     : purchased;
 
+  // Actual data can only exist THROUGH today. The server's latestDate
+  // (=latest_usage_date) is an exclusive weekly-axis boundary set to
+  // last_data_day + 1 (see service.py) — which in daily terms is TOMORROW,
+  // a day that hasn't happened. Using it as the actual line's endpoint drew
+  // an "actual remaining" point for a future date. actualBoundary caps the
+  // actual line at today; anything past it belongs to the forecast line.
+  // Now that usage syncs live from the API, a PAST day with no data genuinely
+  // means zero usage that day (not "not uploaded yet"), so the actual line
+  // flat-carries its last value up to today instead of stopping short — see
+  // the known-facts bridge below.
+  const todayStr = D.today || '';
+  const actualBoundary = (latestDate && todayStr && latestDate > todayStr) ? todayStr : latestDate;
+
   const inContractRaw = rawData.filter(w => w.in_contract).sort((a,b) => a.week_start < b.week_start ? -1 : 1);
   let cumUsed = 0;
   const actualRawPts = inContractRaw.map(w => {
@@ -1102,11 +1115,11 @@ if (typeof Chart !== 'undefined') {
     const d = new Date((w.week_end || w.week_start) + 'T12:00:00');
     d.setDate(d.getDate() + 1);
     let pointDate = d.toISOString().slice(0, 10);
-    pointDate = pointDate > latestDate ? latestDate : pointDate;
+    pointDate = pointDate > actualBoundary ? actualBoundary : pointDate;
     return [pointDate, Math.max(addedBy(pointDate) - cumUsed, 0)];
   });
   const actualPts = [];
-  if (contractStartDate && (!latestDate || contractStartDate <= latestDate)) {
+  if (contractStartDate && (!actualBoundary || contractStartDate <= actualBoundary)) {
     actualPts.push([contractStartDate, addedBy(contractStartDate)]);
   }
   actualRawPts.forEach(pt => {
@@ -1116,40 +1129,29 @@ if (typeof Chart !== 'undefined') {
       actualPts.push(pt);
     }
   });
-  if (!actualPts.length || actualPts[actualPts.length - 1][0] !== latestDate) {
-    // Ledger-aware: only entries effective by the last data day count here —
-    // future-dated grants step up inside the bridge below instead.
-    actualPts.push([latestDate, Math.max(addedBy(latestDate) - cumUsed, 0)]);
+  if (actualBoundary && (!actualPts.length || actualPts[actualPts.length - 1][0] !== actualBoundary)) {
+    // End the weekly actual line at today (actualBoundary), never at the
+    // future latest_usage_date. Ledger-aware: only entries effective by
+    // this day count; grants after it step up inside the bridge below.
+    actualPts.push([actualBoundary, Math.max(addedBy(actualBoundary) - cumUsed, 0)]);
   }
   const dailyActualPts = dailyActualRaw
     .filter(d => d && d.date)
     .map(d => [d.date, Number(d.remaining)])
     .filter(p => Number.isFinite(p[1]));
-  if (latestDate && (!dailyActualPts.length || dailyActualPts[dailyActualPts.length - 1][0] !== latestDate)
-      && (!dailyActualPts.length || dailyActualPts[dailyActualPts.length - 1][0] < latestDate)) {
-    // The day-level reconstruction (D.dailyActualData) can lag latestDate by
-    // a day (e.g. latestDate bridges to "today" while no real data exists
-    // for today yet) -- extend the x-axis to latestDate so both granularities
-    // reach the same point, but carry forward the daily series' OWN last
-    // value rather than importing D.remaining: that total is computed via a
-    // completely different path (weekly historical + operational sums) that
-    // can legitimately disagree with the exact daily reconstruction by a
-    // small reconciliation gap in older weekly-sourced history. Importing it
-    // here made the line jump to a different number with zero new usage
-    // recorded -- a fake day-over-day change. Repeating the last real value
-    // keeps the extension truthful: nothing happened, so nothing moves.
-    const carryValue = dailyActualPts.length ? dailyActualPts[dailyActualPts.length - 1][1] : remaining;
-    dailyActualPts.push([latestDate, carryValue]);
-  }
+  // The day-level reconstruction (D.dailyActualData) ends at the last day
+  // with real data. Extension to today is handled by the known-facts bridge
+  // below (flat-carry + grant steps), capped at today — so no future
+  // ("hasn't happened yet") point is ever plotted as actual.
 
-  // Known-facts bridge: usage uploads lag the calendar, so past the LAST REAL
-  // data point of a series, remaining only steps for ledger entries landing
-  // in the gap (each +N on its date) — real, known facts. It does NOT guess
-  // a flat line out to today: with periodic file uploads that guess is often
-  // wrong (usage keeps happening) and reads as though nothing changed, which
-  // misrepresents the actual credit position. Built per series from that
-  // series' own last point, so the line is always continuous.
-  const todayStr = D.today || '';
+  // Known-facts bridge: extend each series past its LAST REAL data point up
+  // to today. Now that usage syncs live from the API, a past day with no
+  // data means zero usage that day (not "not uploaded yet, usage still
+  // happening" as with the old lagging manual uploads), so remaining holds
+  // CONSTANT across those days — a flat carry — stepping up only where a
+  // credit grant lands. Capped at today, so a not-yet-happened day is never
+  // drawn as actual; the forecast line owns everything past today.
+  // (todayStr and actualBoundary are defined above.)
   const addDaysStr = (dstr, n) => {
     const d = new Date(dstr + 'T12:00:00');
     d.setDate(d.getDate() + n);
@@ -1182,10 +1184,13 @@ if (typeof Chart !== 'undefined') {
         }, []);
       return latestReal.concat(extraGrants);
     }
-    // Daily view: only step for real known facts (credit grants landing in
-    // the gap) — no synthetic "unchanged until today" filler. If the upload
-    // doesn't reach today, today isn't plotted as actual; the projected
-    // (forecast) line picks it up from the last real point instead.
+    // Daily view: step up at each credit grant in the gap, then flat-carry
+    // the last remaining value to today. With live sync, a past day missing
+    // data genuinely had zero usage, so holding the line constant there is
+    // the truth — and it self-corrects the instant a later sync fills that
+    // day in (the page now auto-reloads on new data). today never runs past
+    // the real current date, so a not-yet-happened day is left to the
+    // forecast line, never drawn as actual.
     const pts = [];
     let prev = lastPt[0];
     gapEvents.forEach(e => {
@@ -1194,6 +1199,8 @@ if (typeof Chart !== 'undefined') {
       pts.push([e.effective_date, levelBy(e.effective_date)]);
       prev = e.effective_date;
     });
+    // Flat-carry to today: remaining = last real value + any grants since.
+    if (todayStr > prev) pts.push([todayStr, levelBy(todayStr)]);
     return pts;
   }
   function extendWithBridge(pts, weekly) {
@@ -1208,7 +1215,7 @@ if (typeof Chart !== 'undefined') {
   extendWithBridge(dailyActualPts, false);
   const useDaily = (D.granularity || 'weekly') === 'daily' && dailyActualPts.length > 0;
   const activeSeries = useDaily ? dailyActualPts : actualPts;
-  const activeLast = activeSeries.length ? activeSeries[activeSeries.length - 1] : [latestDate, remaining];
+  const activeLast = activeSeries.length ? activeSeries[activeSeries.length - 1] : [actualBoundary || latestDate, remaining];
   const projAnchorDate = activeLast[0];
   const projAnchorRemaining = activeLast[1];
   // Exposed so the MC/ML overlay IIFE (separate scope, loads its bands

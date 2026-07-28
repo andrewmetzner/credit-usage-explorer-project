@@ -170,13 +170,27 @@ def create_dashboard_blueprint(services) -> Blueprint:
 
     @bp.route("/data-revision", methods=["GET"])
     def data_revision() -> object:
-        """Lightweight polling target for the open-page auto-refresh (see the
-        poller in base.html): returns the in-memory data's revision counter,
-        bumped every time the store reloads (e.g. after an API sync). A page
-        whose captured revision no longer matches reloads itself to show the
-        fresh data — so new synced data appears without a manual refresh or
-        an app restart."""
-        return {"revision": store.revision}
+        """Lightweight polling target for the open-page new-data notification
+        (see the poller in base.html): returns the in-memory data's revision
+        counter, bumped every time the store reloads (e.g. after an API sync),
+        plus a short human summary of what the most recent sync loaded. When a
+        page's captured revision no longer matches, it shows a "new data
+        loaded — reload" prompt (rather than force-reloading) so the user
+        chooses when to refresh."""
+        info = ""
+        try:
+            from openai_admin_API.scheduler import load_sync_config
+
+            cfg = load_sync_config()
+            rows = int(cfg.get("last_run_rows") or 0)
+            credits = float(cfg.get("last_run_credits") or 0)
+            if rows:
+                info = f"+{rows:,} row{'s' if rows != 1 else ''}"
+                if credits:
+                    info += f", +{credits:,.0f} credits"
+        except Exception:
+            pass
+        return {"revision": store.revision, "info": info}
 
     @bp.route("/", methods=["GET"])
     def index() -> str:
