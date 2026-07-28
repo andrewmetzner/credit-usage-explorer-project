@@ -88,33 +88,17 @@ def create_app() -> Flask:
 
     @app.before_request
     def _refresh_store_if_file_changed() -> None:
-        """Re-read current_data.csv whenever it changed on disk, before
-        handling ANY request — so a page render (and the /data-revision
-        poll that drives auto-refresh) always reflects the latest synced
-        data. This is what makes a background sync's new rows show up
-        without an app restart: the process serving the page notices the
-        file is newer and reloads it, regardless of which process actually
-        performed the sync (background scheduler, manual "Sync now", or a
-        stray second instance). Cheap on the common no-change path — just an
-        os.stat; the full rebuild only runs when the file really changed."""
+        """Re-read current_data.csv before each request if it changed on disk,
+        so a background sync's new rows show up without an app restart. Cheap
+        on the no-change path (an os.stat)."""
         try:
             store.reload_if_changed()
         except Exception:
-            # Never let a reload hiccup break request handling — the page
-            # just serves the previous data and tries again next request.
-            pass
+            pass  # a reload hiccup must not break request handling
 
-    # Optional: the ChatGPT Admin API sync scheduler (see
-    # openai_admin_API/scheduler.py). Off by default (its own
-    # config/admin_api_sync_config.json controls that, toggled from
-    # Settings) — starting the thread here just makes it possible to turn
-    # on without restarting the app. Wrapped so a machine with no
-    # openai_admin_API/aauth setup still starts the app fine.
-    # Flask's debug reloader re-imports this module in its monitor process
-    # too; WERKZEUG_RUN_MAIN is only set in the actual worker process, so
-    # this guard stops the scheduler from double-starting under `flask run`
-    # / `python run.py` (debug=True). Waitress and debug=False aren't
-    # affected (no reloader, no monitor process, no env var either way).
+    # Optional ChatGPT Admin API sync scheduler (openai_admin_API/scheduler.py).
+    # Off by default (toggled from Settings). The WERKZEUG_RUN_MAIN guard stops
+    # the debug reloader's monitor process from double-starting the thread.
     if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         try:
             from openai_admin_API.scheduler import ensure_scheduler_running

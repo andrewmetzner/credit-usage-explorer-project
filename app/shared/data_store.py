@@ -44,13 +44,8 @@ class DataStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._data = CreditUsageData(path)
-        # Serialize reloads: the sync scheduler thread, the request threads'
-        # before-request mtime check, and a manual upload can all race to
-        # reload at once.
+        # Reloads can race (scheduler thread, per-request mtime check, upload).
         self._reload_lock = threading.Lock()
-        # (mtime_ns, size) of the file as it was last loaded — the basis for
-        # reload_if_changed() AND for `revision` below. Captured AFTER the
-        # initial load above.
         self._loaded_signature = self._file_signature()
 
     @property
@@ -63,25 +58,15 @@ class DataStore:
 
     @property
     def revision(self) -> str:
-        """A token for the CURRENTLY LOADED data file's on-disk identity
-        (its mtime + size), used by open pages to detect that new data
-        arrived — see the /data-revision endpoint and the base.html poller.
-
-        Deliberately derived from the file itself, NOT an incrementing
-        counter: a counter resets to 0 every time the app (re)starts, so an
-        already-open browser tab would see 0 != its-remembered-number and
-        falsely announce "new data" on a plain restart that merely re-read
-        the same sheet. A file-signature token stays identical across a
-        restart of the same file (no false alarm) and only changes when the
-        file is actually rewritten by a sync or upload (real new data)."""
+        """Token for the loaded file's on-disk identity (mtime + size), polled
+        by open pages to detect new data. Derived from the file, not a counter,
+        so it stays stable across an app restart of the same sheet and only
+        changes when the file is actually rewritten."""
         mtime_ns, size = self._loaded_signature
         return f"{mtime_ns}-{size}"
 
     def _file_signature(self) -> tuple[int, int]:
-        """Cheap fingerprint of the data file's current on-disk state — an
-        os.stat only, no read. Changes whenever the file is rewritten (a
-        sync merge, a manual upload), which is exactly when the in-memory
-        copy is stale."""
+        """(mtime_ns, size) of the data file — a cheap os.stat, no read."""
         try:
             st = self._path.stat()
             return (st.st_mtime_ns, st.st_size)
@@ -96,31 +81,20 @@ class DataStore:
             self._loaded_signature = self._file_signature()
 
     def reload_if_changed(self) -> bool:
-        """Reload from disk only if the data file changed since it was last
-        loaded. Returns True if a reload happened.
-
-        This is the reliable path for showing freshly-synced data: it makes
-        the process SERVING a page notice the file is newer and reload it,
-        instead of depending on the sync's in-process reload callback —
-        which only helps when the syncing process and the serving process
-        happen to be the same one. With background syncs (and any stray
-        second app instance) they often aren't, which is why a synced row
-        used to require an app restart to appear. Cheap enough to call on
-        every request (an os.stat + tuple compare); the expensive rebuild
-        only runs when the file actually changed."""
+        """Reload from disk if the file changed since it was last loaded; return
+        True if it did. Called before every request so the serving process
+        picks up a background sync's writes without a restart. Cheap on the
+        common no-change path (just an os.stat)."""
         if self._file_signature() == self._loaded_signature:
             return False
         with self._reload_lock:
-            # Re-check inside the lock: another thread may have just reloaded.
             sig = self._file_signature()
             if sig == self._loaded_signature:
                 return False
             try:
                 new_data = CreditUsageData(self._path)
             except Exception:
-                # A transient read error (e.g. caught mid-write) — keep the
-                # current data and leave the signature stale so the next
-                # call retries, rather than 500-ing the request this runs in.
+                # Transient read error (e.g. mid-write); keep current data, retry next call.
                 return False
             self._data = new_data
             self._loaded_signature = sig
@@ -152,12 +126,10 @@ class CreditUsageData:
             return
 
         col = self.df["usage_type"]
-        # usage_type has only dozens of DISTINCT values across tens of
-        # thousands of rows, so parse each distinct value once and map the
-        # results back — a per-row .apply() re-ran the regex-heavy parser
-        # ~250x more than necessary (the dominant cost of a data reload).
+        # Parse each DISTINCT usage_type once (dozens of values across ~25k
+        # rows) and map back, rather than running the regex parser per row.
         parsed = {val: parse_usage_type(val) for val in col.dropna().unique()}
-        na = parse_usage_type(None)  # shared "N/A" result for blank/NaN rows
+        na = parse_usage_type(None)
 
         def field(key: str):
             return col.map({v: p[key] for v, p in parsed.items()}).where(col.notna(), na[key])
@@ -168,8 +140,7 @@ class CreditUsageData:
         self.df["usage_type_medium"] = field("medium")
         self.df["usage_type_io"] = field("io")
 
-        # View-only correction: this DataFrame is loaded for the app, not
-        # written back to the uploaded/current data sheet.
+        # View-only correction (not written back to the data file).
         apply_usage_corrections(self.df)
 
         for col in ["usage_type_parsed_type", "usage_type_model", "usage_type_date",
@@ -178,33 +149,23 @@ class CreditUsageData:
                 self.columns.append(col)
 
     def _add_timestamp(self) -> None:
-        """A combined date+time column for display: rows pulled by the
-        ChatGPT Admin API sync carry their actual pull time in `data_source`
-        (e.g. "API GET 2026-07-24T16:04:18Z", stored UTC — converted to
-        local time here). Every other row (manual uploads, or an API row
-        whose data_source has no parseable timestamp) has no real time to
-        show — `timestamp` still gets midnight so it sorts/filters sanely
-        as a real datetime, but `timestamp_has_time` (not a displayed
-        column itself, just a formatting flag `_format_record_cell` reads
-        off the row) marks that midnight as a placeholder, not a fact, so
-        it renders as "--:--:--" instead of a fake "00:00:00"."""
+        """Build a combined date+time `timestamp` column for display. API-synced
+        rows carry a UTC pull time in data_source ("API GET <ISO>"), shown in
+        local time; other rows get midnight, flagged by `timestamp_has_time`
+        (read by _format_record_cell) so they render as "--:--:--"."""
         if "date_partition" not in self.df.columns:
             return
 
         df = self.df
-        # Parse the whole date column in ONE vectorized call. The old code
-        # called pd.to_datetime() once PER ROW (25k+ calls, each re-guessing
-        # the format) — by far the biggest cost of a data reload (~5s).
+        # Vectorized: parse the whole date column once (was pd.to_datetime/row).
         dates = pd.to_datetime(df["date_partition"], errors="coerce")
         normalized = dates.dt.normalize()
         timestamp = normalized.copy()
         has_time = pd.Series(False, index=df.index)
 
         if "data_source" in df.columns:
-            # The pull time is embedded in data_source as "API GET <ISO UTC>".
-            # Extract it vectorized, then parse only the DISTINCT timestamps
-            # (one per sync batch — dozens, not tens of thousands) into a
-            # local time-of-day offset, and add it to each row's own date.
+            # Pull time is embedded as "API GET <ISO UTC>". Parse only the
+            # distinct timestamps into a local time-of-day offset per row.
             raw = df["data_source"].astype("string").str.extract(r"API GET\s+(\S+)", expand=False)
             valid = raw.notna() & dates.notna()
             if valid.any():
