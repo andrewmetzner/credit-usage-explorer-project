@@ -56,6 +56,13 @@ def create_dashboard_blueprint(services) -> Blueprint:
     # reach ~14 MB (all ~19k rows), hence the tight cap.
     _rows_html_cache: OrderedDict = OrderedDict()
     _ROWS_HTML_CACHE_MAX = 4
+    # Rows rendered into the table by default. Rendering all ~25k rows was the
+    # main per-request cost (Jinja building tens of thousands of <tr>, plus a
+    # heavy browser DOM) — and it re-paid in full after every sync, since the
+    # cache keys on the data version. Filters/sort still apply to the FULL
+    # dataset; this only caps how many of the results get drawn. "show all"
+    # (limit=0) and Export CSV remain uncapped.
+    _DEFAULT_RECORDS_LIMIT = 1000
 
     def _records_query_state(d: CreditUsageData):
         search_field = request.args.get("search_field", "any")
@@ -276,16 +283,19 @@ def create_dashboard_blueprint(services) -> Blueprint:
         state = _records_query_state(d)
         df = state["df"]
         selected_fields = state["selected_fields"]
-        # All rows render by default; ?limit=N caps the table (the links next
-        # to the record count set it). The ~19k-row tbody costs ~0.8s to build
-        # + render but only changes with the data or the query, so the
-        # fragment is cached below; Export CSV is never capped or cached.
+        # Capped to _DEFAULT_RECORDS_LIMIT rows by default (link to show more /
+        # all sits next to the record count); ?limit=0 renders everything.
+        # Filters/sort apply to the whole dataset regardless — the cap only
+        # limits how many result rows are drawn. Export CSV is never capped.
         try:
-            render_limit = int(request.args.get("limit", 0))
+            render_limit = int(request.args.get("limit", _DEFAULT_RECORDS_LIMIT))
         except (TypeError, ValueError):
-            render_limit = 0
+            render_limit = _DEFAULT_RECORDS_LIMIT
 
-        cache_key = (id(d), request.query_string.decode())
+        # Keyed on the data's file-signature revision (stable across reloads of
+        # the same file, and across a restart) rather than id(d), which changes
+        # on every reload and could even be reused by a later object.
+        cache_key = (store.revision, request.query_string.decode())
         cached = _rows_html_cache.get(cache_key)
         if cached is None:
             capped_df = df.head(render_limit) if render_limit > 0 else df

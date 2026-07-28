@@ -86,19 +86,9 @@ class ForecastingService:
         self.config = config
         self._as_of: pd.Timestamp | None = None
         self._forecast_op_df: pd.DataFrame | None = None
-        # "Now" reference for lag-aware anchoring. Live routes set this to
-        # today so projections start from the present (uploads lag the
-        # calendar; ledger entries through today are already available).
-        # Left None for snapshot backfill / reconstruction, where forecasts
-        # must stay anchored to their historical as-of date.
+
         self._today: pd.Timestamp | None = None
 
-        # Whether daily_df was already fully absorbed into historical_df/
-        # operational_df above (derived-from-daily fallback path) — if so,
-        # get_contract_status() must NOT also layer it on again below as a
-        # "partial week" extension, since every day (including the latest,
-        # still-in-progress one) is already counted in the derived weekly
-        # rollup.
         self._daily_already_included = historical_df is None and operational_df is None and daily_df is not None
 
         if historical_df is None and operational_df is None and daily_df is not None:
@@ -108,11 +98,7 @@ class ForecastingService:
 
         self.historical_df = historical_df
         self.operational_df = operational_df
-        # Kept (independent of the derive-from-daily fallback above) so
-        # get_contract_status() can extend latest_usage_date/credits_remaining
-        # past the last COMPLETE week using real, already-known usage from an
-        # in-progress week — matching what the Forecast page's daily chart
-        # already shows, so the KPI cards and the chart hover agree.
+
         self.daily_df = daily_df
 
     def _derive_from_daily(
@@ -132,17 +118,6 @@ class ForecastingService:
 
         contract_start = pd.to_datetime(self.config["contract"]["contract_start_date"])
 
-        # A week straddling contract_start (its natural Monday falls before
-        # the contract, but some of its days -- e.g. contract_start itself,
-        # if it isn't a Monday -- are within it) would otherwise satisfy
-        # neither the historical ("_we < contract_start") nor operational
-        # ("_ws >= contract_start") classification below, and get silently
-        # dropped entirely: real, already-uploaded usage vanishing from the
-        # total. Clamp _ws to contract_start for just that week's in-contract
-        # days, splitting it into its own partial-week bucket (grouped with
-        # _we left as-is, so same-week in-contract days still land together)
-        # instead of losing it. Pre-contract days in the same natural week
-        # keep their real _ws and still roll into historical normally.
         wdf["_ws"] = wdf["_ws"].where(wdf["_date"] < contract_start, wdf["_ws"].clip(lower=contract_start))
 
         agg: dict = {"total_credits_used": ("usage_credits", "sum")}
@@ -210,13 +185,6 @@ class ForecastingService:
         total_credits_used = historical_credits_used + operational_credits_used
         credits_remaining = purchased_credits - total_credits_used
 
-        # Cover a partial FIRST week too: weekly buckets are Monday-anchored,
-        # so unless a contract happens to start on a Monday, the days between
-        # contract_start and the first bucket's own start belong to a week
-        # whose week_start falls BEFORE contract_start -- excluded entirely
-        # by the ">= contract_start" filters above, silently dropping real,
-        # already-uploaded usage from the total. Mirrors the "extend past the
-        # last complete week" block below, at the other edge.
         first_covered_dates: list[pd.Timestamp] = []
         if self.historical_df is not None and not self.historical_df.empty and not hist_contract.empty:
             first_covered_dates.append(hist_contract["period_start"].min())
@@ -244,19 +212,6 @@ class ForecastingService:
                 total_credits_used += lead_in_used
                 credits_remaining -= lead_in_used
 
-        # latest_usage_date is the first day after the last completed data week.
-        # Week-ending dates are stored as the last inclusive day of the week, so
-        # +1 day gives the exclusive boundary where projections begin.
-        #
-        # _as_of caps the date at the freshest uploaded data so the UI never
-        # jumps past what is actually present in the dataset. It's the raw max
-        # date PRESENT (inclusive — e.g. a week_end, always a Sunday), so it
-        # must also be shifted +1 day before comparing: otherwise it's always
-        # exactly one day earlier than latest_usage_date's exclusive-boundary
-        # convention, and — since a complete week's last real day is a Sunday —
-        # the clamp would ALWAYS win and pin latest_usage_date to Sunday
-        # instead of the correct following Monday. This was the source of
-        # Sunday-dated points leaking onto the (Monday-anchored) weekly chart.
         dates: list[pd.Timestamp] = []
         if self.historical_df is not None and not self.historical_df.empty:
             dates.append(self.historical_df["period_end"].max() + pd.Timedelta(days=1))
@@ -266,12 +221,6 @@ class ForecastingService:
         if self._as_of is not None:
             latest_usage_date = min(latest_usage_date, self._as_of + pd.Timedelta(days=1))
 
-        # Extend past the last COMPLETE week using any raw daily rows already
-        # known beyond it (an in-progress week's real, already-uploaded days)
-        # — without this, credits_remaining/latest_usage_date always lagged
-        # behind what the Forecast page's own daily chart displayed for that
-        # same in-progress week, so the KPI cards and the chart's hover value
-        # could disagree even though both were "correct" by their own rules.
         if (
             not self._daily_already_included
             and self.daily_df is not None
@@ -409,26 +358,13 @@ class ForecastingService:
         exhaustion_week_end_balance = None
         if forecast_weekly > 0:
             weeks_until_exhaustion = credits_remaining / forecast_weekly
-            # Uploads lag the calendar: no burn is recorded after
-            # latest_usage_date, so when data is stale the countdown starts
-            # from the _today reference (set by live routes), matching the
-            # chart's bridged actual line. Snapshot backfill leaves _today
-            # unset and stays anchored to its historical as-of date.
+
             anchor = latest_date if self._today is None else max(latest_date, self._today)
             exhaustion_date = (anchor + timedelta(days=weeks_until_exhaustion * 7)).date()
-            # The week that STARTS exhausted (0 credits already at its
-            # Monday) — not just the week containing exhaustion_date. If
-            # exhaustion lands mid-week, that week's Monday still had credits
-            # left, so the first fully-exhausted week is the following one;
-            # only round down to the same Monday when exhaustion_date IS a
-            # Monday.
+
             days_to_next_monday = (7 - exhaustion_date.weekday()) % 7
             exhaustion_week = exhaustion_date + timedelta(days=days_to_next_monday)
-            # Balance projected right at that week's start -- distinct from
-            # forecast_contract_end_balance below, which keeps projecting
-            # (further negative) all the way out to the contract's own end
-            # date. This is "how far in the hole by the week we actually
-            # run out," not "how far in the hole by the end of the contract."
+
             weeks_to_exhaustion_week = (pd.Timestamp(exhaustion_week) - anchor).days / 7.0
             exhaustion_week_end_balance = credits_remaining - forecast_weekly * weeks_to_exhaustion_week
 
@@ -492,7 +428,6 @@ class ForecastingService:
                 obs_parts.append(df["total_credits_used"])
         observations = pd.concat(obs_parts) if obs_parts else pd.Series(dtype="float64")
 
-        # Chronological in-contract weekly burns for trend models (LinearRegression).
         if obs_op is not None and not obs_op.empty and "total_credits_used" in obs_op.columns:
             weekly_series = (
                 obs_op.sort_values("week_start")["total_credits_used"]
@@ -509,11 +444,7 @@ class ForecastingService:
 
         credits_remaining = float(cs["credits_remaining"])
         weeks_remaining = float(cs["weeks_remaining"])
-        # Lag-aware anchor (matches the chart's known-facts bridge): when a
-        # _today reference is set and the data ends before it, models start
-        # from today — remaining counts ledger entries effective through
-        # today (not ones dated later), no burn is assumed in the no-data
-        # gap, and the projection horizon runs today -> contract end.
+
         if self._today is not None and self._today.date() > latest_date:
             from app.shared.credit_ledger import normalize_credit_entries
 
@@ -532,9 +463,6 @@ class ForecastingService:
             weeks_remaining = max((end - anchor).days, 0) / 7
             latest_date = anchor.date()
 
-        # Display horizon: keep projecting past contract end to exhaustion,
-        # like the deterministic line (generous margin for the optimistic
-        # band, capped at three years). Risk stats stay at contract end.
         burn = float(fc["forecast_weekly_burn"])
         weeks_to_zero = credits_remaining / burn if burn > 0 else 0.0
         projection_weeks = min(max(weeks_remaining, weeks_to_zero * 1.5 + 2), 156.0)
@@ -578,10 +506,6 @@ class ForecastingService:
         contract = self.config.get("contract", {})
         contract_start = pd.to_datetime(contract.get("contract_start_date"))
 
-        # Credits available as of a date = sum of ledger entries effective by
-        # then (undated/pre-contract entries count from contract start), so a
-        # mid-contract grant steps this reconstruction up on its own date
-        # instead of being smeared back across the whole history.
         entries = normalize_credit_entries(contract)
 
         def available(day: pd.Timestamp) -> float:
@@ -594,7 +518,6 @@ class ForecastingService:
                     total += float(e.get("credits") or 0)
             return total
 
-        # Collect weekly burn series from both data sources
         weekly_series: list[dict] = []
         for df, date_col in (
             (self.historical_df, "period_start"),
@@ -612,20 +535,17 @@ class ForecastingService:
         weekly_series.sort(key=lambda x: x["week_start"])
 
         # Reconstruct actual credit burndown, ledger-aware.
-        cum_used = 0.0
+        cumul_used = 0.0
         actual_burndown: list[dict] = []
         for w in weekly_series:
             if w["in_contract"]:
-                cum_used += w["total_credits_used"]
-                rem = max(available(pd.Timestamp(w["week_start"])) - cum_used, 0.0)
+                cumul_used += w["total_credits_used"]
+                rem = max(available(pd.Timestamp(w["week_start"])) - cumul_used, 0.0)
                 actual_burndown.append({"date": w["week_start"], "remaining": round(rem, 1)})
 
         snap_date = str(snapshot.get("snapshot_date", ""))
         credits_remaining = float(snapshot.get("credits_remaining", 0))
 
-        # Anchor forecast to latest_usage_date so dates align with the chart's weekly axis.
-        # latest_usage_date = week_end.max() of the data, which is where the chart's
-        # projected section begins.  snap_date is merely the calendar date of the save.
         latest_data_date = str(snapshot.get("latest_usage_date") or snap_date)
 
         # Deterministic forecast forward from latest data date
@@ -657,7 +577,7 @@ class ForecastingService:
                 "exhaustion_probability": mc_result.metadata.get("exhaustion_probability"),
             }
 
-        # Linear-trend (ML) time series — burndown + residual bands + stats.
+        # Linear-trend (ML) time series ; burndown + residual bands + stats.
         ml_series: dict = {}
         if ml_result is not None:
             ml_series = {
@@ -736,7 +656,7 @@ class ForecastingService:
                         round(mc_result.burndown[-1]["value"], 1) if mc_result.burndown else None),
                     "mc_p90_end_balance": md.get("p90_end_balance",
                         round(mc_result.p90[-1]["value"], 1) if mc_result.p90 else None),
-                    # Unclamped counterparts — can go negative (deficit by contract end).
+                    # Unclamped counterparts ; can go negative (deficit by contract end).
                     "mc_p10_contract_end_balance": md.get("p10_contract_end_balance"),
                     "mc_p50_contract_end_balance": md.get("p50_contract_end_balance"),
                     "mc_p90_contract_end_balance": md.get("p90_contract_end_balance"),
@@ -747,7 +667,7 @@ class ForecastingService:
             except Exception:
                 pass
 
-        # Linear-trend (ML) projection — cheap, so generated by default.
+        # Linear-trend (ML) projection ; cheap, so generated by default.
         ml_result = None
         ml_stats: dict = {}
         if not skip_ml:
@@ -968,31 +888,21 @@ def build_chained_projection(
             remaining = max(remaining - daily_burn * (e["date"] - cursor).days, 0.0)
             edate = str(e["date"].date())
             if e["kind"] == "end":
-                # Just the smoothly-declining value at contract end — the line
-                # keeps forecasting like a single contract (no forced cliff to
-                # zero). Any leftover that lapses is recorded for the
-                # expiration overview, not drawn as a jagged drop.
+
                 points.append({"date": edate, "value": round(remaining, 1)})
                 if not e["rollover"] and remaining > 0:
                     expirations.append({"date": edate, "label": e["label"], "amount": round(remaining, 1)})
                 carry = bool(e["rollover"])
-            else:  # start: the line's position becomes this contract's pool
+            else: 
                 added = float(e.get("credits") or 0)
-                # Rolled over -> add onto the carried balance; otherwise the
-                # previous leftover lapsed, so start fresh at this contract's
-                # own credits (lines needn't connect across the boundary).
+
                 remaining = (remaining + added) if carry else added
-                # Always recorded (even a 0-credit contract) so the client can
-                # rebuild the line as its own fresh weekly/daily-grid segment,
-                # bounded by this contract's own [start, end] the same way the
-                # active contract's segment is bounded by [anchor, its end].
+
                 boundaries.append({
                     "date": edate, "end": e.get("end_date") or "",
                     "label": e["label"], "delta": round(added, 1),
                     "id": e.get("id"),
-                    # carry=True -> add onto the running balance (previous
-                    # contract rolled over); False -> reset to just these
-                    # credits (previous leftover lapsed).
+
                     "carry": bool(carry),
                 })
                 points.append({"date": edate, "value": round(remaining, 1)})
@@ -1001,7 +911,7 @@ def build_chained_projection(
             ev_i += 1
         remaining = max(remaining - daily_burn * (week_end - cursor).days, 0.0)
         cur = week_end
-        # Skip a redundant grid point when an event landed exactly on week end.
+
         if cursor < week_end:
             points.append({"date": str(cur.date()), "value": round(remaining, 1)})
         if remaining <= 0 and ev_i >= len(events):

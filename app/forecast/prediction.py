@@ -109,9 +109,6 @@ class DeterministicModel(PredictionModel):
     def _project(start: date, remaining: float, weekly_burn: float, weeks: float) -> list[dict]:
         pts = [{"date": str(start), "value": remaining}]
         n = min(math.ceil(weeks) + 1, 260)
-        # Calendar day the projection crosses zero — same floor convention as
-        # the stated exhaustion date. Grid points from that day on read 0, so
-        # the exhaustion date itself never shows the sub-step remainder.
         daily_burn = weekly_burn / 7 if weekly_burn > 0 else 0.0
         cross = (
             start + timedelta(days=int(remaining // daily_burn))
@@ -149,8 +146,7 @@ class MonteCarloModel(PredictionModel):
         full_weeks = int(math.floor(ctx.weeks_remaining))
         partial = ctx.weeks_remaining - full_weeks
         fracs_list = [1.0] * full_weeks + ([partial] if partial > 1e-6 else [])
-        # The contract-end column: risk stats read here even when the display
-        # horizon keeps simulating past contract end (to exhaustion).
+
         contract_steps = len(fracs_list)
         proj_weeks = ctx.projection_weeks or ctx.weeks_remaining
         extra_weeks = max(int(math.ceil(proj_weeks - ctx.weeks_remaining)), 0)
@@ -191,13 +187,11 @@ class MonteCarloModel(PredictionModel):
         p10 = np.percentile(all_rem, 10, axis=0)
         p50 = np.percentile(all_rem, 50, axis=0)
         p90 = np.percentile(all_rem, 90, axis=0)
-        # Unclamped percentiles at the same steps — these can go negative,
-        # showing how far into deficit a percentile run would be by contract
-        # end rather than flooring it at zero like the displayed bands.
+
         p10_raw = np.percentile(all_rem_raw, 10, axis=0)
         p50_raw = np.percentile(all_rem_raw, 50, axis=0)
         p90_raw = np.percentile(all_rem_raw, 90, axis=0)
-        # "Exhausted by CONTRACT END" — not by the (longer) display horizon.
+
         end_i = min(contract_steps, all_rem.shape[1] - 1)
         exhaustion_prob = float(np.mean(all_rem[:, end_i] <= 0))
 
@@ -264,8 +258,7 @@ class LinearRegressionModel(PredictionModel):
         full_weeks = int(math.floor(ctx.weeks_remaining))
         partial = ctx.weeks_remaining - full_weeks
         fracs = [1.0] * full_weeks + ([partial] if partial > 1e-6 else [])
-        # Contract-end step: metadata stats read here; the display horizon may
-        # keep projecting past it (to exhaustion) like the base forecast.
+
         contract_steps = len(fracs)
         proj_weeks = ctx.projection_weeks or ctx.weeks_remaining
         extra_weeks = max(int(math.ceil(proj_weeks - ctx.weeks_remaining)), 0)
@@ -286,11 +279,6 @@ class LinearRegressionModel(PredictionModel):
         median_burn = float(np.median(y)) if len(y) else 0.0
         center_burn = max(float(ctx.forecast_weekly_burn), mean_burn, median_burn, 0.0)
 
-        # Stabilize the regression projection.  Plain linear extrapolation can
-        # drive future weekly burn to zero or into an unrealistic hockey stick
-        # when only a few noisy weeks are available.  We still fit/report the
-        # linear model, but the projected burn is blended back toward the base
-        # forecast unless the fit is strong and there is enough history.
         if len(y) < 4:
             trend_weight = 0.20
         elif r2 >= 0.70:
@@ -310,22 +298,19 @@ class LinearRegressionModel(PredictionModel):
         p50 = [round(float(ctx.credits_remaining), 1)]
         p10 = [round(float(ctx.credits_remaining), 1)]
         p90 = [round(float(ctx.credits_remaining), 1)]
-        # Unclamped counterparts of p10/p50/p90 — can go negative, showing the
-        # deficit magnitude rather than flooring at zero like the display bands.
+
         raw_p50 = [round(float(ctx.credits_remaining), 1)]
         raw_p10 = [round(float(ctx.credits_remaining), 1)]
         raw_p90 = [round(float(ctx.credits_remaining), 1)]
         weekly_predictions: list[float] = []
         raw_weekly_predictions: list[float] = []
-        # Unclamped running balance so the band center keeps declining past 0;
-        # the P90 (optimistic) edge then reaches 0 LATER than P50 instead of
-        # being cut off the moment P50 exhausts.
+
         raw_remaining = float(ctx.credits_remaining)
         cum_var = 0.0
         last_idx = len(y) - 1
         exhaustion_date: str | None = None
 
-        cum_days = 0.0
+        cumul_days = 0.0
         for k, frac in enumerate(fracs, start=1):
             raw_week_burn = float(intercept + slope * (last_idx + k))
             blended_week_burn = trend_weight * raw_week_burn + (1.0 - trend_weight) * float(ctx.forecast_weekly_burn)
@@ -336,10 +321,9 @@ class LinearRegressionModel(PredictionModel):
             raw_remaining -= week_burn
             cum_var += (resid_std * frac) ** 2
             band = self._Z_80 * math.sqrt(cum_var)
-            # The final partial week spans its true length (ends at contract
-            # end) rather than a full 7 days, avoiding a flat tail segment.
-            cum_days += float(frac) * 7
-            d = ctx.latest_usage_date + timedelta(days=round(cum_days))
+
+            cumul_days += float(frac) * 7
+            d = ctx.latest_usage_date + timedelta(days=round(cumul_days))
             dates.append(str(d))
             p50.append(round(max(raw_remaining, 0.0), 1))
             p90.append(round(min(max(raw_remaining + band, 0.0), ctx.purchased_credits), 1))
@@ -349,8 +333,7 @@ class LinearRegressionModel(PredictionModel):
             raw_p10.append(round(raw_remaining - band, 1))
             if raw_remaining <= 0.0 and exhaustion_date is None:
                 exhaustion_date = str(d)
-            # Stop only once even the optimistic edge is spent, so the band
-            # runs to its true end rather than cutting off at P50's exhaustion.
+
             if p90[-1] <= 0.0:
                 break
 
@@ -374,8 +357,6 @@ class LinearRegressionModel(PredictionModel):
         else:
             model_quality = "weak_fit"
 
-        # Stats pin to the contract-end step (arrays include the start point at
-        # index 0; the loop may have broken early on exhaustion).
         end_i = min(contract_steps, len(p50) - 1)
         exhausted = p50[end_i] <= 0.0
         metadata = {

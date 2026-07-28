@@ -16,7 +16,7 @@ from .service import (
 
 # Optional: pushes a manual/recommended tier change through to the matching
 # ChatGPT group via the standalone Admin API explorer package. Wrapped so a
-# machine with no aauth/ key configured still works fine — tier changes just
+# machine with no aauth/ key configured still works fine -- tier changes just
 # stay local, same as before this existed. See openai_admin_API/README.md.
 try:
     from openai_admin_API import endpoints as _admin_ep
@@ -271,7 +271,7 @@ def create_optimization_blueprint(services) -> Blueprint:
             flash(f"Tier reset to Baseline default for {email}.", "success")
         config_svc.save_user_tiers(assignments)
 
-        # Best-effort push to the matching ChatGPT group — never blocks or
+        # Best-effort push to the matching ChatGPT group ; never blocks or
         # reverts the local change above, which has already been saved.
         push_note = _AdminApiTierPusher().push(email, tier or "Baseline")
         if push_note:
@@ -313,7 +313,7 @@ def create_optimization_blueprint(services) -> Blueprint:
         if applied:
             config_svc.save_user_tiers(assignments)
             # Best-effort push, built once for the whole batch (not once per
-            # user) — see _AdminApiTierPusher. Failures for individual users
+            # user) -- see _AdminApiTierPusher. Failures for individual users
             # are swallowed here (already logged inside the pusher's own
             # AdminApiClient); this must never undo the local changes above.
             pusher = _AdminApiTierPusher()

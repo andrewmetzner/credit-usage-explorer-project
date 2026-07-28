@@ -36,7 +36,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         hist_df = pipeline.get_historical_weekly_summary()
         op_df = pipeline.get_operational_weekly_summary()
         daily_df = _get_store_df()
-        # Passed through unconditionally (not just when op_df is missing) —
+        # Passed through unconditionally (not just when op_df is missing)
         # ForecastingService itself now also uses it, when weekly summaries
         # already exist, to extend credits_remaining/latest_usage_date past
         # the last complete week using real already-known daily rows (see
@@ -232,7 +232,7 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         # Weekly view's partial-week exclusion: keep a still-accumulating
         # current week out of the burn-RATE window without dropping it from
-        # `operational_df` itself (see exclude_incomplete_week_from_burn —
+        # `operational_df` itself (see exclude_incomplete_week_from_burn ..
         # shared with build_forecasting_service so the Summary page/alerts
         # can't drift from this page the way credits_remaining once did).
         if exclude_partial:
@@ -256,11 +256,6 @@ def create_forecast_blueprint(services) -> Blueprint:
             if not win.empty:
                 svc._forecast_op_df = win
 
-        # Rewound to a past as-of: the credit pool must reflect only what had
-        # been granted by then. Clamp the service's own config ledger so
-        # get_contract_status() computes the historical remaining (otherwise it
-        # would subtract usage from the CURRENT purchased total, incl. later
-        # grants — the bug that made a past view's headline numbers wrong).
         if view_to:
             from app.shared.credit_ledger import credit_entries_as_of, credit_entries_total
 
@@ -492,8 +487,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         daily = ddf.groupby("_day", as_index=False)["usage_credits"].sum()
         full_days = _pd.DataFrame({"_day": _pd.date_range(start.normalize(), end.normalize(), freq="D")})
         daily = full_days.merge(daily, on="_day", how="left").fillna({"usage_credits": 0.0})
-        # Credits available as of each day = sum of ledger entries dated <= day
-        # (only entries that had happened by the view's as-of date).
+
         available = _pd.Series(0.0, index=daily.index)
         for ev in _credit_events(contract_status.get("contract_start_date"), as_of=end):
             ev_day = _pd.to_datetime(ev["effective_date"])
@@ -516,8 +510,6 @@ def create_forecast_blueprint(services) -> Blueprint:
         return False
 
     def _has_ml_stats(row: dict) -> bool:
-        # Force regeneration for snapshots made before the stabilized ML model;
-        # otherwise their saved series can show flat/implausible trend lines.
         if str(row.get("ml_model_version", "")) != "stabilized_v2":
             return False
         return _has_stat(row, ("ml_r_squared", "ml_slope_per_week", "ml_p50_end_balance"))
@@ -568,10 +560,6 @@ def create_forecast_blueprint(services) -> Blueprint:
                 except Exception:
                     pass
 
-            # Build a service that only sees data through this week — and a
-            # ledger that only counts credits granted by this week, so a
-            # later-dated grant (even a real, current one) doesn't leak
-            # into a week that predates it.
             truncated_op = op_sorted.iloc[: i + 1].copy()
             try:
                 svc = _service_for_week(hist_df, truncated_op, week_end_str, forecast_overrides=config.get("forecast"))
@@ -627,25 +615,14 @@ def create_forecast_blueprint(services) -> Blueprint:
         granularity = request.args.get("granularity", "weekly")
         if granularity not in {"weekly", "daily"}:
             granularity = "weekly"
-        # Always exclude the still-accumulating current week from the burn-RATE
-        # average, regardless of which granularity is being charted — this used
-        # to follow `granularity` (daily kept the partial week in), which made
-        # forecast_weekly_burn (and everything derived from it: Projected end
-        # balance, exhaustion date, etc.) silently change value depending on
-        # which toggle happened to be selected. The Daily view still SHOWS the
-        # partial week's real daily actuals (dailyActualPts) — only the RATE
-        # used for projection is now the same regardless of view.
+
         exclude_partial = True
         data_as_of = latest_data_date(
             (daily_fallback_df, "date_partition"),
             (op_df, "week_end"),
             (hist_df, "period_end"),
         )
-        # "Snapshot mode" is a lightweight client preset on the LIVE page — it
-        # cuts the actual at the snapshot's date, overlays that snapshot, and
-        # hides the live forecasts, keeping the normal window/axes. The server
-        # just renders the live page and passes the snapshot id/date so the
-        # client can apply the preset; it does NOT rewind the page.
+
         snapshot_ts = request.args.get("snapshot", "").strip() or None
         snapshot_row = _snapshot_row(snapshot_ts) if snapshot_ts else None
         snapshot_as_of = str(snapshot_row.get("latest_usage_date") or "").strip() if snapshot_row else None
@@ -656,9 +633,6 @@ def create_forecast_blueprint(services) -> Blueprint:
         if not snapshot_row:
             snapshot_ts = snapshot_as_of = snapshot_label = None
 
-        # Resolve the manual date-range view (view_from/view_to) and legacy burn
-        # window (data_from/data_to). Snapshot mode does NOT drive this — it
-        # stays on the live window so its X/Y match the normal forecast.
         win = _apply_view_window(forecasting, data_as_of, exclude_partial)
         data_from, data_to = win["data_from"], win["data_to"]
         view_from, view_to = win["view_from"], win["view_to"]
@@ -667,10 +641,6 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         usage_type_weekly = usage_type_weekly_json(_get_store_df())
 
-        # A manual date-range view rewinds the page to a past window, so it
-        # behaves like preview (no auto-save; snapshots filtered to the window).
-        # Snapshot mode does NOT — it's a live-page preset, so it keeps live
-        # data/snapshots (but still shouldn't auto-save while pinned to one).
         view_active = bool(view_from or view_to)
         window_preview = is_preview or view_active or bool(snapshot_ts)
         all_snapshots = pipeline.get_forecast_history(limit=1000)
@@ -729,27 +699,18 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         chart_builder = ChartDataBuilder(forecasting, forecasting.historical_df, forecasting.operational_df)
         weekly_chart_data = chart_builder.weekly_burn_json()
-        # A rewound view is weekly-based (snapshots are), so its actual line
-        # uses the weekly reconstruction (which ends exactly at the view's
-        # remaining) rather than the daily one (which includes partial-week
-        # usage past the last complete week and wouldn't line up with the
-        # snapshot's frozen forecast anchor). Suppressing the daily series makes
-        # the chart fall back to the weekly actual in either granularity.
+
         daily_actual_data = (
             "[]" if view_active
             else _daily_actual_burndown_json(daily_fallback_df, contract_status, effective_as_of)
         )
-        # In a past/snapshot view, only show grants that had happened by then.
+
         events_as_of = effective_as_of if view_active else None
         credit_events = json.dumps(_credit_events(contract_status.get("contract_start_date"), as_of=events_as_of))
         cumulative_chart_data = chart_builder.cumulative_burn_json()
         contract_start_str = str(contract_status.get("contract_start_date", ""))
         active_users_data = chart_builder.active_users_json(contract_start_str)
 
-        # Deterministic projection chained across any future contract(s)
-        # configured to start after the active one — empty when there's
-        # nothing to chain into, in which case the page falls back to the
-        # ordinary single-contract projection it's always drawn.
         from .service import build_chained_projection
 
         chained = build_chained_projection(
@@ -962,20 +923,13 @@ def create_forecast_blueprint(services) -> Blueprint:
         for row in rows:
             ts = str(row.get("snapshot_ts") or "").strip()
             if not ts:
-                # No timestamp to preserve identity by — resyncing would mint
-                # a new one and silently orphan this row under a new key.
+
                 skipped += 1
                 continue
             snap_date = str(row.get("snapshot_date") or "").strip()
             label = str(row.get("label") or "").strip()
             color = str(row.get("color") or "").strip()
-            # Two different "as of" axes: how much USAGE DATA had accumulated
-            # (latest_usage_date — can lag behind the real calendar), vs. what
-            # the CREDIT LEDGER actually held (as of the snapshot's own real
-            # or simulated wall-clock date, snapshot_date). A live snapshot
-            # saved today, with data lagging a few days, must still count a
-            # grant effective yesterday — clamping the ledger to the lagging
-            # data date would wrongly erase it.
+
             data_as_of = _pd.to_datetime(row.get("latest_usage_date"), errors="coerce")
             ledger_as_of = _pd.to_datetime(snap_date, errors="coerce")
 
@@ -988,8 +942,7 @@ def create_forecast_blueprint(services) -> Blueprint:
 
             try:
                 pipeline.delete_snapshot(ts, snap_date, label)
-                # Ledger entries dated after this snapshot's own date must not
-                # count yet — only what the pool actually held then.
+
                 svc = _service_for_week(
                     hist_df, truncated_op,
                     ledger_as_of if not _pd.isna(ledger_as_of) else data_as_of,
@@ -1114,8 +1067,7 @@ def create_forecast_blueprint(services) -> Blueprint:
                     "ml_p50_exhaustion_date": lmd.get("p50_exhaustion_date"),
                     "ml_p90_exhaustion_date": lmd.get("p90_exhaustion_date"),
                 }
-                # Only ever fill blanks — never overwrite a value already on
-                # the row (from a real save or an earlier backfill pass).
+
                 for col, val in field_map.items():
                     if _blank(df.at[idx, col]) and val is not None:
                         df.at[idx, col] = str(val)
@@ -1203,8 +1155,6 @@ def create_forecast_blueprint(services) -> Blueprint:
             flash("No data available. Upload a data sheet on the Summary page first.", "warning")
             return redirect(url_for("forecast.forecast_page"))
 
-        # Monte Carlo is optional for weekly batches (it's the slow part). When
-        # requested, cap the run count so generating many weeks stays responsive.
         include_mc = request.form.get("include_mc") == "1"
         if include_mc:
             cfg_fc = config.setdefault("forecast", {})
@@ -1410,9 +1360,7 @@ def create_forecast_blueprint(services) -> Blueprint:
 
         if keys:
             rows = [h for h in rows if row_key(h) in keys]
-        # Older rows predate the exhaustion-date columns; _snapshot_stats
-        # backfills them from each snapshot's saved P10/50/90 series so every
-        # exported row has them, not just ones saved after the columns existed.
+
         exh_keys = (
             "mc_p10_exhaustion_date", "mc_p50_exhaustion_date", "mc_p90_exhaustion_date",
             "ml_p10_exhaustion_date", "ml_p50_exhaustion_date", "ml_p90_exhaustion_date",
@@ -1471,9 +1419,7 @@ def create_forecast_blueprint(services) -> Blueprint:
         granularity = request.args.get("granularity", "weekly")
         if granularity not in {"weekly", "daily"}:
             granularity = "weekly"
-        # See matching comment in the /forecast route: keep the burn-rate
-        # average consistent regardless of which granularity is charted, so
-        # MC/ML results don't silently shift when toggling Daily/Weekly.
+
         exclude_partial = True
 
         from app.shared.contracts import resolve_contract_config
@@ -1502,13 +1448,6 @@ def create_forecast_blueprint(services) -> Blueprint:
         fc = svc.get_forecast()
 
         if contract_id:
-            # A genuinely future "other contract" (hasn't started yet) has no
-            # data of its own — get_contract_status()'s latest_usage_date
-            # falls back to the pipeline-wide latest date, which predates
-            # this contract's own start. Anchor at its own start instead,
-            # with its own full credit pool, so the forecast previews "if
-            # this contract were live starting on its own date" rather than
-            # nonsensically reading as fully spent before it even begins.
             contract_start = _pd.to_datetime(config["contract"].get("contract_start_date"), errors="coerce")
             if not _pd.isna(contract_start) and _pd.to_datetime(cs.latest_usage_date) < contract_start:
                 contract_end = _pd.to_datetime(config["contract"].get("contract_end_date"), errors="coerce")
@@ -1521,12 +1460,6 @@ def create_forecast_blueprint(services) -> Blueprint:
                 fc.credits_remaining = cs.credits_remaining
                 fc.weeks_remaining = cs.weeks_remaining
 
-            # The chained chart's next-contract band needs to start from
-            # that contract's CARRIED-OVER balance when its predecessor
-            # rolls over (delta + leftover), not just its own fresh credits
-            # — the client already computes this exactly (see
-            # buildFutureContractSegments) and passes it through here rather
-            # than this route re-deriving the whole chain.
             override = request.args.get("credits_override", "").strip()
             if override:
                 try:

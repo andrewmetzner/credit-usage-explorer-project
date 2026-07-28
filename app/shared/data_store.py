@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import re
 import threading
-from datetime import datetime, time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -151,12 +151,22 @@ class CreditUsageData:
         if "usage_type" not in self.df.columns:
             return
 
-        parsed = self.df["usage_type"].apply(parse_usage_type)
-        self.df["usage_type_parsed_type"] = parsed.apply(lambda x: x["type"])
-        self.df["usage_type_model"] = parsed.apply(lambda x: x["model_and_num"])
-        self.df["usage_type_date"] = parsed.apply(lambda x: x["date"])
-        self.df["usage_type_medium"] = parsed.apply(lambda x: x["medium"])
-        self.df["usage_type_io"] = parsed.apply(lambda x: x["io"])
+        col = self.df["usage_type"]
+        # usage_type has only dozens of DISTINCT values across tens of
+        # thousands of rows, so parse each distinct value once and map the
+        # results back — a per-row .apply() re-ran the regex-heavy parser
+        # ~250x more than necessary (the dominant cost of a data reload).
+        parsed = {val: parse_usage_type(val) for val in col.dropna().unique()}
+        na = parse_usage_type(None)  # shared "N/A" result for blank/NaN rows
+
+        def field(key: str):
+            return col.map({v: p[key] for v, p in parsed.items()}).where(col.notna(), na[key])
+
+        self.df["usage_type_parsed_type"] = field("type")
+        self.df["usage_type_model"] = field("model_and_num")
+        self.df["usage_type_date"] = field("date")
+        self.df["usage_type_medium"] = field("medium")
+        self.df["usage_type_io"] = field("io")
 
         # View-only correction: this DataFrame is loaded for the app, not
         # written back to the uploaded/current data sheet.
@@ -181,31 +191,38 @@ class CreditUsageData:
         if "date_partition" not in self.df.columns:
             return
 
-        source_col = self.df["data_source"] if "data_source" in self.df.columns else None
+        df = self.df
+        # Parse the whole date column in ONE vectorized call. The old code
+        # called pd.to_datetime() once PER ROW (25k+ calls, each re-guessing
+        # the format) — by far the biggest cost of a data reload (~5s).
+        dates = pd.to_datetime(df["date_partition"], errors="coerce")
+        normalized = dates.dt.normalize()
+        timestamp = normalized.copy()
+        has_time = pd.Series(False, index=df.index)
 
-        def _row_timestamp(date_val, source_val):
-            d = pd.to_datetime(date_val, errors="coerce")
-            if pd.isna(d):
-                return pd.NaT, False
-            time_part = time(0, 0)
-            has_time = False
-            if isinstance(source_val, str):
-                match = _PULL_TIME_RE.search(source_val)
-                if match:
+        if "data_source" in df.columns:
+            # The pull time is embedded in data_source as "API GET <ISO UTC>".
+            # Extract it vectorized, then parse only the DISTINCT timestamps
+            # (one per sync batch — dozens, not tens of thousands) into a
+            # local time-of-day offset, and add it to each row's own date.
+            raw = df["data_source"].astype("string").str.extract(r"API GET\s+(\S+)", expand=False)
+            valid = raw.notna() & dates.notna()
+            if valid.any():
+                offset_by_raw: dict = {}
+                for r in raw[valid].unique():
                     try:
-                        dt_utc = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
-                        time_part = dt_utc.astimezone().time()
-                        has_time = True
-                    except ValueError:
-                        pass
-            return datetime.combine(d.date(), time_part), has_time
+                        local = datetime.fromisoformat(str(r).replace("Z", "+00:00")).astimezone()
+                        offset_by_raw[r] = pd.Timedelta(hours=local.hour, minutes=local.minute, seconds=local.second)
+                    except (ValueError, TypeError):
+                        offset_by_raw[r] = None
+                offsets = raw.map(offset_by_raw)
+                apply_mask = valid & offsets.notna()
+                if apply_mask.any():
+                    timestamp = timestamp.mask(apply_mask, normalized + offsets)
+                    has_time = apply_mask
 
-        if source_col is not None:
-            results = [_row_timestamp(d, s) for d, s in zip(self.df["date_partition"], source_col)]
-        else:
-            results = [_row_timestamp(d, None) for d in self.df["date_partition"]]
-        self.df["timestamp"] = [r[0] for r in results]
-        self.df["timestamp_has_time"] = [r[1] for r in results]
+        df["timestamp"] = timestamp
+        df["timestamp_has_time"] = has_time.to_numpy()
         if "timestamp" not in self.columns:
             self.columns.append("timestamp")
 

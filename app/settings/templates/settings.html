@@ -99,7 +99,7 @@
           </div>
           <div class="text-muted small mt-2">
             {% if admin_api_sync_config.last_run_at %}
-              Last run: {{ admin_api_sync_config.last_run_at }} &mdash; {{ admin_api_sync_config.last_run_status }}
+              <b>Last run</b>: {{ admin_api_sync_config.last_run_at }} &mdash; {{ admin_api_sync_config.last_run_status }}
               {% if admin_api_sync_config.last_run_rows %}({{ "{:,}".format(admin_api_sync_config.last_run_rows) }} row(s)){% endif %}
             {% else %}
               Never run yet.
@@ -107,15 +107,15 @@
           </div>
           <div class="text-muted small">
             {% if admin_api_sync_config.enabled and admin_api_sync_config.next_run_at %}
-              Next sync: {{ admin_api_sync_config.next_run_at }}
+              <b>Next sync</b>: {{ admin_api_sync_config.next_run_at }}
             {% elif admin_api_sync_config.enabled %}
-              Next sync: pending (starting up)
+              <b>Next sync</b>: pending (starting up)
             {% else %}
-              Next sync: &mdash; (sync is off)
+              <b>Next sync</b>: &mdash; (sync is off)
             {% endif %}
           </div>
           <div class="text-muted small" title="How far real Costs data actually reaches — distinct from 'Last run', which may have found nothing new.">
-            Data synced through: {{ admin_api_synced_through or '— (no data pulled yet)' }}
+            <b>Data synced through</b>: {{ admin_api_synced_through or '— (no data pulled yet)' }}
           </div>
           <div class="text-muted small fst-italic">
             Auto-sync on app run is given.
