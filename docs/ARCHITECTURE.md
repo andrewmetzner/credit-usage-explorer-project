@@ -12,12 +12,12 @@ doc is about how the **code** is put together and how to work in it.*
 A local **Flask** web app that ingests OpenAI/ChatGPT credit-usage data,
 shows dashboards (summary, per-user, leaderboard, records), **forecasts**
 credit burn across one or more contracts, and can **sync usage live** from
-the OpenAI Admin API. It runs on one machine (BNL), served to a browser at
-`http://127.0.0.1:5000`.
+the OpenAI Admin API.
 
 **Stack:** Python 3.14 · Flask · pandas · Jinja2 templates · Chart.js (via a
-small `BNLChart` wrapper) · Bootstrap 5. No database — the dataset is a
-single CSV (`data/current_data.csv`); config is YAML/JSON files under
+small `BNLChart` wrapper) · Bootstrap 5. 
+No database. The dataset is a single CSV (`data/current_data.csv`); 
+config is YAML/JSON files under
 `config/`.
 
 ---
@@ -25,8 +25,8 @@ single CSV (`data/current_data.csv`); config is YAML/JSON files under
 ## 2. Running it
 
 ```bash
-python run.py                 # dev server (Flask reloader, debug) on :5000
-python run.py --no-debug      # no reloader
+python run.py
+python run.py --no-debug
 python run.py --server waitress --host 0.0.0.0   # production-ish, shareable
 ```
 
@@ -44,7 +44,7 @@ app/
   __init__.py              create_app(): wiring, blueprint registration, before-request reload, scheduler start
   shared/                  Cross-cutting services (no HTTP) — the heart of the app
     data_store.py          DataStore + CreditUsageData: load/parse the CSV, live reload
-    services.py            Services container (store, pipeline, config_svc, governance…) passed to every blueprint
+    services.py            Services container (store, pipeline, config_svc, governance) passed to every blueprint
     config_service.py      AppConfig: read/write contract_config.yaml (multi-contract, migration, CRUD)
     contracts.py           Resolve the "active" contract, sort, rollover
     credit_ledger.py       Per-contract credit entries (purchases/grants), normalization, as-of totals
@@ -61,12 +61,12 @@ app/
   analytics/               Blueprint "analytics": leaderboard, user-cards, user-summary, storyboard
   forecast/                Blueprint "forecast": the forecast page + models
     service.py             ForecastingService, contract status, chained projection
-    prediction.py          Monte Carlo + Linear Regression models
+    prediction.py          Basic forecasting, Monte Carlo + Linear Regression models
   optimization/            Blueprint "optimization": tier optimization + (optional) tier push
   settings/                Blueprint "settings": contracts, data uploads, Admin API sync/keys
   templates/base.html      Shared layout: sidebar, alerts bell, live-refresh poller
 openai_admin_API/          Standalone package: pull usage from the OpenAI Admin API
-data/                      current_data.csv (the dataset) + testlogs/
+data/                      current_data.csv (the dataset)
 config/                    contract_config.yaml, tier configs, sync config/cursor, lock files
 aauth/                     API credentials (git-ignored)
 drafts/testfiles/          Unit tests
@@ -104,7 +104,7 @@ why there's no global state — everything hangs off the one `Services`.
 - **`CreditUsageData`** loads that CSV and derives columns: it parses
   `usage_type` into type/model/medium/io (`_add_parsed_usage_type`) and builds
   a display `timestamp` (`_add_timestamp`). Both are **vectorized over
-  distinct values** — do not "improve" them into per-row `.apply()`/
+  distinct values** - do not "improve" them into per-row `.apply()`/
   `pd.to_datetime()` loops; that was the original cause of ~5s reloads.
 - **`DataStore`** wraps `CreditUsageData` and supports **live reload**:
   - `reload_if_changed()` — cheap `os.stat` fingerprint (mtime+size); rebuilds
@@ -133,7 +133,7 @@ global `forecast` block. `AppConfig`:
   `resolve_contract_config()` / `app/shared/contracts.py` decide which contract
   is active by date.
 - List-based CRUD (`add_contract`, `update_contract_fields`, `remove_contract`,
-  `add_credit_entry`, …) backs the Settings UI.
+  `add_credit_entry`, ..) backs the Settings UI.
 
 ---
 
@@ -155,7 +155,7 @@ and invalidates when real new data lands.
 
 ## 8. Live refresh & the "new data" notification
 
-Goal: when a sync writes new rows, open pages update **without** a program
+When a sync writes new rows, open pages update **without** a program
 restart, and without yanking someone mid-task.
 
 - **Server:** the before-request `reload_if_changed()` (§5) means any request
@@ -167,7 +167,7 @@ restart, and without yanking someone mid-task.
     immediately ("just updates").
   - **Page active** → surface a *New data synced* item in the alerts **bell**
     (badge ticks up) + a sidebar "Reload for new data" button; auto-reloads
-    once the page goes idle.
+    once the page goes idle (after certain time, similar to an update left idle for too long)
 
 A manual "Sync now" or file upload does a full navigation, so it shows new
 data immediately without the poller.
@@ -227,9 +227,9 @@ write key.
 
 ---
 
-## 11. Performance notes (what's already been tuned)
+## 11. Performance notes
 
-- **Data reload is vectorized** (~5s → ~0.1s for 25k rows). Keep it that way.
+- **Data reload is vectorized** (~0.1s for 25k rows).
 - **Records caps rendered rows** (default 1,000) — rendering all ~25k rows was
   ~2s of Jinja + a heavy DOM. Filters/sort still apply to the full dataset;
   Export CSV is uncapped.
@@ -254,20 +254,7 @@ rendering an uncapped row set.
 
 ---
 
-## 13. Testing
-
-```bash
-python -m pytest drafts/testfiles/ -q
-```
-
-Covers the credit ledger, chained projection, data filters, and data merge.
-There's no browser/JS test harness — chart logic is verified by re-simulating
-the JS math in Python and by hitting endpoints with `curl`/the Flask test
-client.
-
----
-
-## 14. Where to extend
+## 13. Where to extend
 
 - **New page:** add a blueprint under `app/<name>/`, a `create_*_blueprint`
   factory, register it in `create_app()`, add a template + a sidebar link in
@@ -276,6 +263,5 @@ client.
   through `merge_usage_data()` so dedupe applies.
 - **New forecast model:** add it in `prediction.py` and wire a toggle in
   `forecast.js` + `/forecast/model-data`.
-- **Config:** absolute paths are centralized in `config.py` — never hardcode
-  paths elsewhere.
+- **Config:** absolute paths are centralized in `config.py`
 ```
